@@ -1,0 +1,100 @@
+# The Snap: the same .deb the release builds and tests on Ubuntu 24.04, on the matching core24
+# base, with what the .deb depends on staged beside it. The release workflow puts that .deb at
+# snap/local/skykeep.deb before snapcraft runs; nothing is built twice.
+#
+# Confinement is strict. iCloud Drive and Photos as FUSE folders need a privileged interface, so
+# in the Snap they open inside the app, as in the Flatpak. The keyring is password-manager-service.
+name: skykeep
+title: Skykeep
+version: '0.1.2'
+summary: Your iCloud, at home on Linux and Windows
+description: |
+  Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as real desktop apps, on a native
+  Rust engine that keeps your library on your computer. They open instantly, work offline and
+  stay in sync with your iPhone.
+
+  Free and open source, with no Skykeep account and no analytics. Sign-in is Apple's own, with
+  two-factor. Skykeep is an independent project, not affiliated with or endorsed by Apple Inc.
+license: GPL-3.0-only
+website: https://github.com/YashwanthKamireddi/Skykeep
+source-code: https://github.com/YashwanthKamireddi/Skykeep
+issues: https://github.com/YashwanthKamireddi/Skykeep/issues
+icon: snap/local/skykeep.png
+base: core24
+grade: stable
+confinement: strict
+platforms:
+  amd64:
+
+apps:
+  skykeep:
+    command: usr/bin/skykeep
+    desktop: usr/share/applications/Skykeep.desktop
+    extensions: [gnome]
+    plugs: [network, network-status, home, removable-media, password-manager-service, audio-playback]
+    environment:
+      WEBKIT_GST_USE_PLAYBIN3: "1"
+    common-id: io.github.yashwanthkamireddi.Skykeep
+  notes:
+    command: usr/bin/skykeep --app notes
+    desktop: usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Notes.desktop
+    extensions: [gnome]
+    plugs: [network, network-status, home, removable-media, password-manager-service, audio-playback]
+    environment:
+      WEBKIT_GST_USE_PLAYBIN3: "1"
+  reminders:
+    command: usr/bin/skykeep --app reminders
+    desktop: usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Reminders.desktop
+    extensions: [gnome]
+    plugs: [network, network-status, home, removable-media, password-manager-service, audio-playback]
+    environment:
+      WEBKIT_GST_USE_PLAYBIN3: "1"
+  calendar:
+    command: usr/bin/skykeep --app calendar
+    desktop: usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Calendar.desktop
+    extensions: [gnome]
+    plugs: [network, network-status, home, removable-media, password-manager-service, audio-playback]
+    environment:
+      WEBKIT_GST_USE_PLAYBIN3: "1"
+  contacts:
+    command: usr/bin/skykeep --app contacts
+    desktop: usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Contacts.desktop
+    extensions: [gnome]
+    plugs: [network, network-status, home, removable-media, password-manager-service, audio-playback]
+    environment:
+      WEBKIT_GST_USE_PLAYBIN3: "1"
+  drive:
+    command: usr/bin/skykeep --app drive
+    desktop: usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Drive.desktop
+    extensions: [gnome]
+    plugs: [network, network-status, home, removable-media, password-manager-service, audio-playback]
+    environment:
+      WEBKIT_GST_USE_PLAYBIN3: "1"
+  photos:
+    command: usr/bin/skykeep --app photos
+    desktop: usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Photos.desktop
+    extensions: [gnome]
+    plugs: [network, network-status, home, removable-media, password-manager-service, audio-playback]
+    environment:
+      WEBKIT_GST_USE_PLAYBIN3: "1"
+
+parts:
+  skykeep:
+    plugin: dump
+    source: snap/local/skykeep.deb
+    source-type: deb
+    stage-packages:
+      - libsecret-1-0
+      - libheif1
+      - libheif-plugin-libde265
+      - libwebkit2gtk-4.1-0
+      - libayatana-appindicator3-1
+      - gstreamer1.0-plugins-base
+      - gstreamer1.0-plugins-good
+      - gstreamer1.0-libav
+    override-prime: |
+      craftctl default
+      # Each launcher's icon, from inside the snap.
+      for f in usr/share/applications/*.desktop; do
+        sed -i -E 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/512x512/apps/skykeep.png|' "$f"
+      done

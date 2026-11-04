@@ -1,0 +1,47 @@
+# Builds the Snap from the release's .deb and checks that it installs and starts (offline, under
+# a virtual display). Uploading to the Snap Store needs SNAPCRAFT_STORE_CREDENTIALS and is a
+# separate step, run only on a tag.
+name: Snap
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release whose .deb the Snap wraps
+        default: v0.1.2
+  push:
+    branches: [snap]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: The release's .deb
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || 'v0.1.2' }}
+        run: |
+          gh release download "$TAG" -p 'Skykeep_*_amd64.deb' -D snap/local
+          mv snap/local/Skykeep_*_amd64.deb snap/local/skykeep.deb
+          version=${TAG#v}
+          sed -i "s/^version: .*/version: '$version'/" snap/snapcraft.yaml
+      - uses: snapcore/action-build@v1
+        id: build
+      - name: It installs and starts
+        run: |
+          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+          sudo apt-get install -y xvfb dbus-x11 >/dev/null
+          set +e
+          timeout 20 dbus-run-session -- xvfb-run -a snap run skykeep > run.log 2>&1
+          code=$?
+          cat run.log | tail -40
+          # 124 = still running when the timeout ended it: it started and stayed up.
+          [ "$code" -eq 124 ] || { echo "::error::Skykeep exited ($code) instead of staying up"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skykeep-snap
+          path: ${{ steps.build.outputs.snap }}
