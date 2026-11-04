@@ -42,3 +42,13 @@ export function copyName(stem: string, extension: string | null, taken: Iterable
   if (free(`${base} copy${ext}`)) return `${base} copy${ext}`;
   for (let n = 2; ; n++) if (free(`${base} copy ${n}${ext}`)) return `${base} copy ${n}${ext}`;
 }
+
+/**
+ * The name Finder's Keep Both gives an item put into a folder where its name is taken:
+ * "Report 2.pdf", then "Report 3.pdf". Compared without regard to case, as `copyName`.
+ */
+export function keepBothName(stem: string, extension: string | null, taken: Iterable<string>): string {
+  const ext = extension ? `.${extension}` : "";
+  const used = new Set([...taken].map((t) => t.toLocaleLowerCase()));
+  for (let n = 2; ; n++) if (!used.has(`${stem} ${n}${ext}`.toLocaleLowerCase())) return `${stem} ${n}${ext}`;
+}

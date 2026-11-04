@@ -5,7 +5,7 @@ const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1200, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, driveFixture: true });
 const page = await ctx.newPage();
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.goto(process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Drive");
 await page.waitForTimeout(300);
 let failures = 0;
@@ -33,7 +33,7 @@ ok(JSON.stringify(forFile) === JSON.stringify(["Download a Copy", "Get Info", "D
   `a file's menu adds Duplicate  ${JSON.stringify(forFile)}`);
 await page.getByRole("menuitem", { name: "Duplicate" }).click();
 await page.waitForTimeout(200);
-ok(JSON.stringify(await page.evaluate(() => window.__dups)) === JSON.stringify(["FILE::d"]), "Duplicate asks Apple for a copy of that file");
+ok(JSON.stringify(await page.evaluate(() => (window.__driveCopies ?? []).map((c) => c.drivewsid))) === JSON.stringify(["FILE::d"]), "Duplicate asks Apple for a copy of that file");
 await page.keyboard.press("Escape");
 await page.waitForTimeout(100);
 ok((await page.getByRole("menu").count()) === 0, "and Escape puts it away");

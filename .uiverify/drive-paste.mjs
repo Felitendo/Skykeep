@@ -69,23 +69,26 @@ const first = (await copies()).at(-1);
 ok(first?.drivewsid === PLAN && first?.destinationId === DL, `Apple is asked to copy it here  ${JSON.stringify(first)}`);
 ok((await names()).includes("Semester Plan.pdf"), "the copy is in the folder once Apple has it");
 
-// Pasted again where its name is taken: "Semester Plan copy.pdf", then "copy 2".
-await page.evaluate(() => { window.__driveCopyName = "Semester Plan copy"; });
+// Pasted again where its name is taken: Finder's question, and Keep Both names it "Semester
+// Plan 2.pdf", then "Semester Plan 3.pdf" (drive-paste-clash.mjs has the rest of it).
+const keepBoth = () => page.getByRole("alertdialog").getByRole("button", { name: "Keep Both" }).click();
 await page.keyboard.press("Control+v");
-await standIn("Semester Plan copy.pdf").waitFor({ timeout: 1000 }).then(() => ok(true, "a second paste is named “Semester Plan copy.pdf”"), () => ok(false, "a second paste is named “Semester Plan copy.pdf”"));
+await keepBoth();
+await standIn("Semester Plan 2.pdf").waitFor({ timeout: 1000 }).then(() => ok(true, "a second paste, both kept, is named “Semester Plan 2.pdf”"), () => ok(false, "a second paste, both kept, is named “Semester Plan 2.pdf”"));
 await page.waitForFunction(() => !document.querySelector(".drive-rows li.is-busy"), null, { timeout: 4000 });
-await page.evaluate(() => { window.__driveCopyName = "Semester Plan copy 2"; });
 await page.keyboard.press("Control+v");
-await standIn("Semester Plan copy 2.pdf").waitFor({ timeout: 1000 }).then(() => ok(true, "a third, “Semester Plan copy 2.pdf”"), () => ok(false, "a third, “Semester Plan copy 2.pdf”"));
+await keepBoth();
+await standIn("Semester Plan 3.pdf").waitFor({ timeout: 1000 }).then(() => ok(true, "a third, “Semester Plan 3.pdf”"), () => ok(false, "a third, “Semester Plan 3.pdf”"));
 await page.waitForFunction(() => !document.querySelector(".drive-rows li.is-busy"), null, { timeout: 4000 });
 ok((await copies()).length === 3, "each paste is one copy");
 
 // Refused: the row that showed goes again, and the reason is said.
-await page.evaluate(() => { window.__driveCopyFail = "iCloud Drive turned this down."; window.__driveCopyName = "Semester Plan copy 3"; });
+await page.evaluate(() => { window.__driveCopyFail = "iCloud Drive turned this down."; });
 await page.keyboard.press("Control+v");
-await standIn("Semester Plan copy 3.pdf").waitFor({ timeout: 1000 }).catch(() => {});
+await keepBoth();
+await standIn("Semester Plan 4.pdf").waitFor({ timeout: 1000 }).catch(() => {});
 ok(await errorShown("turned this down"), "a copy Apple refuses says why");
-ok(!(await names()).includes("Semester Plan copy 3.pdf"), "and its row is gone again");
+ok(!(await names()).includes("Semester Plan 4.pdf"), "and its row is gone again");
 await page.evaluate(() => { window.__driveCopyFail = null; window.__driveCopyDelay = 0; });
 await dismissErrors();
 

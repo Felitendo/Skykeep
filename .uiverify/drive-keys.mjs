@@ -50,7 +50,7 @@ await page.waitForTimeout(200);
 ok(!(await inDownloads()), "with nothing ahead, Ctrl-] stays where it is");
 
 // Ctrl-D duplicates the chosen file beside itself, as Finder's Command-D.
-const before = await page.evaluate(() => (window.__dups ?? []).length);
+const before = await page.evaluate(() => (window.__driveCopies ?? []).length);
 const firstFile = await page.evaluate(() => {
   const rows = [...document.querySelectorAll("button.drive-row-hit")];
   const i = rows.findIndex((r) => /\.\w+$/.test(r.querySelector(".drive-name")?.textContent ?? ""));
@@ -60,7 +60,7 @@ if (firstFile >= 0) {
   await page.locator("button.drive-row-hit").nth(firstFile).click();
   await page.keyboard.press("Control+d");
   await page.waitForTimeout(300);
-  ok((await page.evaluate(() => (window.__dups ?? []).length)) === before + 1, "Ctrl-D duplicates the chosen file");
+  ok((await page.evaluate(() => (window.__driveCopies ?? []).length)) === before + 1, "Ctrl-D duplicates the chosen file");
 } else ok(false, "a file to duplicate is in the fixture");
 await b.close();
 process.exitCode = failures ? 1 : 0;

@@ -1016,7 +1016,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__driveCopyFail) throw window.__driveCopyFail;
           const from = [...driveItems, ...Object.values(window.__driveIn ?? {}).flat()].find((i) => i.drivewsid === args.drivewsid);
           const into = window.__driveIn?.[args.destinationId];
-          if (from && into) into.push({ ...from, drivewsid: `${from.drivewsid}-copy${window.__driveCopies.length}`, parentId: args.destinationId, name: window.__driveCopyName ?? from.name });
+          // Named as the backend's copy_name names it, unless the test names it.
+          const full = (i) => (i.extension ? `${i.name}.${i.extension}` : i.name).toLowerCase();
+          const free = (stem) => !into || !into.some((i) => full(i) === full({ ...from, name: stem }));
+          const base = from?.name.match(/^(.+) copy(?: \d+)?$/)?.[1] ?? from?.name;
+          let stem = from?.name;
+          if (from && !free(stem)) { stem = `${base} copy`; for (let n = 2; !free(stem); n++) stem = `${base} copy ${n}`; }
+          if (from && into) into.push({ ...from, drivewsid: `${from.drivewsid}-copy${window.__driveCopies.length}`, parentId: args.destinationId, name: window.__driveCopyName ?? stem });
           return null;
         }
         // The desktop's clipboard as the backend reads it: files copied in the file manager, or text.
@@ -1097,8 +1103,18 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_download": return "/home/user/Downloads/file.pdf";
         case "download_reveal": (window.__revealed ??= []).push(args.path); return null;
         case "drive_move": (window.__moves ??= []).push(args); await new Promise((r) => setTimeout(r, 600)); return null;
-        case "drive_create_folder": case "drive_rename": (window.__driveNames ??= []).push(args); return null;
-        case "drive_delete": return null;
+        case "drive_create_folder": case "drive_rename": {
+          (window.__driveNames ??= []).push(args);
+          // Renamed where a test keeps folders of its own (__driveIn).
+          const it = cmd === "drive_rename" && Object.values(window.__driveIn ?? {}).flat().find((i) => i.drivewsid === args.drivewsid);
+          if (it) it.name = it.extension && args.name.endsWith(`.${it.extension}`) ? args.name.slice(0, -(it.extension.length + 1)) : args.name;
+          return null;
+        }
+        case "drive_delete": {
+          (window.__driveDeleted ??= []).push(args.drivewsid);
+          for (const [k, list] of Object.entries(window.__driveIn ?? {})) window.__driveIn[k] = list.filter((i) => i.drivewsid !== args.drivewsid);
+          return null;
+        }
         case "drive_item": return null;
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;

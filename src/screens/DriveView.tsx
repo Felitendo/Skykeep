@@ -3,7 +3,7 @@ import { overlayOpen, useActiveRef, useScreenActive } from "../lib/screen";
 import { useModalFocus } from "../lib/focus";
 import { useRevision } from "../lib/sync";
 import { toastSaved, useErrorToast } from "../components/Toast";
-import { useConfirm } from "../components/Confirm";
+import { ConfirmSheet, useConfirm } from "../components/Confirm";
 import { EmptyState } from "../components/EmptyState";
 import { Spinner } from "../components/Spinner";
 import { PaneTitle } from "../components/PaneTitle";
@@ -32,7 +32,7 @@ import { dateText, timeText } from "../lib/when";
 import { Clock } from "lucide-react";
 import { useReveal } from "../lib/reveal";
 import { keepSame } from "../lib/same";
-import { copyName, copyText } from "../lib/clipboard";
+import { copyName, copyText, keepBothName } from "../lib/clipboard";
 import { useChosen, useIsChosen, type Chosen } from "../lib/chosen";
 
 /** iCloud Drive's own four orders, as its "by Name" menu offers them. */
@@ -450,6 +450,9 @@ function sameItems(a: DriveItem[], b: DriveItem[]): boolean {
  * one, belongs to that app (see acceptsUploads), so it is not copied out of it.
  */
 const copyable = (item: DriveItem) => (item.kind === "FILE" || item.kind === "FOLDER") && acceptsUploads(item.drivewsid);
+
+/** What a paste onto a name already there does: both kept ("Report 2.pdf"), or the one there replaced. */
+type Clash = "keep" | "replace" | null;
 
 export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "Drive" }]);
@@ -898,18 +901,21 @@ export function DriveView() {
   const remove = useCallback((item: DriveItem) => removeAll([item]), [removeAll]);
 
   /**
-   * Duplicate, as Finder: the copy lands beside the original as "Name 2", and shows as being
-   * made at once — Apple decides its name, so the row is a stand-in until it answers.
+   * Duplicate, as Finder: the copy lands beside the original as "Name copy", named as Copy and
+   * Paste names one in its own folder (the same backend copy), and shows as being made at once.
    */
   const duplicate = useCallback(
     async (item: DriveItem) => {
       setError(null);
       // By the item as well as the moment: several duplicated at once share a millisecond.
       const key = `copy-${item.drivewsid}-${Date.now()}`;
-      const ext = item.extension ? `.${item.extension}` : "";
-      setPending((p) => [...p, { key, folder: here.id, name: `${item.name} copy${ext}`, doing: "Duplicating…" }]);
+      const taken = [
+        ...itemsRef.current.map(driveName),
+        ...pendingRef.current.filter((p) => p.folder === here.id).map((p) => p.name),
+      ];
+      setPending((p) => [...p, { key, folder: here.id, name: copyName(item.name, item.extension, taken), doing: "Duplicating…" }]);
       try {
-        await api.driveDuplicate(item.drivewsid);
+        await api.driveCopy(item.drivewsid, here.id);
         await refresh();
       } catch (e) {
         setError(messageOf(e));
@@ -970,6 +976,20 @@ export function DriveView() {
    * Ctrl-V in any folder puts copies there. Kept across folders, and for more than one paste.
    */
   const [clip, setClip] = useState<{ items: DriveItem[]; from: string; text: string | null } | null>(null);
+  /** What has the name of each of `list` in the folder open, by the item pasted. */
+  const clashesHere = (list: DriveItem[]) => {
+    const here = new Map(itemsRef.current.map((i) => [driveName(i).toLocaleLowerCase(), i]));
+    const out = new Map<string, DriveItem>();
+    for (const i of list) {
+      const there = here.get(driveName(i).toLocaleLowerCase());
+      if (there && there.drivewsid !== i.drivewsid) out.set(i.drivewsid, there);
+    }
+    return out;
+  };
+  /** Finder's question when a pasted name is taken: Keep Both, Replace, or Cancel (null). */
+  const [asking, setAsking] = useState<{ items: DriveItem[]; answer: (how: Clash) => void } | null>(null);
+  const askClash = (items: DriveItem[]) =>
+    new Promise<Clash>((answer) => setAsking({ items, answer: (how) => { setAsking(null); answer(how); } }));
   const clipRef = useRef(clip);
   clipRef.current = clip;
   const copyItems = useCallback(async (list: DriveItem[]) => {
@@ -987,7 +1007,7 @@ export function DriveView() {
    * fails leaves, with the reason; the rest still land.
    */
   const copyHere = useCallback(
-    async (list: DriveItem[]) => {
+    async (list: DriveItem[], clash: Clash = null) => {
       setError(null);
       const into = hereRef.current;
       const inside = trailRef.current.map((c) => c.id);
@@ -996,13 +1016,18 @@ export function DriveView() {
       const copying = list.filter((i) => !inside.includes(i.drivewsid));
       if (insideItself) setError(`\u201c${driveName(insideItself)}\u201d can\u2019t be copied into a folder inside itself.`);
       if (copying.length === 0) return;
+      // Replace: what has the name goes to Recently Deleted first, so the copy takes its name.
+      const replacing = clash === "replace" ? clashesHere(copying) : new Map<string, DriveItem>();
+      if (replacing.size) setGone((g) => new Set([...g, ...[...replacing.values()].map((o) => goneKey(into, o.drivewsid))]));
       const taken = new Set([
-        ...itemsRef.current.map(driveName),
+        ...itemsRef.current.filter((i) => ![...replacing.values()].includes(i)).map(driveName),
         ...pendingRef.current.filter((p) => p.folder === into).map((p) => p.name),
       ]);
       const batch = `paste-${Date.now()}`;
+      const kept = clash === "keep" ? clashesHere(copying) : new Map<string, DriveItem>();
       const shown = copying.map((item, i) => {
-        const name = copyName(item.name, isContainer(item) ? null : item.extension, taken);
+        const ext = isContainer(item) ? null : item.extension;
+        const name = kept.has(item.drivewsid) ? keepBothName(item.name, ext, taken) : copyName(item.name, ext, taken);
         taken.add(name);
         return { key: `${batch}:${i}`, folder: into, name, doing: "Copying…" };
       });
@@ -1011,7 +1036,18 @@ export function DriveView() {
       let reason = "";
       for (const [i, item] of copying.entries()) {
         try {
+          const old = replacing.get(item.drivewsid);
+          if (old) await api.driveDelete(old.drivewsid);
+          // Kept both: the backend names the copy as Finder names a copy ("Report copy.pdf"),
+          // and it is then named as Keep Both names it ("Report 2.pdf").
+          const listed = async () => { const l = await api.driveChildren(into); return Array.isArray(l) ? l : []; };
+          const before = kept.has(item.drivewsid) ? await listed() : null;
           await api.driveCopy(item.drivewsid, into);
+          if (before) {
+            const named = copyName(item.name, isContainer(item) ? null : item.extension, before.map(driveName)).toLocaleLowerCase();
+            const made = (await listed()).find((x) => !before.some((b) => b.drivewsid === x.drivewsid) && driveName(x).toLocaleLowerCase() === named);
+            if (made && driveName(made) !== shown[i].name) await api.driveRename(made.drivewsid, shown[i].name);
+          }
           // The backend has read the folder again: the library has the copy, so no new look.
           if (into === hereRef.current) await refresh(false);
         } catch (e) {
@@ -1210,27 +1246,54 @@ export function DriveView() {
     if (!c) return;
     // Something else copied since (text in another app): that is what is on the clipboard.
     if (c.text !== null && board?.text != null && board.text !== c.text) return;
-    if (!move) {
-      await copyHere(c.items);
+    const into = hereRef.current;
+    if (move && c.from === into) return;
+    const inside = trailRef.current.map((t) => t.id);
+    const insideItself = c.items.find((i) => inside.includes(i.drivewsid));
+    if (move && insideItself) {
+      setError(`\u201c${driveName(insideItself)}\u201d can\u2019t be moved into a folder inside itself.`);
       return;
     }
-    const into = hereRef.current;
-    if (c.from === into) return;
-    const inside = trailRef.current.map((t) => t.id);
-    const names = new Set(itemsRef.current.map((i) => driveName(i).toLocaleLowerCase()));
-    const clash = c.items.find((i) => names.has(driveName(i).toLocaleLowerCase()));
-    const insideItself = c.items.find((i) => inside.includes(i.drivewsid));
-    if (clash || insideItself) {
-      setError(
-        clash
-          ? `An item named \u201c${driveName(clash)}\u201d is already in this folder, so nothing was moved.`
-          : `\u201c${driveName(insideItself!)}\u201d can\u2019t be moved into a folder inside itself.`,
-      );
+    // Pasted where it was copied, a copy is a duplicate ("Report copy.pdf"), as in Finder.
+    // Anywhere else a name already there is a question first: Keep Both or Replace.
+    const clashing = c.from === into ? [] : [...clashesHere(c.items.filter((i) => !inside.includes(i.drivewsid))).keys()];
+    let how: Clash = null;
+    if (clashing.length) {
+      how = await askClash(c.items.filter((i) => clashing.includes(i.drivewsid)));
+      if (!how) return;
+    }
+    if (!move) {
+      await copyHere(c.items, how);
       return;
     }
     // Moved, it is no longer where it was copied: nothing is left to paste.
     setClip(null);
-    await moveAll(c.items, into, c.from);
+    const clashes = clashesHere(c.items);
+    if (how === "replace" && clashes.size) {
+      const old = [...clashes.values()];
+      setGone((g) => new Set([...g, ...old.map((o) => goneKey(into, o.drivewsid))]));
+      for (const o of old) await api.driveDelete(o.drivewsid).catch(() => {});
+    }
+    let going = c.items;
+    if (how === "keep" && clashes.size) {
+      // Named as Keep Both names it before it goes, so the folder never holds two of one name.
+      const taken = new Set(itemsRef.current.map(driveName));
+      const renamed = new Map<string, DriveItem>();
+      for (const item of c.items.filter((i) => clashes.has(i.drivewsid))) {
+        const ext = isContainer(item) ? null : item.extension;
+        const name = keepBothName(item.name, ext, taken);
+        taken.add(name);
+        try {
+          await api.driveRename(item.drivewsid, name);
+        } catch (e) {
+          setError(messageOf(e));
+          return;
+        }
+        renamed.set(item.drivewsid, { ...item, name: ext ? name.slice(0, -(ext.length + 1)) : name });
+      }
+      going = c.items.map((i) => renamed.get(i.drivewsid) ?? i);
+    }
+    await moveAll(going, into, c.from);
   };
 
   const chooseAndUpload = useCallback(
@@ -1746,7 +1809,9 @@ export function DriveView() {
         aria-label={here.name}
       >
         {pending
-          .filter((p) => p.folder === here.id && !items.some((i) => driveName(i) === p.name))
+          // Shown until a row of its name is there — not one leaving (a Replace's): that one
+          // goes at once, and the copy taking its place shows as being made.
+          .filter((p) => p.folder === here.id && !items.some((i) => driveName(i) === p.name && !gone.has(goneKey(here.id, i.drivewsid))))
           .map((p) => (
             <li key={p.key} className="drive-row is-busy" aria-busy="true">
               <span className="drive-row-hit">
@@ -1816,6 +1881,20 @@ export function DriveView() {
           startingIn={here.id}
           onCancel={() => setMoving(null)}
           onMove={(destinationId) => void moveAll(moving, destinationId)}
+        />
+      )}
+
+      {asking && (
+        <ConfirmSheet<"keep" | "replace">
+          title={asking.items.length === 1
+            ? `\u201c${driveName(asking.items[0])}\u201d is already in this folder`
+            : `${asking.items.length} items with these names are already in this folder`}
+          choices={[
+            { label: "Keep Both", value: "keep", primary: true, focus: true },
+            { label: "Replace", value: "replace", danger: true },
+          ]}
+          onAnswer={(how) => asking.answer(how)}
+          onCancel={() => asking.answer(null)}
         />
       )}
 
