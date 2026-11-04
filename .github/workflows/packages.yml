@@ -15,7 +15,7 @@ on:
       version:
         description: "Release to package, without the v (its files must be on GitHub Releases)"
         type: string
-        default: "0.1.3"
+        default: "0.1.4"
       publish:
         description: "Push the tested Chocolatey package to community.chocolatey.org"
         type: boolean
