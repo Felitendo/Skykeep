@@ -750,9 +750,11 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             <span className="settings-label settings-stack">
               Open at Login
               <span className="settings-hint">
-                {login?.on && !login.honoured
-                  ? "This desktop doesn't open apps at login by itself. Add this to its startup:"
-                  : "Starts in the background, so alerts ring and changes sync"}
+                {login?.elsewhere
+                  ? login.elsewhere
+                  : login?.on && !login.honoured
+                    ? "This desktop doesn't open apps at login by itself. Add this to its startup:"
+                    : "Starts in the background, so alerts ring and changes sync"}
               </span>
               {login?.on && !login.honoured && <code className="settings-command">{login.command}</code>}
             </span>
@@ -761,7 +763,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
               role="switch"
               aria-checked={login?.on ?? false}
               aria-label="Open at Login"
-              disabled={!login || loginBusy}
+              disabled={!login || loginBusy || Boolean(login.elsewhere)}
               onClick={() => {
                 if (!login) return;
                 const was = login;
@@ -978,6 +980,7 @@ function UpdatesGroup() {
   const elsewhere: Record<string, string> = {
     packageManager: "Updates come through your package manager.",
     flatpak: "Updates come through Flatpak.",
+    store: "Updates come through the Microsoft Store.",
     development: "This is a development build, so it doesn’t update itself.",
     manual: "This copy wasn’t installed by Skykeep’s installer, so it doesn’t update itself.",
   };

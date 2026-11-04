@@ -88,7 +88,7 @@ export type UploadEvent = {
 export const UPDATE = "quince://update";
 
 /** Who updates this copy of Skykeep: itself, or the package manager it came from. */
-export type UpdateInstall = "here" | "packageManager" | "flatpak" | "development" | "manual";
+export type UpdateInstall = "here" | "packageManager" | "flatpak" | "store" | "development" | "manual";
 export type UpdateStatus = {
   install: UpdateInstall;
   /** Check for Updates Automatically. */
@@ -1019,6 +1019,9 @@ export type LoginItem = {
   honoured: boolean;
   /** Whether Skykeep keeps the login entry itself (not in the Flatpak). */
   available?: boolean;
+  /** Why the switch can't change it: Windows holds the Store install's startup task off in
+   * Task Manager, or on or off by policy. */
+  elsewhere?: string | null;
 };
 
 export type DriveFolder = {
