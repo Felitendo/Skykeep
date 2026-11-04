@@ -115,9 +115,11 @@ pub enum Error {
     CoolingDown { seconds: u64 },
     #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
     ReauthRequired,
+    // Apple's 429 and its 503 on sign-in both mean "not now", whether from too many tries or
+    // its own load: say what to do, not which of the two it was.
     #[error(
-        "Apple is rate-limiting this account. Wait a few minutes before trying again — \
-             repeated attempts risk a temporary lock"
+        "Apple asked to wait before signing in again. Try again in a few minutes: trying \
+             again right away can make Apple lock the account for a while."
     )]
     RateLimited,
     /// Said as what to do: the keyring's own words (a D-Bus error name, a Win32 code) are for
