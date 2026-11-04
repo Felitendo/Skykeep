@@ -371,7 +371,7 @@ mod tests {
     fn a_server_value_with_a_leading_zero_byte_is_padded() {
         let c = Client::with_private_key("probe@example.invalid", &[9u8; 32]);
         let mut b = vec![0x00];
-        b.extend(std::iter::repeat(0x6d).take(255));
+        b.extend(std::iter::repeat_n(0x6d, 255));
         let got = c
             .process_challenge("pw", Protocol::S2k, b"salt-salt-salt!!", &b, 1000)
             .unwrap();
