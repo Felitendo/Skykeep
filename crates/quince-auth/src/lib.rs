@@ -124,7 +124,7 @@ pub enum Error {
     RateLimited,
     /// Said as what to do: the keyring's own words (a D-Bus error name, a Win32 code) are for
     /// the log, and stay in the value.
-    #[error("{}", KEYRING_WORDS)]
+    #[error("{}", keyring_words())]
     Keyring(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -140,6 +140,23 @@ pub const KEYRING_WORDS: &str = "Windows Credential Manager didn’t answer. Try
 #[cfg(not(windows))]
 pub const KEYRING_WORDS: &str =
     "Your system keyring is locked or not running. Unlock or start GNOME Keyring or KWallet, then try again.";
+
+/// In the Snap, the keyring is reached through the password-manager-service interface, which
+/// snapd never connects by itself (its base declaration denies auto-connection). Unconnected,
+/// every keyring call is refused whatever state the keyring is in, so "locked" would send the
+/// person to the wrong fix.
+#[cfg(not(windows))]
+pub const SNAP_KEYRING_WORDS: &str = "Skykeep needs your permission to use the system keyring. In a terminal, run: sudo snap connect skykeep:password-manager-service — then try again.";
+
+/// What a keyring that would not answer means here: [`KEYRING_WORDS`], or inside the Snap
+/// [`SNAP_KEYRING_WORDS`].
+pub fn keyring_words() -> &'static str {
+    #[cfg(not(windows))]
+    if std::env::var_os("SNAP_NAME").is_some_and(|n| n == "skykeep") {
+        return SNAP_KEYRING_WORDS;
+    }
+    KEYRING_WORDS
+}
 
 /// A reply that says "not now" rather than "no": Apple's servers failing or overloaded.
 fn transient(status: reqwest::StatusCode) -> Option<Error> {
