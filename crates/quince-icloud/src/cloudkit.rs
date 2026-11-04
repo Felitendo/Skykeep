@@ -46,6 +46,11 @@ enum ZoneTrouble {
     /// The cursor was refused. CloudKit expires them, and a client that has been closed for a
     /// while comes back holding one Apple no longer knows. The answer is to start over.
     StaleCursor,
+    /// "Not now": the zone throttled, busy with another write, or asking to be tried later,
+    /// with the seconds it asked for when it said.
+    Busy(Option<u64>),
+    /// The session was not accepted for the zone: a fresh sign-in, not a fault in the zone.
+    Unauthenticated,
     /// Something else, which is worth showing to somebody.
     Other(&'static str),
 }
@@ -60,6 +65,15 @@ fn trouble_with(zone_result: &Value) -> Option<ZoneTrouble> {
         // "nothing changed", on a token that would never be read again — every change made
         // elsewhere from then on never arrived.
         Some("CHANGE_TOKEN_EXPIRED") => Some(ZoneTrouble::StaleCursor),
+        // Said inside a 200 for the one zone, not as the request's status (timlaing/pyicloud
+        // #384): read as a refusal, a moment's throttling failed the whole pass in Apple's
+        // words, and a lapsed session read as a broken zone rather than a sign-in.
+        Some("THROTTLED" | "TRY_AGAIN_LATER" | "ZONE_BUSY") => Some(ZoneTrouble::Busy(
+            zone_result.get("retryAfter").and_then(Value::as_u64),
+        )),
+        Some("AUTHENTICATION_FAILED" | "AUTHENTICATION_REQUIRED") => {
+            Some(ZoneTrouble::Unauthenticated)
+        }
         // Apple says BAD_REQUEST for a cursor it will not read, with the reason naming the
         // continuation: "Unknown sync continuation type", "Invalid continuation format".
         Some("BAD_REQUEST")
@@ -181,8 +195,34 @@ impl<'a> ZoneClient<'a> {
             "{}/database/1/{}/production/private/changes/zone",
             self.base, self.container
         );
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            match self.changes_once(&url, zone, &zone_body).await {
+                Err(e) => return Err(e),
+                Ok(Ok(page)) => return Ok(page),
+                // Waited out as a busy request is (`post_json`), then said in words.
+                Ok(Err(asked)) if tries < BUSY_TRIES => {
+                    let wait = asked.unwrap_or(2).clamp(1, LONGEST_WAIT);
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                }
+                Ok(Err(_)) => {
+                    quiet!("cloudkit: zone {zone} still busy after {tries} tries");
+                    return Err(Error::Busy);
+                }
+            }
+        }
+    }
+
+    /// One `changes/zone` request: the page, or the wait a busy zone asked for.
+    async fn changes_once(
+        &self,
+        url: &str,
+        zone: &str,
+        zone_body: &Value,
+    ) -> Result<std::result::Result<Page, Option<u64>>> {
         let (status, text) = self
-            .post_json(&url, &json!({ "zones": [zone_body] }))
+            .post_json(url, &json!({ "zones": [zone_body] }))
             .await?;
         if status.as_u16() == 450 {
             return Err(Error::ReauthRequired);
@@ -206,13 +246,15 @@ impl<'a> ZoneClient<'a> {
             // A zone that does not exist is an account that has never used the thing. Reading
             // it as an empty, finished walk is the truth; raising is not.
             Some(ZoneTrouble::Missing) => {
-                return Ok(Page {
+                return Ok(Ok(Page {
                     records: Vec::new(),
                     sync_token: None,
                     more_coming: false,
-                })
+                }))
             }
             Some(ZoneTrouble::StaleCursor) => return Err(Error::StaleCursor),
+            Some(ZoneTrouble::Busy(asked)) => return Ok(Err(asked)),
+            Some(ZoneTrouble::Unauthenticated) => return Err(Error::ReauthRequired),
             Some(ZoneTrouble::Other(_)) => {
                 let reason = zone_result
                     .get("reason")
@@ -225,7 +267,7 @@ impl<'a> ZoneClient<'a> {
             None => {}
         }
 
-        Ok(Page {
+        Ok(Ok(Page {
             records: zone_result
                 .get("records")
                 .and_then(Value::as_array)
@@ -239,7 +281,7 @@ impl<'a> ZoneClient<'a> {
                 .get("moreComing")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-        })
+        }))
     }
 
     /// Every record in a zone, following `moreComing`.
@@ -1841,6 +1883,83 @@ mod trouble_tests {
             walk.complete,
             "an account with no such zone has been read in full, not cut short"
         );
+    }
+
+    /// CloudKit can throttle one zone inside a 200 — `THROTTLED`, `TRY_AGAIN_LATER` or
+    /// `ZONE_BUSY` with a `retryAfter` (timlaing/pyicloud#384). That is a wait, not a refusal:
+    /// waited out, the pass carries on; still busy, it says busy in words.
+    #[tokio::test]
+    async fn a_zone_throttled_inside_a_200_is_waited_out() {
+        for code in ["THROTTLED", "TRY_AGAIN_LATER", "ZONE_BUSY"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/changes/zone"))
+                .respond_with(zone_reply(json!({
+                    "serverErrorCode": code, "reason": "slow down", "retryAfter": 1
+                })))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/changes/zone"))
+                .respond_with(zone_reply(json!({
+                    "records": [record("R1", "Reminder")],
+                    "syncToken": "T1", "moreComing": false
+                })))
+                .mount(&server)
+                .await;
+            let http = reqwest::Client::new();
+            let uri = server.uri();
+            let walk = client(&http, &uri, "com.apple.reminders")
+                .all_records("Reminders", None)
+                .await
+                .unwrap_or_else(|e| panic!("{code}: {e}"));
+            assert_eq!(walk.records.len(), 1, "{code}");
+            assert!(walk.complete, "{code}");
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "serverErrorCode": "THROTTLED", "retryAfter": 1
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let uri = server.uri();
+        let err = client(&http, &uri, "com.apple.reminders")
+            .all_records("Reminders", None)
+            .await
+            .err()
+            .expect("still throttled");
+        assert!(matches!(err, Error::Busy), "{err:?}");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            BUSY_TRIES as usize,
+            "asked again, a few times, then said"
+        );
+    }
+
+    /// A session the zone will not take, said inside a 200, is a sign-in — not a broken zone.
+    #[tokio::test]
+    async fn a_zone_that_wants_a_sign_in_says_so() {
+        for code in ["AUTHENTICATION_FAILED", "AUTHENTICATION_REQUIRED"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/changes/zone"))
+                .respond_with(zone_reply(json!({ "serverErrorCode": code })))
+                .mount(&server)
+                .await;
+            let http = reqwest::Client::new();
+            let uri = server.uri();
+            let err = client(&http, &uri, "com.apple.notes")
+                .all_records("Notes", None)
+                .await
+                .err()
+                .expect("refused");
+            assert!(matches!(err, Error::ReauthRequired), "{code}: {err:?}");
+        }
     }
 
     /// CloudKit expires cursors. An app closed for a while comes back holding one Apple will
