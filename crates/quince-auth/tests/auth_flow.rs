@@ -988,33 +988,31 @@ async fn a_store_that_will_not_keep_the_session_never_fails_the_sign_in() {
     assert!(client_for(&server, dir.path()).has_stored_session());
 }
 
-/// Apple refuses a proof by answering `/signin/complete` with a 403 that carries a fresh
-/// challenge. That is a password Apple didn't accept (most often an app-specific one), and it
-/// must read as one, not as Apple's raw reply.
+/// A locked account is also a 403 from `/signin/complete`, with Apple's code -20209. It must
+/// say the account is locked and where to unlock it, never that the password was wrong.
 #[tokio::test]
-async fn a_refused_proof_is_a_password_apple_did_not_accept() {
+async fn a_locked_account_says_so_not_wrong_password() {
     let server = MockServer::start().await;
     mount_init(&server, 200).await;
     Mock::given(method("POST"))
         .and(path("/appleauth/auth/signin/complete"))
         .respond_with(ResponseTemplate::new(403).set_body_json(json!({
-            "iteration": 20347,
-            "salt": b64(&[0x51; 16]),
-            "protocol": "s2k",
-            "b": b64(&[0x6d; 256]),
-            "c": "challenge-c-2",
+            "serviceErrors": [{
+                "code": "-20209",
+                "message": "This Apple Account has been locked for security reasons."
+            }]
         })))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
     let err = client
-        .sign_in("probe@example.invalid", "app-specific-pass")
+        .sign_in("probe@example.invalid", "pw")
         .await
         .unwrap_err();
     assert!(
-        matches!(err, quince_auth::Error::BadCredentials),
+        matches!(err, quince_auth::Error::AccountLocked),
         "got {err:?}"
     );
-    assert!(!err.to_string().contains("403"), "no raw reply: {err}");
+    assert!(err.to_string().contains("iforgot.apple.com"), "{err}");
 }
