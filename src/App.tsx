@@ -13,6 +13,14 @@ type Phase = "checking" | "signin" | "code" | "library";
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("checking");
+  /** How the code screen asks for its code (`CodeEntry`'s `request`). */
+  const [codeRequest, setCodeRequest] = useState<"now" | "ask" | undefined>(undefined);
+  /**
+   * Skykeep signed itself back in and Apple wants a code first. Nothing has been sent: the
+   * library stays, with one line saying so, and the code is asked for once the person opens
+   * the code screen from it.
+   */
+  const [codeLapse, setCodeLapse] = useState(false);
   // Why the stored session could not be taken up, said once on the sign-in screen.
   const [why, setWhy] = useState<string | null>(null);
   // The window is shown once the first real screen (the library, or sign-in) is in the page:
@@ -65,7 +73,7 @@ export default function App() {
             return "signin" as const;
           });
           if (cancelled) return;
-          if (next === "code") setPhase("code");
+          if (next === "code") setCodeLapse(true);
           else if (next === "signin") setLapsed(true);
           return;
         }
@@ -76,6 +84,7 @@ export default function App() {
             if (!cancelled) setWhy(messageOf(err));
             return "signin" as const;
           });
+          if (next === "code") setCodeRequest("ask");
           if (next !== "signin") return !cancelled && setPhase(next);
         }
       } catch {
@@ -91,7 +100,7 @@ export default function App() {
   // A session that lapsed while the window was open, and that Apple will take back only
   // with a code: the code screen, not the sign-in screen — the password is already kept.
   useEffect(() => {
-    const stop = listen(NEEDS_CODE, () => setPhase("code"));
+    const stop = listen(NEEDS_CODE, () => setCodeLapse(true));
     return () => {
       void stop.then((unlisten) => unlisten()).catch(() => {});
     };
@@ -124,6 +133,22 @@ export default function App() {
     return () => dismissToast(id);
   }, [lapsed, phase, why]);
 
+  useEffect(() => {
+    if (!codeLapse || phase !== "library") return undefined;
+    const id = toast({
+      message: "Sign in again to keep syncing. Your copy on this computer is still here.",
+      duration: null,
+      action: {
+        label: "Sign In",
+        run: () => {
+          setCodeRequest("now");
+          setPhase("code");
+        },
+      },
+    });
+    return () => dismissToast(id);
+  }, [codeLapse, phase]);
+
   // Signed out, the window starts over: nothing of the account is left in its memory either —
   // no picture, no list, no cached answer — for whoever signs in next.
   async function signOut(keep: boolean) {
@@ -153,12 +178,21 @@ export default function App() {
           notice={why}
           onResult={(r) => {
             setLapsed(false);
+            setCodeLapse(false);
+            setCodeRequest(undefined);
             setPhase(r === "complete" ? "library" : "code");
           }}
         />
       )}
       {phase === "code" && (
-        <CodeEntry onVerified={() => setPhase("library")} onCancel={() => setPhase("signin")} />
+        <CodeEntry
+          request={codeRequest}
+          onVerified={() => {
+            setCodeLapse(false);
+            setPhase("library");
+          }}
+          onCancel={() => setPhase("signin")}
+        />
       )}
     </div>
   );

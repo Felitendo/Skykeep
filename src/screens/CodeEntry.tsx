@@ -8,9 +8,16 @@ import { api, messageOf, type TwoFactorOptions } from "../lib/ipc";
 export function CodeEntry({
   onVerified,
   onCancel,
+  request,
 }: {
   onVerified: () => void;
   onCancel: () => void;
+  /**
+   * How the code is asked for, when Skykeep signed itself back in and Apple wants one: `now`,
+   * the person came here to get it; `ask`, they did not (the window opened with Skykeep), so
+   * it is theirs to send. Absent, the sign-in a moment ago already asked.
+   */
+  request?: "now" | "ask";
 }) {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -24,6 +31,18 @@ export function CodeEntry({
 
   useEffect(() => {
     api.twoFactorOptions().then(setOptions).catch(() => setOptions(null));
+  }, []);
+
+  /** Apple has been asked for this sign-in's code. */
+  const [asked, setAsked] = useState(request === undefined);
+  const askForCode = () =>
+    run(async () => {
+      await api.requestCode();
+      setAsked(true);
+    }, "");
+  useEffect(() => {
+    if (request === "now") void askForCode();
+    // Once, as the screen opens.
   }, []);
 
   // If Apple pushed to nothing, say so immediately rather than letting someone wait.
@@ -82,7 +101,9 @@ export function CodeEntry({
       <Mark className="mark" />
       <h1>Enter the code</h1>
       <p className="lede">
-        {texted
+        {!asked && !texted
+          ? "Apple wants a code before it trusts this computer again."
+          : texted
           ? calls(texted)
             ? `Apple is calling ${texted.maskedNumber} with a code.`
             : `Apple texted a code to ${texted.maskedNumber}.`
@@ -96,6 +117,12 @@ export function CodeEntry({
                   : "No device is reachable, but a code can be texted to you."
                 : `Apple sent a code to ${devices === 1 ? "one of your devices" : `${devices} of your devices`}.`}
       </p>
+
+      {!asked && !texted && (
+        <button className="primary" type="button" disabled={busy} onClick={() => void askForCode()}>
+          Send Code
+        </button>
+      )}
 
       <CodeInput
         value={code}

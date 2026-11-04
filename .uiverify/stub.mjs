@@ -1130,6 +1130,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_item": return null;
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;
+        // Counted, so a suite can tell a code was asked for only when the person was there.
+        case "auth_request_code":
+          window.__codeRequests = (window.__codeRequests ?? 0) + 1;
+          return null;
         case "auth_send_sms":       return null;
         case "auth_submit_sms_code": window.__codeVia = `sms:${args?.phoneId}`; return null;
         case "auth_sign_out":    sessionStorage.setItem("__signedOut", JSON.stringify(args)); return null;

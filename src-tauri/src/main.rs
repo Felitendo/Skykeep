@@ -1331,9 +1331,19 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
         return;
     }
     match guard.heartbeat().await {
+        // Apple wants a code before it trusts this computer again. None has been asked for:
+        // the window says so calmly, and the code is sent once the person opens the code
+        // screen from there — never pushed to their phone from a background pass.
         Ok(false) if guard.awaiting_code() => {
             LIVE.store(false, Ordering::SeqCst);
             app.emit(NEEDS_CODE, ()).ok();
+            if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                alerts::tell(
+                    app,
+                    "Sign in again to keep syncing",
+                    "Open Skykeep to get a code from Apple. Your copy on this computer is still here.",
+                );
+            }
         }
         // Apple will not take the session back without the password: every sync would fail
         // quietly from here on. The window says so where it is open, and the desktop once,
@@ -1771,6 +1781,15 @@ async fn auth_submit_code(
 async fn auth_two_factor_options(auth: State<'_, Auth>) -> UiResult<TwoFactorOptions> {
     let mut client = auth.client.lock().await;
     client.two_factor_options().await.map_err(|e| e.to_string())
+}
+
+/// The code screen opened: Apple is asked for the code now, unless this sign-in already asked
+/// (the person typed their password a moment ago). A lapse mended in the background leaves it
+/// unasked, so nothing reaches the person's phone until they are here for it.
+#[tauri::command]
+async fn auth_request_code(auth: State<'_, Auth>) -> UiResult<()> {
+    let mut client = auth.client.lock().await;
+    client.request_code().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -6887,6 +6906,7 @@ fn main() {
             auth_submit_code,
             auth_two_factor_options,
             auth_resend_code,
+            auth_request_code,
             auth_send_sms,
             auth_submit_sms_code,
             auth_sign_out,

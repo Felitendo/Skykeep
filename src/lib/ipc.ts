@@ -149,6 +149,8 @@ export const api = {
   submitCode: (code: string) => invoke<void>("auth_submit_code", { code }),
   twoFactorOptions: () => invoke<TwoFactorOptions>("auth_two_factor_options"),
   resendCode: () => invoke<void>("auth_resend_code"),
+  /** The code screen is open: Apple sends the code, unless this sign-in already asked. */
+  requestCode: () => invoke<void>("auth_request_code"),
   sendSms: (phoneId: number) => invoke<void>("auth_send_sms", { phoneId }),
   submitSmsCode: (phoneId: number, code: string) =>
     invoke<void>("auth_submit_sms_code", { phoneId, code }),

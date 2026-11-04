@@ -354,6 +354,15 @@ pub enum SignInOutcome {
     NeedsTwoFactor,
 }
 
+/// Whether a sign-in that Apple wants a code for asks Apple to send it now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Code {
+    /// The person just typed their password and the code screen is next: ask.
+    Send,
+    /// Nobody is watching (a lapse mended in the background): leave it to the code screen.
+    Wait,
+}
+
 /// OAuth headers every idmsa call carries. Deliberately sets no Origin: the HTTP client
 /// defaults to the icloud.com origin, which is what the verify, trust and phone endpoints
 /// expect. Only SRP overrides it — see [`with_srp_origin`].
@@ -410,6 +419,9 @@ pub struct Client {
     pending: Option<(String, String)>,
     /// A lapsed session tried to sign itself back in and Apple wants a code first.
     awaiting_code: bool,
+    /// Apple has been asked to send this sign-in's code — to the devices, or by text — so the
+    /// code screen opening does not ask for another.
+    code_sent: bool,
     /// The keyring would not answer when this started — locked, or not up yet. Not the same
     /// as nothing stored: it is asked again before anything else happens.
     keyring_error: Option<String>,
@@ -488,9 +500,7 @@ fn read_jar(store: &Store) -> (cookie_store::CookieStore, Cookies) {
     };
     let sealed_in_place = (|| -> Result<()> {
         let key = store.cookie_key_or_new()?;
-        let mut json = Vec::new();
-        cookie_store::serde::json::save(&jar, &mut json)
-            .map_err(|e| Error::Protocol(format!("couldn't save cookies: {e}")))?;
+        let json = jar_bytes(&jar)?;
         Ok(session::write_whole(
             path,
             &sealed::seal(&key, &json)?,
@@ -502,6 +512,23 @@ fn read_jar(store: &Store) -> (cookie_store::CookieStore, Cookies) {
         let _ = std::fs::remove_file(path);
     }
     (jar, Cookies::Read)
+}
+
+/// The jar as it is written to disk: every cookie that has not run out, Apple's session
+/// cookies among them.
+///
+/// `cookie_store`'s own `save` keeps only cookies with an expiry, and Apple sets several of the
+/// ones its sign-in leans on without one — idmsa's own, and some of icloud.com's. Each start
+/// came back without them, so the next sign-in was a stranger's and Apple asked for a code
+/// again, about every day. pyicloud and icloudpd keep them the same way (`LWPCookieJar.save(
+/// ignore_discard=True)`), as a browser that restores its session does. They are a credential
+/// like the rest of the jar, and sealed with it (see [`sealed`]).
+fn jar_bytes(jar: &cookie_store::CookieStore) -> Result<Vec<u8>> {
+    let cookies: Vec<&cookie_store::Cookie<'static>> = jar.iter_unexpired().collect();
+    let mut out = serde_json::to_vec_pretty(&cookies)
+        .map_err(|e| Error::Protocol(format!("couldn't save cookies: {e}")))?;
+    out.push(b'\n');
+    Ok(out)
 }
 
 /// Hashes of the session and the cookie jar as last written; `None` for not written yet.
@@ -572,6 +599,7 @@ impl Client {
             endpoints,
             pending: None,
             awaiting_code: false,
+            code_sent: false,
             keyring_error,
             unsaved: None,
             persisted: std::sync::Mutex::new(Persisted::default()),
@@ -658,15 +686,13 @@ impl Client {
     fn persist(&self) -> Result<()> {
         let session = serde_json::to_vec(&self.session)
             .map_err(|e| Error::Protocol(format!("couldn't save the session: {e}")))?;
-        let mut cookies = Vec::new();
-        {
+        let cookies = {
             let jar = self
                 .jar
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cookie_store::serde::json::save(&jar, &mut cookies)
-                .map_err(|e| Error::Protocol(format!("couldn't save cookies: {e}")))?;
-        }
+            jar_bytes(&jar)?
+        };
         let (session, cookies) = (hash_of(&session), (hash_of(&cookies), cookies));
         let mut last = self
             .persisted
@@ -854,7 +880,10 @@ impl Client {
             (self.session.apple_id.clone(), self.session.password.clone())
         {
             let before = self.session.clone();
-            match self.sign_in(&apple_id, &password).await {
+            // Quietly: a code is asked for only once the person is at the code screen. Asked
+            // for here, every lapse — the heartbeat's, a sync's, a launch at login — put an
+            // "Allow sign-in?" and a code on their phone while they were nowhere near Skykeep.
+            match self.sign_in_as(&apple_id, &password, Code::Wait).await {
                 Ok(SignInOutcome::Complete) => return Ok(true),
                 // Lost the network part way, or Apple busy, down or asking to wait: not a
                 // refusal. What was kept is put back as it was and the next try is left to
@@ -932,6 +961,16 @@ impl Client {
     /// The password is never sent to Apple — SRP proves knowledge of it without transmitting
     /// it. Apple retired the old cleartext endpoint; it now answers 503.
     pub async fn sign_in(&mut self, apple_id: &str, password: &str) -> Result<SignInOutcome> {
+        self.sign_in_as(apple_id, password, Code::Send).await
+    }
+
+    /// [`Self::sign_in`], saying whether a code Apple wants is asked for now.
+    async fn sign_in_as(
+        &mut self,
+        apple_id: &str,
+        password: &str,
+        code: Code,
+    ) -> Result<SignInOutcome> {
         // What this account already owes, from beside the cookies rather than from the
         // keyring — so a machine with no keyring still remembers, which is where forgetting
         // would matter most. Per account, so signing in as somebody else inherits nothing.
@@ -942,7 +981,7 @@ impl Client {
         // Kept only once Apple has accepted it all the way: see `absorb`.
         self.pending = Some((apple_id.trim().to_string(), password.to_string()));
         self.awaiting_code = false;
-        let outcome = self.sign_in_inner(apple_id, password).await;
+        let outcome = self.sign_in_inner(apple_id, password, code).await;
         if outcome.is_err() {
             self.pending = None;
         }
@@ -988,7 +1027,12 @@ impl Client {
         outcome
     }
 
-    async fn sign_in_inner(&mut self, apple_id: &str, password: &str) -> Result<SignInOutcome> {
+    async fn sign_in_inner(
+        &mut self,
+        apple_id: &str,
+        password: &str,
+        code: Code,
+    ) -> Result<SignInOutcome> {
         // Refuse before touching Apple. Hammering sign-in is what gets an account
         // temporarily locked, and an impatient user clicking twice should not risk that.
         if let Some(until) = self.session.retry_after {
@@ -1005,6 +1049,7 @@ impl Client {
         self.clear_challenge_state();
         // A new web session: its encrypted services' keys are its own to ask for.
         self.data_access_forget();
+        self.code_sent = false;
 
         let client = srp::Client::new(apple_id);
 
@@ -1106,14 +1151,19 @@ impl Client {
         match status {
             StatusCode::CONFLICT => {
                 self.keep();
-                // Ask for the code. Apple used to push it to trusted devices on this 409 by
-                // itself; since iOS 26.4 it waits to be asked (PUT verify/trusteddevice/
-                // securitycode), and until asked no "Allow sign-in?" ever reaches a phone —
-                // which is why the only way a code ever arrived here was Airplane Mode and
-                // Settings, or pressing "Send again". Not fatal if it fails: the code screen
-                // still offers sending it again, and a text.
-                if let Err(e) = self.resend_to_devices().await {
-                    quiet!("asking Apple to send the code: {e}");
+                // Ask for the code — when the person has just typed their password. Apple used
+                // to push it to trusted devices on this 409 by itself; since iOS 26.4 it waits
+                // to be asked (PUT verify/trusteddevice/securitycode), and until asked no
+                // "Allow sign-in?" ever reaches a phone — which is why the only way a code ever
+                // arrived here was Airplane Mode and Settings, or pressing "Send again". Not
+                // fatal if it fails: the code screen still offers sending it again, and a text.
+                //
+                // A sign-in nobody is watching (a lapse mended in the background) asks for
+                // nothing: the code screen asks once the person opens it ([`Self::request_code`]).
+                if code == Code::Send {
+                    if let Err(e) = self.resend_to_devices().await {
+                        quiet!("asking Apple to send the code: {e}");
+                    }
                 }
                 Ok(SignInOutcome::NeedsTwoFactor)
             }
@@ -1180,6 +1230,16 @@ impl Client {
         )
     }
 
+    /// The code screen is open: ask Apple to send the code, unless it was already asked for
+    /// this sign-in (the person typed their password a moment ago, or had it texted). A lapse
+    /// mended in the background left it unasked on purpose — see [`Self::resume`].
+    pub async fn request_code(&mut self) -> Result<()> {
+        if self.code_sent {
+            return Ok(());
+        }
+        self.resend_to_devices().await
+    }
+
     /// Ask Apple to push the code to trusted devices again.
     pub async fn resend_to_devices(&mut self) -> Result<()> {
         let mut headers = self.auth_headers();
@@ -1199,6 +1259,7 @@ impl Client {
             let body = r.text().await.unwrap_or_default();
             return Err(apple_error("sending the code again", status, &body));
         }
+        self.code_sent = true;
         Ok(())
     }
 
@@ -1222,6 +1283,7 @@ impl Client {
             let body = r.text().await.unwrap_or_default();
             return Err(apple_error("texting the code", status, &body));
         }
+        self.code_sent = true;
         Ok(())
     }
 

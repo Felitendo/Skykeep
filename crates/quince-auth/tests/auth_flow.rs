@@ -1325,3 +1325,230 @@ async fn new_terms_on_a_kept_session_keep_it() {
         "no sign-in into the same terms"
     );
 }
+
+/// The PUTs that ask Apple to send a code to the person's devices.
+fn code_pushes(reqs: &[Request]) -> usize {
+    requests_to(reqs, "/verify/trusteddevice/securitycode")
+        .into_iter()
+        .filter(|r| r.method.as_str() == "PUT")
+        .count()
+}
+
+/// "My iPhone shows a code prompt out of nowhere." A lapse mended in the background — the
+/// heartbeat, a sync, a launch at login — that Apple answers with "a code first" asks Apple to
+/// send nothing: the person is nowhere near the code screen. The code is sent once they open
+/// it, and only once.
+#[tokio::test]
+async fn signing_back_in_by_itself_never_pushes_a_code_to_the_phone() {
+    let dir = tempfile::tempdir().unwrap();
+    signed_in(dir.path()).await;
+
+    let server = MockServer::start().await;
+    lapsed(&server).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+
+    let mut client = client_for(&server, dir.path());
+    assert!(!client.resume().await.unwrap());
+    assert!(client.awaiting_code(), "the code screen is what comes next");
+    assert_eq!(
+        code_pushes(&server.received_requests().await.unwrap()),
+        0,
+        "and nothing was sent to the phone meanwhile"
+    );
+    // A heartbeat later, still nothing.
+    let _ = client.heartbeat().await;
+    assert_eq!(code_pushes(&server.received_requests().await.unwrap()), 0);
+
+    // The person opens the code screen: now it is sent — once, however often it opens.
+    client.request_code().await.unwrap();
+    client.request_code().await.unwrap();
+    assert_eq!(code_pushes(&server.received_requests().await.unwrap()), 1);
+}
+
+/// Typing the password is asking for the code: sent straight away, as before — and the code
+/// screen opening after it does not send a second.
+#[tokio::test]
+async fn a_sign_in_by_hand_sends_the_code_once() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    assert_eq!(
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap(),
+        SignInOutcome::NeedsTwoFactor
+    );
+    client.request_code().await.unwrap();
+    assert_eq!(code_pushes(&server.received_requests().await.unwrap()), 1);
+    // Sending it again by hand always goes.
+    client.resend_to_devices().await.unwrap();
+    assert_eq!(code_pushes(&server.received_requests().await.unwrap()), 2);
+}
+
+/// Apple's sign-in leans on cookies it sets without an expiry (idmsa's own, some of
+/// icloud.com's). `cookie_store`'s save dropped every one of them, so each start's sign-in came
+/// back a stranger's and Apple asked for a code again — about daily. They are kept now, sealed
+/// with the rest, and sent again after a restart; ones that ran out are not.
+#[tokio::test]
+async fn the_cookies_apple_sets_without_an_expiry_survive_a_restart() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/signin/init"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("set-cookie", "aasp=idmsa-session; Path=/")
+                .append_header("set-cookie", "dslang=GB-EN; Path=/")
+                .set_body_json(json!({
+                    "salt": b64(&[0x77; 16]), "b": b64(&[0x5e; 256]), "c": "challenge-c",
+                    "iteration": 20173, "protocol": "s2k",
+                })),
+        )
+        .mount(&server)
+        .await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/appleauth/auth/2sv/trust"))
+        .respond_with(
+            ResponseTemplate::new(204)
+                .insert_header("X-Apple-TwoSV-Trust-Token", "trust-token-xyz")
+                .insert_header("X-Apple-Session-Token", "session-token-def"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/accountLogin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("set-cookie", "X-APPLE-WEBAUTH-HSA-LOGIN=login; Path=/")
+                .append_header("set-cookie", "X-APPLE-WEBAUTH-USER=user; Path=/; Max-Age=2592000")
+                .append_header("set-cookie", "gone=old; Path=/; Max-Age=0")
+                .set_body_json(json!({
+                    "dsInfo": { "dsid": "1234567890" },
+                    "webservices": { "calendar": { "url": "https://p00-calendarws.test.invalid:443" } }
+                })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let client_id = {
+        let mut client = client_for(&server, dir.path());
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap();
+        client.submit_two_factor("123456").await.unwrap();
+        client.session().client_id.clone()
+    };
+    assert!(client_id.is_some());
+
+    // The next start.
+    server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let mut again = client_for(&server, dir.path());
+    assert_eq!(
+        again.session().client_id,
+        client_id,
+        "the same client id: Apple ties the trust to it"
+    );
+    assert!(again.resume().await.unwrap());
+    let reqs = server.received_requests().await.unwrap();
+    let validate = requests_to(&reqs, "/setup/ws/1/validate");
+    let sent: Vec<String> = validate[0]
+        .headers
+        .get_all("cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|c| c.split('=').next())
+        .map(|n| n.trim().to_string())
+        .collect();
+    for name in [
+        "aasp",
+        "dslang",
+        "X-APPLE-WEBAUTH-HSA-LOGIN",
+        "X-APPLE-WEBAUTH-USER",
+    ] {
+        assert!(
+            sent.iter().any(|n| n == name),
+            "{name} came back after a restart: {sent:?}"
+        );
+    }
+    assert!(
+        !sent.iter().any(|n| n == "gone"),
+        "one that ran out did not"
+    );
+}
+
+/// The whole promise, end to end: a computer Apple already trusts, signing in again with its
+/// trust token, gets no code — nothing pushed, no code screen.
+#[tokio::test]
+async fn a_trusted_computer_signing_in_again_is_asked_for_no_code() {
+    let dir = tempfile::tempdir().unwrap();
+    signed_in(dir.path()).await;
+
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    // Apple honours the trust token only when it is sent: 409 without it, 200 with it.
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/signin/complete"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({ "trustTokens": ["trust-token-xyz"] }),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Apple-Session-Token", "session-token-new")
+                .set_body_json(json!({})),
+        )
+        .mount(&server)
+        .await;
+    mount_complete(&server, 409).await;
+    mount_trust_and_login(&server).await;
+
+    let mut client = client_for(&server, dir.path());
+    assert_eq!(
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap(),
+        SignInOutcome::Complete
+    );
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(code_pushes(&reqs), 0, "nothing sent to the phone");
+    assert!(
+        requests_to(&reqs, "/2sv/trust").is_empty(),
+        "no code to trust"
+    );
+    assert_eq!(
+        client.session().trust_token.as_deref(),
+        Some("trust-token-xyz"),
+        "and the trust is kept as it was"
+    );
+}
