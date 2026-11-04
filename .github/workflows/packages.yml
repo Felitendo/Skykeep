@@ -1,0 +1,238 @@
+# The Chocolatey, Scoop and Fedora COPR packages in packaging/, each proven before it is
+# published (by hand, from packaging/<channel>/README.md). Run by hand: Actions → Packages →
+# Run workflow, with the release to package.
+#   windows — packs the Chocolatey package and installs, checks and uninstalls it; installs the
+#             Scoop manifest, starts Skykeep from it, checks Scoop's checkver and autoupdate
+#             find the release, and uninstalls it. Keeps the .nupkg and the manifest.
+#   copr    — on each Fedora, makes the source RPM with .copr/Makefile exactly as COPR does,
+#             rebuilds it with rpmbuild, and installs and runs the package in a clean container
+#             of that Fedora (packaging/linux-compat/check.sh).
+name: Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release to package, without the v (its files must be on GitHub Releases)"
+        type: string
+        default: "0.1.2"
+  # A workflow GitHub has not yet seen on main cannot be run by hand, so the branch that brings
+  # it runs it on each push.
+  push:
+    branches: [packages]
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ inputs.version || '0.1.2' }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Point the packages at the release
+        shell: pwsh
+        run: |
+          $base = "https://github.com/YashwanthKamireddi/Skykeep/releases/download/v$env:VERSION"
+          # Saved and read back: the release serves it as octet-stream, which Invoke-WebRequest
+          # hands over as bytes, not text.
+          Invoke-WebRequest "$base/SHA256SUMS-windows.txt" -OutFile "$env:RUNNER_TEMP\sums.txt"
+          $sums = Get-Content "$env:RUNNER_TEMP\sums.txt" -Raw
+          $line = $sums -split "`n" | Where-Object { $_ -match "\sSkykeep_$([regex]::Escape($env:VERSION))_x64-setup\.exe\s*$" }
+          if (-not $line) { throw "no installer for $env:VERSION in SHA256SUMS-windows.txt" }
+          $hash = ($line -split '\s+')[0].ToLower()
+          [xml]$nuspec = Get-Content packaging/chocolatey/skykeep.nuspec
+          $old = $nuspec.package.metadata.version
+          $oldHash = (Select-String -Path packaging/chocolatey/tools/chocolateyinstall.ps1 -Pattern "checksum64\s*=\s*'([0-9a-f]{64})'").Matches[0].Groups[1].Value
+          foreach ($f in "packaging/chocolatey/skykeep.nuspec", "packaging/chocolatey/tools/chocolateyinstall.ps1", "packaging/scoop/skykeep.json") {
+            (Get-Content $f -Raw).Replace($old, $env:VERSION).Replace($oldHash, $hash) | Set-Content $f -NoNewline
+          }
+          "$old -> $env:VERSION, installer sha256 $hash"
+          git diff --stat
+
+      - name: Chocolatey — pack, install, check, uninstall
+        shell: pwsh
+        run: |
+          choco pack packaging/chocolatey/skykeep.nuspec --outputdirectory out
+          if ($LASTEXITCODE) { throw "choco pack failed" }
+          choco install skykeep --source "$PWD\out" -y --no-progress
+          if ($LASTEXITCODE) { throw "choco install failed ($LASTEXITCODE)" }
+          $exe = (Get-ChildItem $env:LOCALAPPDATA -Recurse -Depth 3 -Filter skykeep.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if (-not $exe) { throw "choco install ran, but there is no skykeep.exe" }
+          $key = Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* |
+            Where-Object DisplayName -eq 'Skykeep'
+          if ($key.DisplayVersion -ne $env:VERSION) { throw "installed version is '$($key.DisplayVersion)'" }
+          $list = choco list skykeep --exact --limit-output
+          if ($list -ne "skykeep|$env:VERSION") { throw "choco list says '$list'" }
+          "installed: $exe, Skykeep $($key.DisplayVersion), $list"
+          choco uninstall skykeep -y --no-progress
+          if ($LASTEXITCODE) { throw "choco uninstall failed ($LASTEXITCODE)" }
+          if (Test-Path $exe) { throw "uninstalled, but $exe is still there" }
+          if (choco list skykeep --exact --limit-output) { throw "choco still lists skykeep" }
+          "uninstalled: skykeep.exe gone and choco lists nothing"
+
+      - name: Scoop — install, start, checkver and autoupdate, uninstall
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          Invoke-Expression "& {$(Invoke-RestMethod https://get.scoop.sh)} -RunAsAdmin"
+          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
+          scoop install "$PWD\packaging\scoop\skykeep.json"
+          if ($LASTEXITCODE) { throw "scoop install failed" }
+          $dir = "$env:USERPROFILE\scoop\apps\skykeep\current"
+          Get-ChildItem $dir | Format-Table Name, Length
+          foreach ($f in "skykeep.exe", "scoop-install.json", "scoop-manifest.json") {
+            if (-not (Test-Path "$dir\$f")) { throw "no $f in $dir" }
+          }
+          if (Get-ChildItem $dir -Filter 'uninstall*') { throw "the NSIS uninstaller was left in $dir" }
+          if (Get-ChildItem $dir -Filter '$*') { throw "NSIS's own folders were left in $dir" }
+          $menu = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Scoop Apps"
+          $links = @(Get-ChildItem $menu -Filter 'Skykeep*.lnk').Name | Sort-Object
+          "shortcuts: $($links -join ', ')"
+          if ($links.Count -ne 7) { throw "expected 7 Skykeep shortcuts, found $($links.Count)" }
+          $notes = (New-Object -ComObject WScript.Shell).CreateShortcut("$menu\Skykeep Notes.lnk")
+          if ($notes.Arguments -ne '--app notes') { throw "Skykeep Notes runs '$($notes.Arguments)'" }
+
+          # Started from Scoop's folder, it runs (and stays running).
+          $p = Start-Process "$dir\skykeep.exe" -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) { throw "Skykeep exited at once (code $($p.ExitCode))" }
+          "Skykeep running from Scoop (pid $($p.Id))"
+          Get-Process skykeep -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+
+          # checkver finds the release on GitHub, and autoupdate rebuilds the manifest from it —
+          # the URL and the hash read from SHA256SUMS-windows.txt — exactly as committed.
+          $bin = "$env:USERPROFILE\scoop\apps\scoop\current\bin"
+          New-Item -ItemType Directory check | Out-Null
+          Copy-Item packaging/scoop/skykeep.json check/
+          & "$bin\checkver.ps1" -App skykeep -Dir "$PWD\check" -ForceUpdate -Version $env:VERSION
+          $want = Get-Content packaging/scoop/skykeep.json -Raw | ConvertFrom-Json
+          $got = Get-Content check/skykeep.json -Raw | ConvertFrom-Json
+          foreach ($k in 'url', 'hash') {
+            if ($got.architecture.'64bit'.$k -ne $want.architecture.'64bit'.$k) {
+              throw "autoupdate's $k is '$($got.architecture.'64bit'.$k)', not '$($want.architecture.'64bit'.$k)'"
+            }
+          }
+          & "$bin\checkver.ps1" -App skykeep -Dir "$PWD\packaging\scoop"
+          "autoupdate reproduces the manifest for $env:VERSION"
+
+          scoop uninstall skykeep
+          if ($LASTEXITCODE) { throw "scoop uninstall failed" }
+          if (Test-Path "$env:USERPROFILE\scoop\apps\skykeep") { throw "uninstalled, but Scoop's folder is still there" }
+          if (Get-ChildItem $menu -Filter 'Skykeep*.lnk' -ErrorAction SilentlyContinue) { throw "uninstalled, but shortcuts are left" }
+          "uninstalled: folder and shortcuts gone"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-packages-${{ env.VERSION }}
+          path: |
+            out/*.nupkg
+            packaging/chocolatey/
+            packaging/scoop/skykeep.json
+          if-no-files-found: error
+
+  # A HEIC made for check.sh, as linux-compat.yml makes it: Fedora's heif-enc has no HEVC
+  # encoder.
+  heic:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libheif-examples libheif-plugin-x265
+          W=64 H=48
+          { printf 'YUV4MPEG2 W%s H%s F25:1 Ip A1:1 C420jpeg\nFRAME\n' "$W" "$H"
+            LC_ALL=C awk -v w=$W -v h=$H 'BEGIN {
+              for (y = 0; y < h; y++) for (x = 0; x < w; x++) printf "%c", 16 + int(200 * x / w)
+              for (i = 0; i < w * h / 2; i++) printf "%c", 90 + int(80 * (i % (w / 2)) / (w / 2)) }'
+          } > "$RUNNER_TEMP/test.y4m"
+          heif-enc -q 80 -o test.heic "$RUNNER_TEMP/test.y4m"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-heic
+          path: test.heic
+          if-no-files-found: error
+
+  copr-build:
+    name: COPR build (Fedora ${{ matrix.fedora }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["43", "latest"]
+    container:
+      image: fedora:${{ matrix.fedora }}
+    steps:
+      # git first, so the checkout is a real clone, as COPR's is.
+      - run: dnf -y install git make rpm-build
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: The source RPM, the way COPR's make_srpm makes it
+        run: |
+          make -f .copr/Makefile srpm outdir="$PWD/srpm" spec=
+          ls -l srpm
+          rpm -qp --qf '%{NAME}-%{VERSION}-%{RELEASE}\n' srpm/*.src.rpm
+          rpm -qp --qf '%{VERSION}\n' srpm/*.src.rpm | grep -qx "$VERSION" \
+            || { echo "the source RPM is not version $VERSION"; exit 1; }
+      - name: Build dependencies, from the spec
+        run: dnf -y builddep srpm/*.src.rpm
+      - name: rpmbuild
+        run: |
+          rpm -i srpm/*.src.rpm
+          rpmbuild -bb ~/rpmbuild/SPECS/skykeep.spec
+          find ~/rpmbuild/RPMS -name '*.rpm' -exec rpm -qip {} \; -exec rpm -qlp {} \;
+      - name: The check's probe, with the same crates
+        run: |
+          build=$(dirname "$(find ~/rpmbuild/BUILD -name Cargo.lock -path '*Skykeep-*' | head -1)")
+          echo "build tree: $build"
+          unset RUSTFLAGS
+          CARGO_HOME="$build/.cargo-home" CARGO_TARGET_DIR="$build/target" \
+            cargo build --release --locked -p quince-probe --example distro_check
+          mkdir compat
+          cp ~/rpmbuild/RPMS/x86_64/skykeep-*.rpm "$build/target/release/examples/distro_check" \
+             packaging/linux-compat/check.sh crates/quince-media/tests/fixtures/black-start.mp4 \
+             crates/quince-media/tests/fixtures/hevc.mov compat/
+          ls -l compat
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: copr-fedora-${{ matrix.fedora }}
+          path: |
+            compat/
+            srpm/*.src.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+  copr-install:
+    name: COPR package installed and run (Fedora ${{ matrix.fedora }})
+    needs: [copr-build, heic]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["43", "latest"]
+    container:
+      image: fedora:${{ matrix.fedora }}
+      # gnome-keyring 51 (Fedora 45) drops its process capabilities as it starts and aborts
+      # when a default container won't let it ("error dropping process capabilities"), so the
+      # keyring check had no Secret Service. A desktop session has no such limit.
+      options: --privileged
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: copr-fedora-${{ matrix.fedora }}
+          path: /copr
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: test-heic
+          path: /copr/compat
+      - name: Install and run
+        run: |
+          cd /copr/compat
+          chmod +x check.sh distro_check
+          bash check.sh "$PWD/$(ls skykeep-*.rpm)" "$PWD/distro_check" "$PWD/test.heic" \
+            "$PWD/black-start.mp4" "$PWD/hevc.mov"

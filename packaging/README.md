@@ -7,6 +7,9 @@ Everything that turns a build into something people install.
 | `arch/` | A PKGBUILD that builds the checkout it sits in. |
 | `aur/` | The AUR packages, each in its own folder with its `.SRCINFO`: `skykeep` builds the release's source tarball, `skykeep-bin` installs the release's `.deb`, and `skykeep-git` builds the latest commit. |
 | `flatpak/` | The Flatpak manifest for Flathub, with its own [README](flatpak/README.md). |
+| `chocolatey/` | The Chocolatey package (the release's installer, checked and run silently), with its own [README](chocolatey/README.md). |
+| `scoop/` | The Scoop manifest for a bucket of our own, with its own [README](scoop/README.md). |
+| `copr/` | The Fedora COPR spec, built from source with `../.copr/Makefile`, with its own [README](copr/README.md). |
 | `apps/` | The six per-app launcher entries (Notes, Reminders, Calendar, Contacts, Drive, Photos). |
 | `*.desktop.in`, `*.metainfo.xml` | The main launcher entry and the AppStream data software centres show. |
 | `*.search-provider.ini`, `*.SearchProvider.service`, `*.krunner.desktop` | Results in GNOME Shell and KRunner search. |
