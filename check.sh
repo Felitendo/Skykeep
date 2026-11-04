@@ -22,6 +22,9 @@ step "typescript"       npx tsc --noEmit
 step "calendar layout"  node --test .uiverify/calendar-model.test.mjs
 step "notes layout"     node --test .uiverify/notes-model.test.mjs
 step "notes editor model" node --test .uiverify/notes-rich.test.mjs
+# Every model test, the way CI's "Model tests" runs them, so a test file this list doesn't name
+# can't pass here and fail there.
+step "model tests (all)" bash -c 'node --test .uiverify/*.test.mjs'
 step "frontend build"   npm run build
 
 # The browser checks need the built bundle served.
