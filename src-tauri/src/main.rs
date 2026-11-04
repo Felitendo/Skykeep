@@ -1467,15 +1467,72 @@ fn switch_library(
     Ok(())
 }
 
+/// Every name in `dir` that is one account's: [`ACCOUNT_FILES`], and each damaged library
+/// `Library::open_or_recover` set aside (`library.corrupt-<when>.db`, its log and index) —
+/// whole copies of the account's records, as much its data as the library itself.
+fn account_names(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = ACCOUNT_FILES.iter().map(|n| (*n).to_string()).collect();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut damaged: Vec<String> = entries
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.starts_with("library.corrupt-"))
+            .collect();
+        damaged.sort();
+        names.extend(damaged);
+    }
+    names
+}
+
+/// "Remove copy": every record and file of the account gone from this computer, not just its
+/// rows. Deleted rows stay in SQLite's free pages and its log until they are written over, so
+/// the library is let go of and its file, log and index deleted — with every damaged copy set
+/// aside beside it and every cache — and a fresh library opened, this computer's own settings
+/// carried over. A file that cannot be deleted (held open elsewhere, on Windows) is said; its
+/// records are emptied all the same.
+fn remove_account(library: &mut Library, dir: &std::path::Path) -> Result<(), String> {
+    let kept = library.computer_state().map_err(|e| e.to_string())?;
+    *library = Library::in_memory().map_err(|e| e.to_string())?;
+    *SEARCH_READER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let mut failed: Option<(String, std::io::Error)> = None;
+    for name in account_names(dir) {
+        let path = dir.join(&name);
+        let gone = match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.is_dir() => std::fs::remove_dir_all(&path),
+            Ok(_) => std::fs::remove_file(&path),
+            Err(e) => Err(e),
+        };
+        match gone {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                failed.get_or_insert((name, e));
+            }
+            _ => {}
+        }
+    }
+    *library = Library::open(dir).map_err(|e| e.to_string())?;
+    if failed.is_some() {
+        library.forget_account().map_err(|e| e.to_string())?;
+    }
+    for (key, value) in kept {
+        library.set_state(&key, &value).map_err(|e| e.to_string())?;
+    }
+    match failed {
+        Some((name, e)) => Err(format!(
+            "Signed out, but {name} could not be removed from this computer: {e}"
+        )),
+        None => Ok(()),
+    }
+}
+
 /// An account's files moved from one folder to another, all or none: whatever had moved goes
 /// back if one cannot, and nothing is moved over something already there.
 fn move_account(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
-    if let Some(taken) = ACCOUNT_FILES.iter().find(|n| to.join(n).exists()) {
+    let names = account_names(from);
+    if let Some(taken) = names.iter().find(|n| to.join(n).exists()) {
         return Err(std::io::Error::other(format!("{taken} is already there")));
     }
     let mut done = Vec::new();
-    for name in ACCOUNT_FILES {
+    for name in &names {
         if !from.join(name).exists() {
             continue;
         }
@@ -1842,19 +1899,15 @@ async fn auth_sign_out(keep: bool, app: tauri::AppHandle, auth: State<'_, Auth>)
     if !keep {
         let data = app.state::<Data>();
         let mut library = data.0.lock().await;
-        library.forget_account().map_err(|e| e.to_string())?;
-        let dir = state_dir(&app);
-        for name in ACCOUNT_FILES
-            .iter()
-            .filter(|n| !n.starts_with("library.db"))
-        {
-            let _ = std::fs::remove_dir_all(dir.join(name));
-        }
+        // The screens' readers let go of the file before it is deleted.
+        data.0.forget_readers();
+        let removed = remove_account(&mut library, &state_dir(&app));
         photos::forget_links();
         drop(library);
         drop(client);
         let app = app.clone();
         let _ = tauri::async_runtime::spawn_blocking(move || mount::forget_thumbnails(&app)).await;
+        removed?;
     }
     Ok(())
 }
@@ -7322,6 +7375,109 @@ mod tests {
         assert!(
             from.join("library.db").exists() && from.join("photos").exists(),
             "nothing moved"
+        );
+    }
+
+    /// Every file under `dir` that holds `marker`, anywhere in its bytes.
+    fn holding(dir: &std::path::Path, marker: &[u8]) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let mut todo = vec![dir.to_path_buf()];
+        while let Some(at) = todo.pop() {
+            for entry in std::fs::read_dir(&at).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    todo.push(path);
+                } else if std::fs::read(&path)
+                    .unwrap()
+                    .windows(marker.len())
+                    .any(|w| w == marker)
+                {
+                    found.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    /// "Remove copy" leaves nothing of the account on disk: not its rows in SQLite's free pages
+    /// or log, not a damaged library set aside beside it, not a cache. Deleting the rows alone
+    /// left the account's words readable in `library.db` and its `-wal`. This computer's own
+    /// settings stay.
+    #[test]
+    fn removing_the_copy_leaves_no_trace_on_disk() {
+        use quince_core::calendar::{Calendar, Event};
+        const MARKER: &str = "zq-marker-7d1c";
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let mut lib = Library::open(dir).unwrap();
+        lib.set_state(ACCOUNT_KEY, "a").unwrap();
+        lib.set_state("contacts.me", MARKER).unwrap();
+        lib.set_state("settings.alerts.events", "0").unwrap();
+        lib.put_calendars(&[Calendar {
+            guid: "work".into(),
+            title: "Work".into(),
+            ..Default::default()
+        }])
+        .unwrap();
+        let events: Vec<Event> = (0..300)
+            .map(|i| Event {
+                guid: format!("E{i}"),
+                calendar_guid: "work".into(),
+                title: format!("{MARKER} {i}"),
+                notes: Some(format!("{MARKER} notes {i}")),
+                starts_at: 1_000_000 + i,
+                ends_at: 1_003_600 + i,
+                ..Default::default()
+            })
+            .collect();
+        lib.put_events(&events).unwrap();
+        // A damaged library set aside earlier, with its log, and a cached file.
+        std::fs::write(dir.join("library.corrupt-1.db"), MARKER).unwrap();
+        std::fs::write(dir.join("library.corrupt-1.db-wal"), MARKER).unwrap();
+        std::fs::create_dir_all(dir.join("drive-cache")).unwrap();
+        std::fs::write(dir.join("drive-cache").join("f"), MARKER).unwrap();
+        assert!(!holding(dir, MARKER.as_bytes()).is_empty());
+
+        remove_account(&mut lib, dir).unwrap();
+        assert_eq!(
+            holding(dir, MARKER.as_bytes()),
+            Vec::<std::path::PathBuf>::new(),
+            "no file holds the account"
+        );
+        drop(lib);
+        assert_eq!(
+            holding(dir, MARKER.as_bytes()),
+            Vec::<std::path::PathBuf>::new()
+        );
+        let lib = Library::open(dir).unwrap();
+        assert!(!lib.holds_account().unwrap(), "a fresh, empty library");
+        assert_eq!(
+            lib.state("settings.alerts.events").unwrap().as_deref(),
+            Some("0"),
+            "this computer's settings kept"
+        );
+    }
+
+    /// A damaged library set aside is the account's: it goes aside with it when another
+    /// account signs in, and comes back with it.
+    #[test]
+    fn a_damaged_copy_moves_with_its_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let mut lib = Library::open(dir).unwrap();
+        lib.set_state(ACCOUNT_KEY, "a").unwrap();
+        std::fs::write(dir.join("library.corrupt-1.db"), b"A's").unwrap();
+        switch_library(&mut lib, dir, "a", &dir.join(SET_ASIDE).join("b")).unwrap();
+        assert!(!dir.join("library.corrupt-1.db").exists());
+        assert!(dir
+            .join(SET_ASIDE)
+            .join("a")
+            .join("library.corrupt-1.db")
+            .exists());
+        switch_library(&mut lib, dir, "b", &dir.join(SET_ASIDE).join("a")).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("library.corrupt-1.db")).unwrap(),
+            b"A's"
         );
     }
 
