@@ -143,7 +143,9 @@ modules:
       #     url: https://github.com/YashwanthKamireddi/Skykeep.git
       #     tag: v0.1.0
       #     commit: <full sha of that tag>
-      - type: git
+      # The checked-out tree itself (local and CI test builds). Flathub's copy of this manifest
+      # uses the repository URL with a release tag and its commit instead.
+      - type: dir
         path: ../..
       # Not part of the git checkout, so they work before packaging/flatpak/ is committed.
       - type: file
