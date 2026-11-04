@@ -99,6 +99,11 @@
   </recommends>
 
   <releases>
+    <release version="0.1.3" date="2026-11-04">
+      <description>
+        <p>When Apple doesn't accept a password, Skykeep now says so plainly, and that an app-specific password can't sign in.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-11-04">
       <description>
         <p>Every Apple ID signs in, an AppImage for Ubuntu 22.04 and newer, a locked Hidden album in Photos, Keep Both or Replace when pasting in iCloud Drive, drag and drop inside windows on Windows, and fixes across every app.</p>
