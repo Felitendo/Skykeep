@@ -1041,13 +1041,8 @@ impl Client {
     ) -> Result<SignInOutcome> {
         // Refuse before touching Apple. Hammering sign-in is what gets an account
         // temporarily locked, and an impatient user clicking twice should not risk that.
-        if let Some(until) = self.session.retry_after {
-            let now = unix_now();
-            if now < until {
-                return Err(Error::CoolingDown {
-                    seconds: until - now,
-                });
-            }
+        if let Some(seconds) = session::wait_left(self.session.retry_after, unix_now()) {
+            return Err(Error::CoolingDown { seconds });
         }
 
         // Start clean. An interrupted previous attempt would otherwise announce a

@@ -1552,3 +1552,71 @@ async fn a_trusted_computer_signing_in_again_is_asked_for_no_code() {
         "and the trust is kept as it was"
     );
 }
+
+/// A cooldown set while the clock ran ahead — a dual-boot computer whose hardware clock keeps
+/// local time, +5:30 — seemed to have hours left once the clock was put right, and sign-in
+/// stayed refused all that time. No wait Skykeep sets is longer than ten minutes, so one that
+/// seems longer is over; a real one still holds, and still spares Apple.
+#[test]
+fn a_cooldown_from_a_clock_that_ran_ahead_is_over() {
+    use quince_auth::session::wait_left;
+    let now = 1_800_000_000;
+    assert_eq!(
+        wait_left(Some(now + 30), now),
+        Some(30),
+        "a real wait holds"
+    );
+    assert_eq!(
+        wait_left(Some(now + 600), now),
+        Some(600),
+        "the longest one Skykeep sets"
+    );
+    assert_eq!(
+        wait_left(Some(now + 5 * 3600 + 30 * 60), now),
+        None,
+        "five and a half hours ahead: over"
+    );
+    assert_eq!(wait_left(Some(now - 1), now), None, "run out");
+    assert_eq!(wait_left(Some(now), now), None);
+    assert_eq!(wait_left(None, now), None);
+}
+
+#[tokio::test]
+async fn sign_in_is_not_held_up_by_a_cooldown_from_a_clock_that_ran_ahead() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::file(dir.path()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    store
+        .save_cooldown(&quince_auth::session::Cooldown {
+            account: Some(quince_auth::session::account_fingerprint(
+                "someone@example.invalid",
+            )),
+            consecutive_failures: 3,
+            retry_after: Some(now + 5 * 3600 + 30 * 60),
+        })
+        .unwrap();
+    let mut client = client_for(&server, dir.path());
+    assert_eq!(
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap(),
+        SignInOutcome::NeedsTwoFactor,
+        "the sign-in goes ahead"
+    );
+    assert_eq!(
+        requests_to(&server.received_requests().await.unwrap(), "/signin/init").len(),
+        1
+    );
+}

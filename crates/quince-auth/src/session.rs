@@ -153,6 +153,18 @@ pub fn backoff_seconds(failures: u32) -> u64 {
     }
 }
 
+/// How long is left of a cooldown that runs until `until`, at `now`; `None` when it is over.
+///
+/// Never longer than the longest wait [`backoff_seconds`] ever sets. One that seems to be is
+/// over: it was set while the clock ran ahead — a computer that dual-boots, its hardware clock
+/// in local time (+5:30 and the like) — and once the clock was put right, sign-in stayed
+/// refused for hours, saying to wait, with nothing anyone could do about it.
+#[must_use]
+pub fn wait_left(until: Option<u64>, now: u64) -> Option<u64> {
+    let left = until?.checked_sub(now).filter(|s| *s > 0)?;
+    (left <= backoff_seconds(u32::MAX)).then_some(left)
+}
+
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
