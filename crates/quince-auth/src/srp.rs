@@ -127,7 +127,7 @@ impl Client {
 
     /// Base64-ready public key `A` for `/signin/init`.
     pub fn a_public_bytes(&self) -> Vec<u8> {
-        be(&self.a_pub)
+        pad(&be(&self.a_pub), be(&n()).len())
     }
 
     /// Finish the exchange against the server's `salt` and `B`, producing M1/M2.
@@ -178,7 +178,12 @@ impl Client {
             reduced.to_biguint().expect("reduced value is non-negative")
         };
         let s_shared = base.modpow(&(&self.a + &u * &x), &n);
-        let key = sha256(&[&be(&s_shared)]);
+        // Apple's web client pads S, A and B to len(N) wherever they are hashed. Unpadded, a
+        // value with a leading zero byte (about one sign-in in 256 for each) gives a proof
+        // Apple rejects as a wrong password.
+        let a_padded = pad(&be(&self.a_pub), width);
+        let b_padded = pad(&be(&b_pub), width);
+        let key = sha256(&[&pad(&be(&s_shared), width)]);
 
         // M1 = H( H(N) XOR H(PAD(g)) || H(I) || salt || A || B || K )
         let h_n = sha256(&[&be(&n)]);
@@ -187,11 +192,13 @@ impl Client {
         for i in 0..32 {
             h_n_xor_g[i] = h_n[i] ^ h_g[i];
         }
-        let h_i = sha256(&[self.username.as_bytes()]);
-        let m1 = sha256(&[&h_n_xor_g, &h_i, salt, &be(&self.a_pub), &be(&b_pub), &key]);
+        // H(I) is over the account name in lower case, as Apple's web client hashes it: an
+        // Apple ID typed with a capital letter is the same account.
+        let h_i = sha256(&[self.username.to_lowercase().as_bytes()]);
+        let m1 = sha256(&[&h_n_xor_g, &h_i, salt, &a_padded, &b_padded, &key]);
 
         // M2 = H(A || M1 || K)
-        let m2 = sha256(&[&be(&self.a_pub), &m1, &key]);
+        let m2 = sha256(&[&a_padded, &m1, &key]);
 
         Some(Proof { m1, m2 })
     }
@@ -298,5 +305,78 @@ mod tests {
         assert!(client
             .process_challenge("pw", Protocol::S2k, b"salt", &b, 1000)
             .is_none());
+    }
+
+    /// The proof with every value padded to len(N), written out step by step: what Apple's
+    /// web client computes.
+    fn reference_proof(c: &Client, password: &str, salt: &[u8], b: &[u8], iters: u32) -> Proof {
+        let n = n();
+        let w = be(&n).len();
+        let g = BigUint::from(G);
+        let b_pub = BigUint::from_bytes_be(b);
+        let k = BigUint::from_bytes_be(&sha256(&[&pad(&be(&n), w), &pad(&be(&g), w)]));
+        let u = BigUint::from_bytes_be(&sha256(&[&pad(&be(&c.a_pub), w), &pad(b, w)]));
+        let derived = derive_key(password, Protocol::S2k, salt, iters);
+        let x = BigUint::from_bytes_be(&sha256(&[salt, &sha256(&[b":", &derived])]));
+        let v = g.modpow(&x, &n);
+        let base = (&b_pub + &n * &k - (&k * &v) % &n) % &n;
+        let s = base.modpow(&(&c.a + &u * &x), &n);
+        let key = sha256(&[&pad(&be(&s), w)]);
+        let h_n = sha256(&[&be(&n)]);
+        let h_g = sha256(&[&pad(&be(&g), w)]);
+        let mut x_or = [0u8; 32];
+        for i in 0..32 {
+            x_or[i] = h_n[i] ^ h_g[i];
+        }
+        let h_i = sha256(&[c.username.to_lowercase().as_bytes()]);
+        let a = pad(&be(&c.a_pub), w);
+        let m1 = sha256(&[&x_or, &h_i, salt, &a, &pad(b, w), &key]);
+        let m2 = sha256(&[&a, &m1, &key]);
+        Proof { m1, m2 }
+    }
+
+    #[test]
+    fn an_apple_id_with_capitals_proves_the_same_as_lower_case() {
+        let a = [7u8; 32];
+        let b = vec![0x5e; 256];
+        let lower = Client::with_private_key("probe@example.invalid", &a)
+            .process_challenge("pw", Protocol::S2k, b"salt-salt-salt!!", &b, 1000)
+            .unwrap();
+        let mixed = Client::with_private_key("Probe@Example.Invalid", &a)
+            .process_challenge("pw", Protocol::S2k, b"salt-salt-salt!!", &b, 1000)
+            .unwrap();
+        assert_eq!(lower.m1, mixed.m1);
+        assert_eq!(lower.m2, mixed.m2);
+    }
+
+    #[test]
+    fn a_public_key_with_a_leading_zero_byte_is_padded_everywhere() {
+        let n_len = be(&n()).len();
+        // About one key in 256 has an A with a leading zero byte; find one.
+        let c = (1u32..20_000)
+            .map(|i| Client::with_private_key("probe@example.invalid", &i.to_be_bytes()))
+            .find(|c| be(&c.a_pub).len() < n_len)
+            .expect("a short A within 20k keys");
+        assert_eq!(c.a_public_bytes().len(), n_len, "A is sent padded");
+        let b = vec![0x5e; 256];
+        let got = c
+            .process_challenge("pw", Protocol::S2k, b"salt-salt-salt!!", &b, 1000)
+            .unwrap();
+        let want = reference_proof(&c, "pw", b"salt-salt-salt!!", &b, 1000);
+        assert_eq!(got.m1, want.m1);
+        assert_eq!(got.m2, want.m2);
+    }
+
+    #[test]
+    fn a_server_value_with_a_leading_zero_byte_is_padded() {
+        let c = Client::with_private_key("probe@example.invalid", &[9u8; 32]);
+        let mut b = vec![0x00];
+        b.extend(std::iter::repeat(0x6d).take(255));
+        let got = c
+            .process_challenge("pw", Protocol::S2k, b"salt-salt-salt!!", &b, 1000)
+            .unwrap();
+        let want = reference_proof(&c, "pw", b"salt-salt-salt!!", &b, 1000);
+        assert_eq!(got.m1, want.m1);
+        assert_eq!(got.m2, want.m2);
     }
 }
