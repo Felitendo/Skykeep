@@ -1283,12 +1283,13 @@ async fn resume_session(client: &mut Client) -> UiResult<&'static str> {
         Ok(resumed) => resumed,
         // Offline with a session kept: the library opens on what it holds, as a local-first
         // app should, and the next refresh — on the timer, or when the network is back —
-        // signs back in.
-        Err(quince_auth::Error::Network(_) | quince_auth::Error::Unavailable(_))
-            if client.has_stored_session() =>
-        {
-            true
-        }
+        // signs back in. Apple busy, or asking to wait, is the same: not now, not signed out.
+        Err(
+            quince_auth::Error::Network(_)
+            | quince_auth::Error::Unavailable(_)
+            | quince_auth::Error::RateLimited
+            | quince_auth::Error::CoolingDown { .. },
+        ) if client.has_stored_session() => true,
         Err(e) => return Err(e.to_string()),
     };
     // Back in; or back in but for the code Apple wants before trusting this computer again;

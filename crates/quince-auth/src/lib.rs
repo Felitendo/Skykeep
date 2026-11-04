@@ -107,7 +107,7 @@ pub enum Error {
     Protocol(String),
     /// Apple's servers answered but could not serve now — an outage, maintenance, too many
     /// requests (5xx, 429). Like being offline: try again later, never "signed out".
-    #[error("Apple's servers are busy right now ({0}). Skykeep will try again shortly.")]
+    #[error("Apple’s servers are busy right now. Try again in a few minutes.")]
     Unavailable(u16),
     #[error("Too many attempts. Try again in {seconds} seconds.")]
     CoolingDown { seconds: u64 },
@@ -152,6 +152,10 @@ fn apple_error(context: &str, status: StatusCode, body: &str) -> Error {
     // 450 is Apple's "re-authenticate for this service": a resumed session is not enough.
     if status.as_u16() == 450 {
         return Error::ReauthRequired;
+    }
+    // An outage or maintenance: its body is a web page, never words for the person signing in.
+    if status.is_server_error() {
+        return Error::Unavailable(status.as_u16());
     }
     let parsed: Option<Value> = serde_json::from_str(body).ok();
     if let Some(v) = &parsed {
@@ -701,11 +705,19 @@ impl Client {
             let before = self.session.clone();
             match self.sign_in(&apple_id, &password).await {
                 Ok(SignInOutcome::Complete) => return Ok(true),
-                // Lost the network part way: what was kept is put back as it was.
-                Err(Error::Network(e)) => {
+                // Lost the network part way, or Apple busy, down or asking to wait: not a
+                // refusal. What was kept is put back as it was and the next try is left to
+                // later — read as signed out, an outage told the person "Apple signed you
+                // out" and dropped the session token.
+                Err(
+                    e @ (Error::Network(_)
+                    | Error::Unavailable(_)
+                    | Error::RateLimited
+                    | Error::CoolingDown { .. }),
+                ) => {
                     self.session = before;
                     let _ = self.persist();
-                    return Err(Error::Network(e));
+                    return Err(e);
                 }
                 Ok(SignInOutcome::NeedsTwoFactor) => {
                     self.awaiting_code = true;
@@ -1698,6 +1710,16 @@ mod tests {
             apple_error("x", StatusCode::TOO_MANY_REQUESTS, ""),
             Error::RateLimited
         ));
+
+        // An outage at sign-in is said as one, not as Apple's error page.
+        let page = "<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>";
+        let said = apple_error("starting sign-in", StatusCode::BAD_GATEWAY, page);
+        assert!(matches!(said, Error::Unavailable(502)), "got {said:?}");
+        assert!(!said.to_string().contains('<'), "no markup: {said}");
+        assert!(
+            !said.to_string().contains("Skykeep will"),
+            "nothing it won't do"
+        );
 
         // Find My answers 450 on a resumed session; that is "sign in again", not a failure.
         assert!(matches!(

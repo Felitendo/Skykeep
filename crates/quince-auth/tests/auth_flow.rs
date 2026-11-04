@@ -742,6 +742,62 @@ async fn a_lapsed_session_signs_itself_back_in_without_a_code() {
     );
 }
 
+/// Apple busy or down just as a lapsed session signs itself back in: that is "not now", not
+/// "signed out". Read as signed out, every sync during an outage told the person Apple had
+/// signed them out, and the session token was dropped.
+#[tokio::test]
+async fn an_outage_while_signing_back_in_is_not_a_sign_out() {
+    for (init, complete) in [(503, 200), (200, 502)] {
+        let dir = tempfile::tempdir().unwrap();
+        signed_in(dir.path()).await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/setup/ws/1/validate"))
+            .respond_with(ResponseTemplate::new(421))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/setup/ws/1/accountLogin"))
+            .respond_with(ResponseTemplate::new(421))
+            .mount(&server)
+            .await;
+        mount_init(&server, init).await;
+        Mock::given(method("POST"))
+            .and(path("/appleauth/auth/signin/complete"))
+            .respond_with(
+                ResponseTemplate::new(complete).set_body_string("<html>Bad Gateway</html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let mut client = client_for(&server, dir.path());
+        let err = client
+            .resume()
+            .await
+            .expect_err("an outage is said, not read as signed out");
+        assert!(
+            matches!(
+                err,
+                quince_auth::Error::Unavailable(_) | quince_auth::Error::RateLimited
+            ),
+            "{init}/{complete}: {err:?}"
+        );
+        assert!(!err.to_string().contains('<'), "no error page: {err}");
+        assert!(
+            client.session().session_token.is_some(),
+            "the session is kept"
+        );
+
+        let back = client_for(&server, dir.path());
+        assert!(
+            back.has_stored_session(),
+            "and still kept on the next launch"
+        );
+        assert!(back.session().session_token.is_some());
+    }
+}
+
 /// When the trust itself has run out, Apple wants a code: the code screen is next, not the
 /// sign-in screen, and the code finishes it.
 #[tokio::test]
