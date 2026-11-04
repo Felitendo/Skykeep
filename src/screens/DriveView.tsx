@@ -1037,7 +1037,13 @@ export function DriveView() {
       for (const [i, item] of copying.entries()) {
         try {
           const old = replacing.get(item.drivewsid);
-          if (old) await api.driveDelete(old.drivewsid);
+          if (old) {
+            await api.driveDelete(old.drivewsid).catch((e) => {
+              // Still there: shown again, and this one not copied over it.
+              setGone((g) => { const next = new Set(g); next.delete(goneKey(into, old.drivewsid)); return next; });
+              throw e;
+            });
+          }
           // Kept both: the backend names the copy as Finder names a copy ("Report copy.pdf"),
           // and it is then named as Keep Both names it ("Report 2.pdf").
           const listed = async () => { const l = await api.driveChildren(into); return Array.isArray(l) ? l : []; };
@@ -1266,13 +1272,20 @@ export function DriveView() {
       await copyHere(c.items, how);
       return;
     }
-    // Moved, it is no longer where it was copied: nothing is left to paste.
-    setClip(null);
     const clashes = clashesHere(c.items);
     if (how === "replace" && clashes.size) {
       const old = [...clashes.values()];
       setGone((g) => new Set([...g, ...old.map((o) => goneKey(into, o.drivewsid))]));
-      for (const o of old) await api.driveDelete(o.drivewsid).catch(() => {});
+      for (const o of old) {
+        try {
+          await api.driveDelete(o.drivewsid);
+        } catch (e) {
+          // Still there: shown again, and nothing moved over it.
+          setGone((g) => { const next = new Set(g); for (const x of old) next.delete(goneKey(into, x.drivewsid)); return next; });
+          setError(messageOf(e));
+          return;
+        }
+      }
     }
     let going = c.items;
     if (how === "keep" && clashes.size) {
@@ -1293,6 +1306,8 @@ export function DriveView() {
       }
       going = c.items.map((i) => renamed.get(i.drivewsid) ?? i);
     }
+    // Moved, it is no longer where it was copied: nothing is left to paste.
+    setClip(null);
     await moveAll(going, into, c.from);
   };
 
