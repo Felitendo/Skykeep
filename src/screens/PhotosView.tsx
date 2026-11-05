@@ -33,6 +33,7 @@ import { dismissToast, toast, toastSaved, useErrorToast, useToastClearance } fro
 import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
+import { useModalFocus } from "../lib/focus";
 import { Slideshow } from "./photos/Slideshow";
 import { useConfirm } from "../components/Confirm";
 import { VideoPlayer } from "./photos/VideoPlayer";
@@ -1054,6 +1055,13 @@ export function PhotosView() {
   useEffect(() => {
     if (hiddenLocked) setOpen(null);
   }, [hiddenLocked]);
+  // Locked here, locked in the app too: nothing of Hidden is handed out until it is unlocked
+  // again with the password.
+  useEffect(() => {
+    if (!hiddenOpen) void api.photosLockHidden().catch(() => {});
+  }, [hiddenOpen]);
+  /** The password sheet that unlocks Hidden is open. */
+  const [unlocking, setUnlocking] = useState(false);
   const seen = useRef(revision);
   if (active) seen.current = revision;
   const due = seen.current;
@@ -3544,10 +3552,19 @@ export function PhotosView() {
           <EmptyState
             className="px-empty px-locked"
             icon={<Lock size={28} strokeWidth={1.6} />}
-            action={{ label: "View Hidden Photos", run: () => setHiddenOpen(true) }}
+            action={{ label: "View Hidden Photos", run: () => setUnlocking(true) }}
           >
-            The Hidden album is locked.
+            Enter your Apple Account password to view this album.
           </EmptyState>
+        )}
+        {unlocking && hiddenLocked && (
+          <UnlockSheet
+            onCancel={() => setUnlocking(false)}
+            onUnlocked={() => {
+              setUnlocking(false);
+              setHiddenOpen(true);
+            }}
+          />
         )}
         {!hiddenLocked && photos && photos.length === 0 && !drawn.query && (
           <Arriving service="photos" what="photos" className="px-empty" />
@@ -4212,5 +4229,87 @@ export function PhotosView() {
       )}
       <UploadPanel uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />
     </div>
+  );
+}
+
+/**
+ * The Apple Account password asked for before Hidden shows, as icloud.com asks for it. Checked
+ * by the app (against the password it keeps, else with Apple); a wrong one says so here and
+ * the field is cleared for another try.
+ */
+function UnlockSheet({ onCancel, onUnlocked }: { onCancel: () => void; onUnlocked: () => void }) {
+  const sheetRef = useRef<HTMLFormElement | null>(null);
+  useModalFocus(sheetRef);
+  const field = useRef<HTMLInputElement | null>(null);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  useEffect(() => field.current?.focus(), []);
+  const go = async () => {
+    if (!password || busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.photosUnlockHidden(password);
+      onUnlocked();
+    } catch (e) {
+      setProblem(messageOf(e));
+      setPassword("");
+      setBusy(false);
+      field.current?.focus();
+    }
+  };
+  return (
+    <Portal>
+      <div className="modal-veil" onClick={onCancel}>
+        <form
+          ref={sheetRef}
+          className="modal-sheet confirm px-unlock"
+          role="dialog"
+          aria-modal="true"
+          aria-label="View Hidden Photos"
+          onClick={(e) => e.stopPropagation()}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void go();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              onCancel();
+            }
+          }}
+        >
+          <h2>View Hidden Photos</h2>
+          <p>Enter the password for your Apple Account.</p>
+          <input
+            ref={field}
+            className="field"
+            type="password"
+            autoComplete="current-password"
+            placeholder="Password"
+            aria-label="Password"
+            aria-invalid={problem ? true : undefined}
+            aria-describedby={problem ? "px-unlock-problem" : undefined}
+            value={password}
+            disabled={busy}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          {problem && (
+            <p id="px-unlock-problem" className="px-unlock-problem" role="alert">
+              {problem}
+            </p>
+          )}
+          <div className="confirm-actions">
+            <button type="button" className="quiet" onClick={onCancel}>
+              Cancel
+            </button>
+            <button type="submit" className="primary confirm-answer" disabled={!password || busy}>
+              {busy ? "Checking…" : "View Album"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </Portal>
   );
 }

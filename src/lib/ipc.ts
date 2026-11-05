@@ -294,6 +294,9 @@ export const api = {
     invoke<void>("photos_prepare", { shown }),
   /** Shared albums, made or joined, newest first — from Apple each time. */
   photosSharedAlbums: () => invoke<SharedAlbum[]>("photos_shared_albums"),
+  /** The Hidden album unlocked with the Apple ID password; refused with why (wrong, or a wait). */
+  photosUnlockHidden: (password: string) => invoke<void>("photos_unlock_hidden", { password }),
+  photosLockHidden: () => invoke<void>("photos_lock_hidden"),
   /** Every photo of one burst, in the order they were shot. */
   photosBurst: (burst: string) => invoke<Photo[]>("photos_burst", { burst }),
   /** Favorite, Delete (to Recently Deleted) or Recover; answers the photo as Apple now has it. */

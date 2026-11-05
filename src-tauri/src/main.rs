@@ -7306,6 +7306,8 @@ fn main() {
             photos::photos_set_flag,
             photos::photos_burst,
             photos::photos_shared_albums,
+            photos::photos_unlock_hidden,
+            photos::photos_lock_hidden,
             photos::photos_prepare,
             photos::photos_index,
             photos::photos_months,

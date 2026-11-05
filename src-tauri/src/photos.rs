@@ -20,11 +20,91 @@ const LINK_LIFE: Duration = Duration::from_secs(45 * 60);
 /// Every master's links seen this run, and when.
 static LINKS: Mutex<Option<HashMap<String, (Links, Instant)>>> = Mutex::new(None);
 
-/// Every link let go of: they were the last account's.
+/// Every link let go of: they were the last account's. Hidden locks with them.
 pub fn forget_links() {
     *LINKS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    lock_hidden();
+}
+
+/// The Hidden album, unlocked with the Apple ID password (as icloud.com asks for it) — for
+/// this run, until the window locks it again (leaving Hidden, the window out of sight) or the
+/// account changes. Until then nothing of Hidden is handed to the window at all: its lock is
+/// not only the window's to keep.
+static HIDDEN_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Wrong passwords in a row, and until when another is not taken: a few tries, then a wait
+/// that doubles, so nobody at an unlocked computer can go through guesses (and none of them
+/// reaches Apple fast enough to count against the account).
+static HIDDEN_TRIES: Mutex<(u32, Option<Instant>)> = Mutex::new((0, None));
+
+fn lock_hidden() {
+    HIDDEN_OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Hidden's photos are asked for: only once it is unlocked.
+fn hidden_allowed(source: &quince_core::photos::Source) -> UiResult<()> {
+    let hidden = matches!(source, quince_core::photos::Source::View(View::Hidden));
+    if hidden && !HIDDEN_OPEN.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("The Hidden album is locked.".into());
+    }
+    Ok(())
+}
+
+/// How long the next try waits after `wrong` wrong passwords in a row: none for the first
+/// three, then 30 seconds, doubling to at most ten minutes.
+fn hidden_wait(wrong: u32) -> Duration {
+    if wrong < 3 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs((30u64 << (wrong - 3).min(5)).min(600))
+}
+
+/// The Hidden album unlocked with the account's Apple ID password. Wrong: said so, and after a
+/// few, a wait before the next.
+#[tauri::command]
+pub async fn photos_unlock_hidden(password: String, auth: State<'_, Auth>) -> UiResult<()> {
+    let waiting = {
+        let tries = HIDDEN_TRIES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tries
+            .1
+            .and_then(|until| until.checked_duration_since(Instant::now()))
+    };
+    if let Some(left) = waiting {
+        let s = left.as_secs().max(1);
+        return Err(format!(
+            "Too many tries. Try again in {s} second{}.",
+            if s == 1 { "" } else { "s" }
+        ));
+    }
+    let right = auth
+        .client
+        .lock()
+        .await
+        .check_password(&password)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut tries = HIDDEN_TRIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if right {
+        *tries = (0, None);
+        HIDDEN_OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
+        return Ok(());
+    }
+    tries.0 = tries.0.saturating_add(1);
+    let wait = hidden_wait(tries.0);
+    tries.1 = (!wait.is_zero()).then(|| Instant::now() + wait);
+    Err("That password isn't right.".into())
+}
+
+/// The Hidden album locked again: the window left it, or went out of sight.
+#[tauri::command]
+pub fn photos_lock_hidden() {
+    lock_hidden();
 }
 
 /// Links a pass brought, kept for the pictures it will be asked for.
@@ -1209,6 +1289,7 @@ pub fn content_type(bytes: &[u8], size: Size) -> &'static str {
 /// A view's photos, newest first.
 #[tauri::command]
 pub async fn photos_list(view: View, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
+    hidden_allowed(&quince_core::photos::Source::View(view))?;
     data.0
         .read(|library| library.photos(view))
         .await
@@ -1224,6 +1305,7 @@ pub async fn photos_index(
     order: Option<quince_core::photos::Order>,
     data: State<'_, Data>,
 ) -> UiResult<quince_core::photos::PhotoIndex> {
+    hidden_allowed(&source)?;
     data.0
         .read(|library| library.photo_index(&source, order))
         .await
@@ -1251,6 +1333,7 @@ pub async fn photos_page(
     limit: usize,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Photo>> {
+    hidden_allowed(&source)?;
     data.0
         .read(|library| library.photo_page(&source, order, after.as_ref(), limit))
         .await
@@ -3065,6 +3148,31 @@ mod link_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// Hidden's photos are handed out only while it is unlocked, and locking it (the window
+    /// leaving it, or the account changing) takes that back; nothing else is held back.
+    #[test]
+    fn hidden_is_handed_out_only_while_unlocked() {
+        use quince_core::photos::Source;
+        super::lock_hidden();
+        assert!(super::hidden_allowed(&Source::View(View::Hidden)).is_err());
+        assert!(super::hidden_allowed(&Source::View(View::Library)).is_ok());
+        assert!(super::hidden_allowed(&Source::Shared("SC".into())).is_ok());
+        super::HIDDEN_OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(super::hidden_allowed(&Source::View(View::Hidden)).is_ok());
+        super::forget_links();
+        assert!(
+            super::hidden_allowed(&Source::View(View::Hidden)).is_err(),
+            "an account change locks it"
+        );
+    }
+
+    /// Three tries free, then a wait that doubles and stops at ten minutes.
+    #[test]
+    fn wrong_passwords_wait_longer_each_time() {
+        let secs: Vec<u64> = (0..12).map(|n| super::hidden_wait(n).as_secs()).collect();
+        assert_eq!(secs, [0, 0, 0, 30, 60, 120, 240, 480, 600, 600, 600, 600]);
+    }
     use super::*;
 
     /// Copy on Linux answers a paste only with the PNG, and only when a picture was asked

@@ -665,9 +665,18 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         // Paged: the index (ids, grouping dates, marks), the first page, and photos by id — each
         // made from the same lists the whole-list commands answer, sorted as the backend sorts.
+        // Hidden, as the app keeps it: unlocked with the Apple Account password ("right" here),
+        // refused until then; a wrong one said so. Every lock and unlock is noted.
+        case "photos_unlock_hidden":
+          (window.__hiddenCalls ??= []).push("unlock");
+          if (args.password !== "right") throw "That password isn't right.";
+          window.__hiddenOpen = true;
+          return null;
+        case "photos_lock_hidden": (window.__hiddenCalls ??= []).push("lock"); window.__hiddenOpen = false; return null;
         case "photos_index": case "photos_page": {
           const self = window.__TAURI_INTERNALS__.invoke;
           const src = args.source;
+          if (src.view === "hidden" && !window.__hiddenOpen) throw "The Hidden album is locked.";
           let list = src.view ? await self("photos_list", { view: src.view })
             : src.album ? await self("photos_in_album", { album: src.album })
             : src.query ? await self("photos_search", { query: src.query })
