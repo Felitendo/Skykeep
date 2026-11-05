@@ -1281,6 +1281,85 @@ async fn a_failed_answer_is_never_nowhere_to_send() {
     }
 }
 
+/// The Hidden album's password check, with the password kept from a finished sign-in: the
+/// kept one is accepted on this computer, Apple never asked.
+#[tokio::test]
+async fn the_kept_hidden_password_is_checked_here() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 200).await;
+    mount_trust_and_login(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+    let before = server.received_requests().await.unwrap().len();
+    assert!(client.check_password("hunter2").await.unwrap());
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        before,
+        "Apple is never asked"
+    );
+}
+
+/// One that isn't the kept password is asked of Apple (SRP) — it may be a new one set on the
+/// phone. Accepted, with a code wanted or not, is right; refused is wrong. On a connection of
+/// its own: the live session's token is not replaced, no cookie of it is sent, and no code is
+/// ever asked for.
+#[tokio::test]
+async fn any_other_password_is_asked_of_apple_and_nothing_else_moves() {
+    for (complete, right) in [(409, true), (200, true), (401, false)] {
+        let server = MockServer::start().await;
+        mount_init(&server, 200).await;
+        Mock::given(method("POST"))
+            .and(path("/appleauth/auth/signin/complete"))
+            .respond_with(
+                ResponseTemplate::new(200).insert_header("X-Apple-Session-Token", "live-session"),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/appleauth/auth/signin/complete"))
+            .respond_with(
+                ResponseTemplate::new(complete)
+                    .insert_header("X-Apple-Session-Token", "from-the-check"),
+            )
+            .mount(&server)
+            .await;
+        mount_trust_and_login(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = client_for(&server, dir.path());
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap();
+        let token = client.session().session_token.clone();
+        assert_eq!(
+            client.check_password("changed-on-the-phone").await.unwrap(),
+            right,
+            "Apple answered {complete}"
+        );
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            requests_to(&reqs, "/securitycode").is_empty(),
+            "{complete}: no code asked for"
+        );
+        assert_eq!(
+            client.session().session_token,
+            token,
+            "{complete}: the live session is untouched"
+        );
+        let check = requests_to(&reqs, "/signin/complete").pop().unwrap();
+        assert!(
+            check.headers.get("cookie").is_none(),
+            "{complete}: no cookie of the session's sent"
+        );
+    }
+}
+
 /// The reply as it has always been, with the numbers at the top: read as before, texted.
 #[tokio::test]
 async fn trusted_numbers_at_the_top_are_still_texted() {

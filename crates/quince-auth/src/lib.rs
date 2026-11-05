@@ -441,6 +441,11 @@ enum Code {
 /// OAuth headers every idmsa call carries. Deliberately sets no Origin: the HTTP client
 /// defaults to the icloud.com origin, which is what the verify, trust and phone endpoints
 /// expect. Only SRP overrides it — see [`with_srp_origin`].
+/// Two secrets compared without the time taken saying how much of one matched.
+fn same_secret(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
 fn base_oauth_headers(
     client_id: &str,
     home: &str,
@@ -1474,6 +1479,103 @@ impl Client {
         self.absorb(&data);
         self.keep();
         Ok(())
+    }
+
+    /// Whether `password` is this account's Apple ID password: what the Hidden album asks for,
+    /// as icloud.com asks for it before showing Hidden. The password this computer already
+    /// keeps (in the keyring, for signing back in) answers it here when it matches — offline,
+    /// with no sign-in for Apple to note. Otherwise (none kept, or the kept one out of date) it
+    /// is proved to Apple as sign-in proves it (SRP: the password itself is never sent) on a client
+    /// of its own with no cookies: the live session is never touched, nothing Apple answers is
+    /// kept, and no code is ever asked for — Apple waits to be asked before it sends one.
+    pub async fn check_password(&mut self, password: &str) -> Result<bool> {
+        // The kept copy is right nearly every time. One that doesn't match may be the old one —
+        // the password changed on the phone since — so Apple is asked before "wrong" is said.
+        if self
+            .session
+            .password
+            .as_deref()
+            .is_some_and(|kept| same_secret(kept.as_bytes(), password.as_bytes()))
+        {
+            return Ok(true);
+        }
+        let apple_id = self.session.apple_id.clone().ok_or(Error::Protocol(
+            "no Apple ID to check the password against".into(),
+        ))?;
+        let http = apple_only()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(Error::Network)?;
+        let headers = with_srp_origin(
+            base_oauth_headers(&self.session.client_id(), &self.endpoints.home, None, None),
+            &self.endpoints.auth_root,
+        );
+        let client = srp::Client::new(&apple_id);
+        let r = http
+            .post(format!("{}/signin/init", self.endpoints.auth))
+            .headers(headers.clone())
+            .body(
+                json!({
+                    "a": B64.encode(client.a_public_bytes()),
+                    "accountName": apple_id,
+                    "protocols": ["s2k", "s2k_fo"],
+                })
+                .to_string(),
+            )
+            .send()
+            .await?;
+        let status = r.status();
+        let text = r.text().await.unwrap_or_default();
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            return Ok(false);
+        }
+        if !status.is_success() {
+            return Err(apple_error("checking your password", status, &text));
+        }
+        let challenge = Challenge::of(&serde_json::from_str(&text)?)?;
+        let proof = client
+            .process_challenge(
+                password,
+                challenge.protocol,
+                &challenge.salt,
+                &challenge.b_pub,
+                challenge.iterations,
+            )
+            .ok_or_else(|| {
+                Error::Protocol("Apple's sign-in challenge failed its safety check".into())
+            })?;
+        let mut body = json!({
+            "accountName": apple_id,
+            "c": challenge.c,
+            "m1": B64.encode(proof.m1),
+            "m2": B64.encode(proof.m2),
+            "rememberMe": false,
+            "trustTokens": [],
+        });
+        if let Some(t) = &self.session.trust_token {
+            body["trustTokens"] = json!([t]);
+        }
+        let r = http
+            .post(format!("{}/signin/complete", self.endpoints.auth))
+            .headers(headers)
+            .body(body.to_string())
+            .send()
+            .await?;
+        match r.status() {
+            // Accepted — whether Apple would want a code next, its escrow step, or nothing: the
+            // password was right, and nothing further is asked.
+            s if s.is_success()
+                || s == StatusCode::CONFLICT
+                || s == StatusCode::PRECONDITION_FAILED =>
+            {
+                Ok(true)
+            }
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Ok(false),
+            s => {
+                let text = r.text().await.unwrap_or_default();
+                Err(apple_error("checking your password", s, &text))
+            }
+        }
     }
 
     /// Apple's escrow step: the SRP password proof again, with an empty account name, sending
