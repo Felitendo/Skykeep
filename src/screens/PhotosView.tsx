@@ -901,6 +901,8 @@ export function PhotosView() {
   // All, Hidden's Unhide or an album's Remove, from the view it was typed over.
   const place: PhotoView = drawn.query ? "library" : view;
   const inAlbum = drawn.query ? null : album;
+  /** A shared album open: its photos are looked at, copied and saved, never edited here. */
+  const viewOnly = !drawn.query && !!album?.shared;
   const [sorts, setSorts] = useState(readSorts);
   /**
    * The Hidden album is locked, as in Photos: shown only once asked for, and locked again when
@@ -959,7 +961,7 @@ export function PhotosView() {
       setDrawn({ view, album, query: searching });
       return;
     }
-    const source: PhotoSource = searching ? { query: searching } : album ? { album: album.id } : { view };
+    const source: PhotoSource = searching ? { query: searching } : album?.shared ? { shared: album.shared } : album ? { album: album.id } : { view };
     const order: PhotoOrder | null = want;
     const d = drawnNow.current;
     const again = photosNow.current !== null && d.view === view && d.album?.id === album?.id && d.query === searching;
@@ -1030,7 +1032,7 @@ export function PhotosView() {
     setCounts((was) => (same(was, counted) ? was : counted));
     setAlbums((was) => (same(was, a) ? was : a));
     // An album deleted elsewhere is not left open, empty.
-    if (album && !a.some(([x]) => x.id === album.id)) setAlbum(null);
+    if (album && !album.shared && !a.some(([x]) => x.id === album.id)) setAlbum(null);
   }, [view, album, searching, want?.by, want?.oldest, hiddenOpen]); // eslint-disable-line react-hooks/exhaustive-deps
   // A pass that lands while another screen is in front is read when this one comes back, once,
   // not at every landing: a screen out of sight is still mounted (lib/screen), and each pass
@@ -1705,7 +1707,7 @@ export function PhotosView() {
   const change = (p: Photo, flag: Flag, on: boolean) => changeAll([p.id], flag, on);
   /** A flag set on photos by id — what is here changes at once, the rest when it is read. */
   const changeAll = async (list: string[], flag: Flag, on: boolean) => {
-    if (list.length === 0) return;
+    if (list.length === 0 || viewOnly) return;
     const n = list.length;
     // Asked first, in icloud.com's words: a delete reaches every device.
     if (
@@ -1864,7 +1866,7 @@ export function PhotosView() {
 
   /** Out of the album open; the photos stay in the library. */
   const removeFrom = async (gone: string[]) => {
-    if (!album) return;
+    if (!album || viewOnly) return;
     const n = gone.length;
     const sure = await ask({
       title: `Remove ${n === 1 ? "this photo" : `${n} photos`} from the album?`,
@@ -2058,7 +2060,7 @@ export function PhotosView() {
         else setChosen(new Set([list[to]]));
         anchor.current = to;
         reach(to);
-      } else if ((e.key === "Delete" || e.key === "Backspace") && selected.length) {
+      } else if ((e.key === "Delete" || e.key === "Backspace") && selected.length && !viewOnly) {
         if (inAlbum) void removeFrom(selected);
         else if (place !== "recentlyDeleted") void changeAll(selected, "deleted", true);
         else void changeAll(selected, "expunged", true);
@@ -2226,8 +2228,14 @@ export function PhotosView() {
       const plain = anyPlain(group);
       setMenu({
         at,
-        entries:
-          place === "recentlyDeleted" && !inAlbum
+        entries: viewOnly
+          ? [
+              { label: `Download ${n} Items`, run: () => void downloadAs(group, "originals") },
+              { label: "More Download Options", run: () => void store.load(group).then(setOptions, (e) => setError(messageOf(e))) },
+              null,
+              { label: "Start Slideshow", run: () => startShow(p) },
+            ]
+          : place === "recentlyDeleted" && !inAlbum
             ? [
                 { label: `Recover ${n} Items`, run: () => void changeAll(group, "deleted", false) },
                 null,
@@ -2252,8 +2260,14 @@ export function PhotosView() {
       });
       return;
     }
-    const entries: MenuEntry[] =
-      place === "recentlyDeleted" && !inAlbum
+    const entries: MenuEntry[] = viewOnly
+      ? [
+          ...(p.kind !== "video" ? [{ label: "Copy", run: () => void copy([p.id]) }] : []),
+          { label: "Download", run: () => void download(p) },
+          { label: "More Download Options", run: () => setOptions([p]) },
+          { label: "Start Slideshow", run: () => startShow(p) },
+        ]
+      : place === "recentlyDeleted" && !inAlbum
         ? [
             { label: "Recover", run: () => void change(p, "deleted", false) },
             null,
@@ -3278,7 +3292,18 @@ export function PhotosView() {
       </aside>
 
       <section className="px-main" aria-label={sharedPage ? "Shared Albums" : albumsPage ? "Albums" : title} data-page={albumsPage || sharedPage ? "albums" : undefined}>
-        {sharedPage && <SharedAlbums ask={ask} onError={(m) => setError(m)} />}
+        {sharedPage && (
+          <SharedAlbums
+            onError={(m) => setError(m)}
+            onOpen={(a) => {
+              setAlbum({ id: `shared:${a.zone}`, name: a.title ?? "Shared Album", position: 0, changeTag: null, shared: a.zone });
+              setAlbumsPage(false);
+              setSharedPage(false);
+              endSearch();
+              setOpen(null);
+            }}
+          />
+        )}
         {albumsPage && !sharedPage && (
           <div className="px-albums-page">
             {(() => {
@@ -3701,6 +3726,10 @@ export function PhotosView() {
                       <Trash2 size={17} />
                     </button>
                   </>
+                ) : viewOnly ? (
+                  <button className="px-full-btn" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
+                    <Download size={17} />
+                  </button>
                 ) : (
                   <>
                     <button
@@ -3758,7 +3787,7 @@ export function PhotosView() {
               </div>
               {when}
               <div className="toolbar-group">
-              {place === "recentlyDeleted" && !inAlbum ? (
+              {viewOnly ? null : place === "recentlyDeleted" && !inAlbum ? (
                 <>
                   <button className="tool px-cap" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
                     <RotateCcw size={17} />

@@ -294,8 +294,6 @@ export const api = {
     invoke<void>("photos_prepare", { shown }),
   /** Shared albums, made or joined, newest first — from Apple each time. */
   photosSharedAlbums: () => invoke<SharedAlbum[]>("photos_shared_albums"),
-  photosSharedCreate: (name: string) => invoke<string>("photos_shared_create", { name }),
-  photosSharedDelete: (guid: string) => invoke<void>("photos_shared_delete", { guid }),
   /** Every photo of one burst, in the order they were shot. */
   photosBurst: (burst: string) => invoke<Photo[]>("photos_burst", { burst }),
   /** Favorite, Delete (to Recently Deleted) or Recover; answers the photo as Apple now has it. */
@@ -903,15 +901,19 @@ export function pictureVersion(master: string): string {
   return h.toString(36);
 }
 
-/** A shared album (Apple's sharedstreams service). */
+/** A shared album, as the last sync found it (iOS 27's shared collections). */
 export type SharedAlbum = {
-  guid: string;
-  name: string;
-  createdAt: number | null;
-  /** Made by this account, as against one it was invited to. */
-  owned: boolean;
-  public: boolean;
-  contributions: boolean;
+  /** Its zone in Apple's Photos: what it is known by. */
+  zone: string;
+  /** `private`: made by this account; `shared`: one it was invited to. */
+  database: "private" | "shared";
+  owner: string | null;
+  title: string | null;
+  /** When Apple ends it, unix seconds. */
+  expiresAt: number | null;
+  count: number;
+  /** Its newest photo, for its picture. */
+  cover: string | null;
 };
 
 export type PhotoAlbum = {
@@ -921,12 +923,14 @@ export type PhotoAlbum = {
   changeTag: string | null;
   /** A folder of albums, not an album of photos. */
   folder?: boolean;
+  /** A shared album, by its zone: read from it, and looked at only (nothing in it is edited). */
+  shared?: string;
   /** The folder it sits in; none at the top. */
   parent?: string | null;
 };
 
 /** Where a grid's photos come from (quince-core photos::Source). */
-export type PhotoSource = { view: PhotoView } | { album: string } | { query: string } | { burst: string };
+export type PhotoSource = { view: PhotoView } | { album: string } | { query: string } | { burst: string } | { shared: string };
 /** How a sortable view is sorted; null keeps the source's own order. */
 export type PhotoOrder = { by: "taken" | "added"; oldest: boolean };
 /** A grid's layout before its photos (quince-core photos::PhotoIndex). */

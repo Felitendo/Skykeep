@@ -150,6 +150,14 @@ impl Library {
             .collect()
     }
 
+    /// A photo to look at, copy or save: the library's own, or one in a shared album.
+    pub fn photo_to_view(&self, id: &str) -> Result<Option<Photo>> {
+        if let Some(p) = self.photo(id)? {
+            return Ok(Some(p));
+        }
+        Ok(self.shared_photo(id)?.map(|(p, _)| p))
+    }
+
     /// A shared photo by its id, and where it lives: for its pictures.
     pub fn shared_photo(&self, id: &str) -> Result<Option<(Photo, SharedPlace)>> {
         let row: Option<(String, String, String, Option<String>)> = self

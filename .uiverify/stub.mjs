@@ -671,6 +671,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           let list = src.view ? await self("photos_list", { view: src.view })
             : src.album ? await self("photos_in_album", { album: src.album })
             : src.query ? await self("photos_search", { query: src.query })
+            : src.shared ? (window.__sharedPhotos?.[src.shared] ?? []).map((p) => ({ ...p }))
             : await self("photos_burst", { burst: src.burst });
           const sortable = src.view && src.view !== "rated" && src.view !== "recentlyDeleted";
           const order = sortable ? args.order : null;
@@ -717,26 +718,19 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "photos_get": {
           (window.__gets ??= []).push(args.ids.length);
-          const all = window.__photos ?? [];
+          // Shared albums' photos too: the backend finds a shared photo by its id as well.
+          const all = [...(window.__photos ?? []), ...Object.values(window.__sharedPhotos ?? {}).flat()];
           const burst = window.__burstShots ?? [];
           // Made once per fixture: rebuilt per call, the stub's own work showed as the grid's.
-          if (window.__byIdOf?.all !== all || window.__byIdOf?.burst !== burst) window.__byIdOf = { all, burst, map: new Map([...burst, ...all].map((p) => [p.id, p])) };
+          const src = window.__photos, shared = window.__sharedPhotos;
+          if (window.__byIdOf?.src !== src || window.__byIdOf?.shared !== shared || window.__byIdOf?.burst !== burst) window.__byIdOf = { src, shared, burst, map: new Map([...burst, ...all].map((p) => [p.id, p])) };
           const byId = window.__byIdOf.map;
           return args.ids.map((id) => byId.get(id)).filter(Boolean).map((p) => ({ ...p }));
         }
         case "photos_prepare": (window.__prepared ??= []).push(args.shown); return null;
+        // Shared albums as the library keeps them (`__shared`), and each one's photos by zone
+        // (`__sharedPhotos`), made like the library's.
         case "photos_shared_albums": return [...(window.__shared ??= [])];
-        case "photos_shared_create": {
-          if (window.__sharedFail) throw "Shared Albums refused that (503).";
-          const guid = `S-${(window.__shared ??= []).length + 1}`;
-          window.__shared.unshift({ guid, name: args.name, createdAt: 1792500000, owned: true, public: false, contributions: true });
-          return guid;
-        }
-        case "photos_shared_delete": {
-          if (window.__sharedFail) throw "Shared Albums refused that (503).";
-          window.__shared = (window.__shared ?? []).filter((a) => a.guid !== args.guid);
-          return null;
-        }
         case "photos_burst": {
           // Three shots; the library's own photo is the chosen one, in the middle.
           const pick = (window.__photos ?? []).find((p) => p.burst === args.burst);

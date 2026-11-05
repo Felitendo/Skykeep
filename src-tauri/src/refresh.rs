@@ -636,6 +636,15 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                         {
                             report.changed = changed;
                             report.items = if changed { items } else { None };
+                            // Shared Albums after the library, on a pass that went well: what
+                            // changed there redraws Photos whole (it has no rows of its own in
+                            // the library's change tracking).
+                            if report.outcome == Outcome::Ok
+                                && shared_albums_pass(&ctx, root, data).await
+                            {
+                                report.changed = true;
+                                report.items = None;
+                            }
                             break report;
                         }
                     }
@@ -867,6 +876,79 @@ async fn token(data: &LibraryLock, service: &str) -> Option<String> {
     .await
     .ok()
     .flatten()
+}
+
+/// Shared Albums (iOS 27's shared collections): every album found, each read whole when its
+/// change feed says it changed, and any no longer there let go of. Answers whether anything
+/// was stored. Quiet on failure — the library's own pass speaks for Photos — and a failure
+/// leaves every album as it was: nothing is let go of unless Apple's whole list was read.
+async fn shared_albums_pass(ctx: &Context, root: &str, data: &LibraryLock) -> bool {
+    use quince_icloud::shared_collections::{changed, places, read};
+    let found = match places(&ctx.http, root, ctx.params.clone()).await {
+        Ok(found) => found,
+        Err(e) => {
+            quiet!("shared albums: couldn't list them ({e})");
+            return false;
+        }
+    };
+    let mut reads = Vec::new();
+    for place in &found {
+        let token = data
+            .read(|l| l.shared_album_token(&place.zone))
+            .await
+            .ok()
+            .flatten();
+        match changed(&ctx.http, root, ctx.params.clone(), place, token.as_deref()).await {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(e) => {
+                quiet!("shared albums: {} ({e})", place.zone);
+                continue;
+            }
+        }
+        match read(&ctx.http, root, ctx.params.clone(), place).await {
+            Ok(r) => reads.push((place.clone(), r)),
+            Err(e) => quiet!("shared albums: couldn't read {} ({e})", place.zone),
+        }
+    }
+    let mut library = data.lock_for_pass().await;
+    // Read for an account that is no longer the library's: dropped, as `store` drops it.
+    let owner = library.state(crate::ACCOUNT_KEY).ok().flatten();
+    if ctx.account.is_none() || owner.as_deref() != ctx.account.as_deref() {
+        return false;
+    }
+    let before = library.shared_albums().unwrap_or_default();
+    let zones: Vec<&str> = found.iter().map(|p| p.zone.as_str()).collect();
+    let mut links = std::collections::HashMap::new();
+    let stored = tokio::task::block_in_place(|| {
+        library.atomically(|library| {
+            for (place, r) in &reads {
+                let album = quince_core::shared::SharedAlbum {
+                    zone: place.zone.clone(),
+                    database: if place.owned() { "private" } else { "shared" }.into(),
+                    owner: place.owner.clone(),
+                    title: r.about.title.clone(),
+                    expires_at: r.about.expires_at,
+                    count: 0,
+                    cover: None,
+                };
+                library.put_shared_album(&album, &r.photos, r.token.as_deref())?;
+            }
+            library.keep_shared_albums(&zones)
+        })
+    });
+    if let Err(e) = stored {
+        quiet!("shared albums: couldn't store them ({e})");
+        return false;
+    }
+    for (_, r) in reads.iter_mut() {
+        links.extend(std::mem::take(&mut r.links));
+    }
+    crate::photos::remember(links);
+    !reads.is_empty()
+        || library
+            .shared_albums()
+            .map_or(true, |after| after.len() != before.len())
 }
 
 /// What every pass writes whatever came back: where it got to, and when.

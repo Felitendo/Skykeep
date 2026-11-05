@@ -374,16 +374,37 @@ pub async fn cached(app: &AppHandle, id: &str, size: Size) -> Result<PathBuf, St
     from_apple(app, id, size, path).await
 }
 
+/// A photo whose pictures are asked for: the library's own, or one in a shared album (with
+/// where that album lives, to ask Apple for its links). Read beside a sync pass, never behind
+/// it (see `LibraryLock::read`).
+async fn any_photo(
+    app: &AppHandle,
+    id: &str,
+) -> Result<Option<(Photo, Option<quince_core::shared::SharedPlace>)>, String> {
+    let data = app.state::<Data>();
+    if let Some(p) = data
+        .0
+        .read(|l| l.photo(id))
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(Some((p, None)));
+    }
+    Ok(data
+        .0
+        .read(|l| l.shared_photo(id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|(p, place)| (p, Some(place))))
+}
+
 /// Whether a photo's original is HEIC (or another HEIF).
 async fn is_heic(app: &AppHandle, id: &str) -> bool {
-    let data = app.state::<Data>();
-    // Read beside a sync pass, never behind it (see `LibraryLock::read`).
-    data.0
-        .read(|l| l.photo(id))
+    any_photo(app, id)
         .await
         .ok()
         .flatten()
-        .and_then(|p| p.uti)
+        .and_then(|(p, _)| p.uti)
         .is_some_and(|u| {
             let u = u.to_ascii_lowercase();
             u.contains("heic") || u.contains("heif")
@@ -434,16 +455,11 @@ async fn from_apple(
     if tokio::fs::metadata(&path).await.is_ok() {
         return Ok(path);
     }
-    let photo = {
-        let data = app.state::<Data>();
-        // Beside a sync pass on a reader: a picture asked for never waits behind a pass's
-        // store, which holds the writer for seconds on a large library.
-        data.0
-            .read(|l| l.photo(id))
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("That photo is no longer in the library.")?
-    };
+    // Beside a sync pass on a reader: a picture asked for never waits behind a pass's store,
+    // which holds the writer for seconds on a large library.
+    let (photo, shared) = any_photo(app, id)
+        .await?
+        .ok_or("That photo is no longer in the library.")?;
     let auth = app.state::<Auth>();
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     // A cached link first; a fresh one from Apple when it has none or Apple refuses the old.
@@ -459,7 +475,8 @@ async fn from_apple(
         Some(url) => fetch(url).await.unwrap_or(false),
         None => false,
     };
-    if !done && !fetch(new_link(&http, &root, params, &photo, size).await?).await? {
+    if !done && !fetch(new_link(&http, &root, params, &photo, shared.as_ref(), size).await?).await?
+    {
         return Err("Apple did not send that picture.".into());
     }
     // Held for whoever asked, and the cache checked against its cap soon after (a thumbnail is
@@ -859,12 +876,35 @@ async fn new_link(
     root: &str,
     params: Vec<(String, String)>,
     photo: &Photo,
+    shared: Option<&quince_core::shared::SharedPlace>,
     size: Size,
 ) -> Result<String, String> {
-    let links = quince_icloud::photos::links(http, root, params, &photo.master, &photo.id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or("Apple no longer has that photo.")?;
+    let links = match shared {
+        // A shared album's photo is asked of its album, where Apple keeps it.
+        Some(place) => {
+            let place = quince_icloud::shared_collections::Place {
+                database: if place.database == "shared" {
+                    quince_icloud::cloudkit::Database::Shared
+                } else {
+                    quince_icloud::cloudkit::Database::Private
+                },
+                zone: place.zone.clone(),
+                owner: place.owner.clone(),
+            };
+            quince_icloud::shared_collections::links(
+                http,
+                root,
+                params,
+                &place,
+                &photo.master,
+                &photo.id,
+            )
+            .await
+        }
+        None => quince_icloud::photos::links(http, root, params, &photo.master, &photo.id).await,
+    }
+    .map_err(|e| e.to_string())?
+    .ok_or("Apple no longer has that photo.")?;
     remember(HashMap::from([(photo.master.clone(), links.clone())]));
     size.pick(&links)
         .ok_or_else(|| "That photo has no picture of that size.".into())
@@ -995,14 +1035,9 @@ pub async fn film(app: &AppHandle, id: &str, size: Size) -> Result<Film, String>
     {
         return Ok(Film::Growing(g));
     }
-    let photo = {
-        let data = app.state::<Data>();
-        data.0
-            .read(|l| l.photo(id))
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("That photo is no longer in the library.")?
-    };
+    let (photo, shared) = any_photo(app, id)
+        .await?
+        .ok_or("That photo is no longer in the library.")?;
     let auth = app.state::<Auth>();
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let ask = |url: String| {
@@ -1014,7 +1049,7 @@ pub async fn film(app: &AppHandle, id: &str, size: Size) -> Result<Film, String>
         None => None,
     };
     if response.is_none() {
-        let url = new_link(&http, &root, params, &photo, size).await?;
+        let url = new_link(&http, &root, params, &photo, shared.as_ref(), size).await?;
         response = Some(ask(url).await?).filter(|r| r.status().is_success());
     }
     let response = response.ok_or("Apple did not send that film.")?;
@@ -1231,59 +1266,16 @@ pub async fn photos_get(ids: Vec<String>, data: State<'_, Data>) -> UiResult<Vec
         .map_err(|e| e.to_string())
 }
 
-/// The Shared Albums service for the signed-in account: its client, address and params.
-async fn shared_streams(
-    auth: &State<'_, Auth>,
-) -> Result<(reqwest::Client, String, Vec<(String, String)>), String> {
-    let client = auth.client.lock().await;
-    let root = client
-        .session()
-        .service_url("sharedstreams")
-        .ok_or("Apple hasn't offered Shared Albums for this account.")?;
-    Ok((client.http().clone(), root, client.service_params()))
-}
-
-/// Every shared album the account has, made or joined, newest first — read from Apple each time
-/// (there are few, and a list kept here would go stale as people are invited and leave).
+/// Every shared album the account made or was invited to, with its photo count and cover: as
+/// the last sync found them (each album is read again whenever Apple says it changed).
 #[tauri::command]
 pub async fn photos_shared_albums(
-    auth: State<'_, Auth>,
-) -> UiResult<Vec<quince_icloud::shared_albums::SharedAlbum>> {
-    let (http, root, params) = shared_streams(&auth).await?;
-    let s = quince_icloud::shared_albums::SharedStreams {
-        http: &http,
-        root: &root,
-        params: &params,
-    };
-    s.list().await.map_err(|e| e.to_string())
-}
-
-/// A new shared album, named; answers its id.
-#[tauri::command]
-pub async fn photos_shared_create(name: String, auth: State<'_, Auth>) -> UiResult<String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("A shared album needs a name.".into());
-    }
-    let (http, root, params) = shared_streams(&auth).await?;
-    let s = quince_icloud::shared_albums::SharedStreams {
-        http: &http,
-        root: &root,
-        params: &params,
-    };
-    s.create(name).await.map_err(|e| e.to_string())
-}
-
-/// A shared album deleted, for everyone it was shared with.
-#[tauri::command]
-pub async fn photos_shared_delete(guid: String, auth: State<'_, Auth>) -> UiResult<()> {
-    let (http, root, params) = shared_streams(&auth).await?;
-    let s = quince_icloud::shared_albums::SharedStreams {
-        http: &http,
-        root: &root,
-        params: &params,
-    };
-    s.delete(&guid).await.map_err(|e| e.to_string())
+    data: State<'_, Data>,
+) -> UiResult<Vec<quince_core::shared::SharedAlbum>> {
+    data.0
+        .read(quince_core::Library::shared_albums)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Every photo of one burst, in the order they were shot — what "View all" shows.
@@ -1904,7 +1896,7 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
         .0
         .lock()
         .await
-        .photo(&id)
+        .photo_to_view(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
     let size = if photo.kind == quince_core::photos::Kind::Video {
@@ -2118,7 +2110,7 @@ pub async fn photo_copy(
         .0
         .lock()
         .await
-        .photo(&id)
+        .photo_to_view(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
     if photo.kind == quince_core::photos::Kind::Video {
@@ -2302,7 +2294,7 @@ pub async fn photo_download(
         .0
         .lock()
         .await
-        .photo(&id)
+        .photo_to_view(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;

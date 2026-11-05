@@ -883,7 +883,8 @@ impl Library {
     }
 }
 
-/// Where the photos a grid shows come from: a view, an album, a search, or one burst.
+/// Where the photos a grid shows come from: a view, an album, a search, one burst, or a shared
+/// album (by its zone; kept apart from the library, see `shared`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Source {
@@ -891,6 +892,7 @@ pub enum Source {
     Album(String),
     Query(String),
     Burst(String),
+    Shared(String),
 }
 
 /// How a view the person can sort is sorted: by when taken or when added, newest or oldest
@@ -994,6 +996,8 @@ impl Library {
                     keyset,
                 )
             }
+            // Read from its own table (`photo_index`, `photo_page`); asked here, nothing.
+            Source::Shared(_) => plain("0".into(), "id".into(), TAKEN, Vec::new(), None),
             Source::Album(album) => Query {
                 from: "photo_album_items i JOIN photos p ON p.id = i.asset",
                 pre: "p.",
@@ -1025,6 +1029,17 @@ impl Library {
 
     /// Every photo a source shows, as a grid lays them out (see [`PhotoIndex`]).
     pub fn photo_index(&self, source: &Source, order: Option<Order>) -> Result<PhotoIndex> {
+        if let Source::Shared(zone) = source {
+            let mut out = PhotoIndex::default();
+            for p in self.shared_album_photos(zone)? {
+                out.first = Some(out.first.map_or(p.taken_at, |f| f.min(p.taken_at)));
+                out.last = Some(out.last.map_or(p.taken_at, |l| l.max(p.taken_at)));
+                out.marks.push(mark(p.kind.as_str(), p.favorite, p.rating));
+                out.keys.push(p.taken_at);
+                out.ids.push(p.id);
+            }
+            return Ok(out);
+        }
         let q = Self::source_query(source, order);
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {p}id, {key}, {p}kind, {p}favorite, {p}rating, {p}taken_at FROM {from}
@@ -1063,6 +1078,16 @@ impl Library {
         after: Option<&After>,
         limit: usize,
     ) -> Result<Vec<Photo>> {
+        // A shared album is small, and walked to the photo named, as an album is.
+        if let Source::Shared(zone) = source {
+            let all = self.shared_album_photos(zone)?;
+            let from = after.map_or(0, |a| {
+                all.iter()
+                    .position(|p| p.id == a.id)
+                    .map_or(all.len(), |i| i + 1)
+            });
+            return Ok(all.into_iter().skip(from).take(limit.min(5_000)).collect());
+        }
         let q = Self::source_query(source, order);
         let columns = COLUMNS
             .split(", ")

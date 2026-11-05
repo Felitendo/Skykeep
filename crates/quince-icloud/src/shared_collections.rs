@@ -135,6 +135,27 @@ pub async fn read(
     })
 }
 
+/// One shared photo's links, read from its album now: for a picture whose kept link expired.
+pub async fn links(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    place: &Place,
+    master: &str,
+    asset: &str,
+) -> Result<Option<Links>> {
+    let client = client(http, ckdatabasews_root, params, place);
+    let Some(m) = client.lookup_record(&place.zone, master).await? else {
+        return Ok(None);
+    };
+    let a = client
+        .lookup_record(&place.zone, asset)
+        .await
+        .ok()
+        .flatten();
+    Ok(Some(links_with_edit(a.as_ref(), &m)))
+}
+
 /// An album's records as its title, expiry, photos and their links. A photo's asset without
 /// its master (or a master without an asset) is no photo yet, and is left out; deleted records
 /// are simply absent from a whole read.
