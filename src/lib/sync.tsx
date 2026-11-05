@@ -318,10 +318,19 @@ export function useArriving(service: string): boolean {
   const { report, syncing, error } = useSync();
   if (error) return false;
   const mine = report?.services.find((s) => s.service === service);
-  if (mine?.outcome === "failed" || mine?.outcome === "unavailable" || mine?.outcome === "paused") return false;
+  if (
+    mine?.outcome === "failed" ||
+    mine?.outcome === "unavailable" ||
+    mine?.outcome === "paused" ||
+    mine?.outcome === "preparing"
+  )
+    return false;
   if (mine?.lastSyncedAt) return false;
   return syncing || report === null;
 }
+
+/** Said while Apple prepares a library, where the pass did not say it in its own words. */
+const PREPARING = "Apple is still preparing your photo library. It will appear here when it's ready.";
 
 /** One service as an app shows it: whether it is being fetched, and how it last went. */
 export type ServiceState = {
@@ -331,6 +340,9 @@ export type ServiceState = {
   failure: string | null;
   lastSyncedAt: number | null;
   unavailable: boolean;
+  /** What Apple said while it is still preparing the service (Photos), in its words: not
+   * empty, not failed. */
+  preparing: string | null;
 };
 
 /**
@@ -343,9 +355,10 @@ export function useServiceState(service: string): ServiceState {
   const mine = report?.services.find((s) => s.service === service);
   const lastSyncedAt = mine?.lastSyncedAt ?? null;
   const landed = passStartedAt !== null && lastSyncedAt !== null && lastSyncedAt >= passStartedAt;
+  const preparing = mine?.outcome === "preparing" ? (mine.detail ?? PREPARING) : null;
   const working =
     updating.includes(service) ||
-    (syncing && !landed && mine?.outcome !== "unavailable" && mine?.outcome !== "paused");
+    (syncing && !landed && mine?.outcome !== "unavailable" && mine?.outcome !== "paused" && !preparing);
   const failure = serviceErrors[service] ?? (mine?.outcome === "failed" ? (mine.detail ?? "It didn’t update") : null);
-  return { working, failure, lastSyncedAt, unavailable: mine?.outcome === "unavailable" };
+  return { working, failure, lastSyncedAt, unavailable: mine?.outcome === "unavailable", preparing };
 }

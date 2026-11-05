@@ -629,6 +629,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
                 ? (s.detail ?? "Didn't update")
                 : s.outcome === "paused"
                   ? `${freshness(s.lastSyncedAt ?? null)}. Syncs when you approve`
+                : s.outcome === "preparing"
+                  ? "Apple is still preparing it"
                 : syncing && !s.lastSyncedAt
                   ? "Downloading…"
                   : freshness(s.lastSyncedAt ?? null)}

@@ -77,9 +77,58 @@ pub(crate) async fn sleep_or_wake(wait: Duration, woken: &mut watch::Receiver<u6
     }
 }
 
+/// Where a pass of one service is asked for: the refresher's queue, once it runs.
+static ASK: std::sync::OnceLock<mpsc::UnboundedSender<&'static str>> = std::sync::OnceLock::new();
+
+/// The services with a later look already set, so asking again sets no second one.
+static LATER: LazyLock<std::sync::Mutex<Vec<&'static str>>> =
+    LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+/// A pass of `service` in `after`: for what Apple said is not ready yet (a Photos library it
+/// is still preparing), looked at again rather than waited on for a push that may not come.
+/// One look at a time is set for a service.
+pub(crate) fn again_in(service: &'static str, after: Duration) {
+    {
+        let mut later = LATER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if later.contains(&service) {
+            return;
+        }
+        later.push(service);
+    }
+    let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        LATER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|s| *s != service);
+        return;
+    };
+    rt.spawn(async move {
+        tokio::time::sleep(after).await;
+        LATER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|s| *s != service);
+        if let Some(ask) = ASK.get() {
+            ask.send(service).ok();
+        }
+    });
+}
+
+/// The services with a later look set now.
+#[cfg(test)]
+pub(crate) fn looks_set() -> Vec<&'static str> {
+    LATER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 pub fn spawn(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
     crate::power::watch();
     let (tx, rx) = mpsc::unbounded_channel::<&'static str>();
+    let _ = ASK.set(tx.clone());
     tauri::async_runtime::spawn(refresher(app.clone(), Arc::clone(&client), rx));
     tauri::async_runtime::spawn(watch_calendar(app.clone(), Arc::clone(&client), tx.clone()));
     tauri::async_runtime::spawn(watch_contacts(app.clone(), Arc::clone(&client), tx.clone()));

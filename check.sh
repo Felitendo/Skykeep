@@ -59,6 +59,7 @@ step "notes autoformat"  node .uiverify/notes-autoformat.mjs
 step "reminder ticks"    node .uiverify/reminders-tick.mjs
 step "waiting to sync"   node .uiverify/outbox-pending.mjs
 step "photos"            node .uiverify/photos.mjs
+step "photos preparing"  node .uiverify/photos-preparing.mjs
 step "photo albums"      node .uiverify/photos-albums.mjs
 step "photos at scale"   node .uiverify/photos-scale.mjs
 step "photos drag"       node .uiverify/photos-drag.mjs

@@ -38,6 +38,9 @@ pub enum Outcome {
     /// devices: not asked for, not failed. What is on screen is the copy here, and changes
     /// made meanwhile wait to be sent.
     Paused,
+    /// Apple is still preparing it (a Photos library just turned on): nothing was read, and
+    /// it is looked at again in a while. Not empty, and not failed.
+    Preparing,
 }
 
 /// What one service's refresh did.
@@ -572,6 +575,20 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                         rounds += 1;
                         let since = token(data, quince_icloud::photos::SERVICE).await;
                         let full = since.is_none();
+                        // A whole read of a library Apple is still preparing finds it empty or
+                        // part-made — and a whole read takes what it never sees as gone. Asked
+                        // first (as icloud.com asks), and while it is preparing, not read.
+                        if full && rounds == 1 {
+                            let ready = quince_icloud::photos::readiness(
+                                &ctx.http,
+                                root,
+                                ctx.params.clone(),
+                            )
+                            .await;
+                            if let Some(report) = preparing(data, ready).await {
+                                break report;
+                            }
+                        }
                         let fetched = quince_icloud::photos::fetch(
                             &ctx.http,
                             root,
@@ -787,6 +804,40 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
+/// How long until a library Apple is still preparing is looked at again.
+pub const PREPARING_AGAIN: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Said while Apple prepares the library: calm, and true.
+pub const PREPARING_WORDS: &str =
+    "Apple is still preparing your photo library. It will appear here when it's ready.";
+
+/// The Photos report while Apple says the library is still being prepared, with another look
+/// set for later; `None` when it is ready — or Apple would not say, which leaves the read to
+/// go ahead as it always did.
+async fn preparing(
+    data: &LibraryLock,
+    ready: quince_icloud::Result<quince_icloud::photos::Readiness>,
+) -> Option<ServiceReport> {
+    let Ok(quince_icloud::photos::Readiness::Preparing { .. }) = ready else {
+        return None;
+    };
+    crate::push::again_in("photos", PREPARING_AGAIN);
+    let last_synced_at = data
+        .read(|library| library.last_synced(quince_icloud::photos::SERVICE))
+        .await
+        .ok()
+        .flatten();
+    Some(ServiceReport {
+        service: "photos",
+        label: "Photos",
+        outcome: Outcome::Preparing,
+        detail: Some(PREPARING_WORDS.into()),
+        last_synced_at,
+        changed: false,
+        items: None,
+    })
+}
+
 fn unavailable(service: &'static str, label: &'static str) -> ServiceReport {
     ServiceReport {
         service,
@@ -919,6 +970,40 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Apple still preparing the library: the pass reads nothing (so stores no empty library
+    /// over the one being made), says so calmly as its own state rather than a failure or an
+    /// empty library, and sets another look for later. Ready, or Apple not saying, the read
+    /// goes ahead.
+    #[tokio::test]
+    async fn a_library_apple_is_still_preparing_waits_and_says_so() {
+        use quince_icloud::photos::Readiness;
+        let data = LibraryLock::new(quince_core::Library::in_memory().unwrap(), None);
+        let report = preparing(&data, Ok(Readiness::Preparing { progress: Some(0) }))
+            .await
+            .expect("not read while preparing");
+        assert_eq!(report.outcome, Outcome::Preparing);
+        assert_eq!(
+            report.detail.as_deref(),
+            Some(
+                "Apple is still preparing your photo library. It will appear here when it's ready."
+            )
+        );
+        assert!(!report.changed);
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["outcome"],
+            "preparing",
+            "the window's name for it"
+        );
+        assert!(
+            crate::push::looks_set().contains(&"photos"),
+            "looked at again later"
+        );
+        assert!(preparing(&data, Ok(Readiness::Ready)).await.is_none());
+        assert!(preparing(&data, Err(quince_icloud::Error::Busy))
+            .await
+            .is_none());
+    }
 
     /// A freshness sent with the services it changed names exactly those, and one that
     /// changed nothing names none — never "unknown", which has every screen read again.

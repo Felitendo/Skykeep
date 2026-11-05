@@ -28,7 +28,7 @@ import {
 import { Arriving, EmptyState } from "../components/EmptyState";
 import { SearchField } from "../components/SearchField";
 import { PaneTitle } from "../components/PaneTitle";
-import { useArriving, useRevision } from "../lib/sync";
+import { useArriving, useRevision, useServiceState } from "../lib/sync";
 import { dismissToast, toast, toastSaved, useErrorToast, useToastClearance } from "../components/Toast";
 import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
@@ -761,6 +761,8 @@ const Month = memo(function Month({
 export function PhotosView() {
   const revision = useRevision("photos");
   const arriving = useArriving("photos");
+  // Apple still preparing the library: said as it is, in place of "you have none".
+  const { preparing } = useServiceState("photos");
   const [view, setView] = useState<PhotoView>("library");
   /** An album open instead of a view. */
   const [album, setAlbum] = useState<PhotoAlbum | null>(null);
@@ -3525,7 +3527,12 @@ export function PhotosView() {
         {!hiddenLocked && photos && photos.length === 0 && !drawn.query && (
           <Arriving service="photos" what="photos" className="px-empty" />
         )}
-        {!hiddenLocked && photos && photos.length === 0 && !(arriving && !drawn.query) && (
+        {!hiddenLocked && photos && photos.length === 0 && preparing && !drawn.query && (
+          <EmptyState className="px-empty px-preparing" icon={<Images size={28} strokeWidth={1.6} />}>
+            {preparing}
+          </EmptyState>
+        )}
+        {!hiddenLocked && photos && photos.length === 0 && !(arriving && !drawn.query) && !(preparing && !drawn.query) && (
           // One line, saying what the place is for, with its own symbol from the sidebar.
           <EmptyState
             className="px-empty"

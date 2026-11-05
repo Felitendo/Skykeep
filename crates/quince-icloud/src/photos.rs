@@ -140,6 +140,60 @@ pub async fn fetch(
     })
 }
 
+/// Whether Apple has the library ready to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readiness {
+    Ready,
+    /// Apple is still preparing it — a library just turned on, or moved — and a read of it now
+    /// would find it empty, or part of it. `progress` is Apple's percentage where it says.
+    Preparing {
+        progress: Option<u8>,
+    },
+}
+
+/// What Apple's `CheckIndexingState` record says: `state` `FINISHED` is ready, anything else
+/// (`RUNNING`, with a `progress` of 0 to 100) is still preparing (icloudpd #1387, #1388; the
+/// same check icloud.com and pyicloud make before reading the library). No record, or none
+/// with a state, says nothing: read as ready, as it always was.
+#[must_use]
+pub fn readiness_of(records: &[Value]) -> Readiness {
+    let Some(fields) = records.iter().find_map(|r| r.get("fields")) else {
+        return Readiness::Ready;
+    };
+    let Some(state) = fields.pointer("/state/value").and_then(Value::as_str) else {
+        return Readiness::Ready;
+    };
+    if state.eq_ignore_ascii_case("FINISHED") {
+        return Readiness::Ready;
+    }
+    let progress = fields
+        .pointer("/progress/value")
+        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.trim().parse().ok()))
+        .map(|p| p.clamp(0.0, 100.0) as u8);
+    Readiness::Preparing { progress }
+}
+
+/// Ask Apple whether the library is ready to read ([`readiness_of`]).
+///
+/// # Errors
+/// When Apple cannot be reached or refuses the question.
+pub async fn readiness(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+) -> Result<Readiness> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    // Asked of the zone the library is in, as every read of it is (`library_zone`).
+    let zone = library_zone(&client).await;
+    let records = client
+        .records_query(
+            &zone,
+            serde_json::json!({ "recordType": "CheckIndexingState" }),
+        )
+        .await?;
+    Ok(readiness_of(&records))
+}
+
 /// Whether an error is Apple refusing the change token, rather than anything else.
 ///
 /// The cloudkit layer names a refused continuation `StaleCursor`; an expired token
@@ -2067,6 +2121,50 @@ mod tests {
         wiremock::ResponseTemplate::new(200).set_body_json(json!({ "zones": [zone] }))
     }
 
+    /// Apple's answer to `CheckIndexingState`, as icloud.com asks it before reading the
+    /// library: still preparing (with its progress), finished, or nothing to say.
+    #[tokio::test]
+    async fn whether_apple_has_the_library_ready() {
+        use wiremock::matchers::{body_string_contains, method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let ask = |answer: Value| async move {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path_regex(
+                    r".*/com\.apple\.photos\.cloud/production/private/records/query$",
+                ))
+                .and(body_string_contains("CheckIndexingState"))
+                .and(body_string_contains("PrimarySync"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(answer))
+                .mount(&server)
+                .await;
+            readiness(&reqwest::Client::new(), &server.uri(), vec![])
+                .await
+                .unwrap()
+        };
+        let state = |state: &str, progress: Value| {
+            json!({ "records": [{
+                "recordName": "_9f4bd1c2", "recordType": "CheckIndexingState",
+                "fields": { "state": { "value": state, "type": "STRING" },
+                            "progress": { "value": progress, "type": "INT64" } }
+            }] })
+        };
+        assert_eq!(
+            ask(state("RUNNING", json!(0))).await,
+            Readiness::Preparing { progress: Some(0) }
+        );
+        assert_eq!(
+            ask(state("RUNNING", json!(42))).await,
+            Readiness::Preparing { progress: Some(42) }
+        );
+        assert_eq!(ask(state("FINISHED", json!(100))).await, Readiness::Ready);
+        assert_eq!(ask(json!({ "records": [] })).await, Readiness::Ready);
+        assert_eq!(
+            readiness_of(&[json!({ "fields": { "state": { "value": "QUEUED" } } })]),
+            Readiness::Preparing { progress: None }
+        );
+    }
+
     /// The whole library as Apple answers a walk from the start.
     async fn library_server(refusal: Value) -> wiremock::MockServer {
         use wiremock::matchers::{body_string_contains, method, path_regex};
@@ -2315,6 +2413,38 @@ mod zone_tests {
         }
         let client = ZoneClient::new(&http, &root, CONTAINER, params("moved"));
         assert_eq!(library_zone(&client).await, "PrimarySync1", "remembered");
+    }
+
+    /// Whether the library is ready is asked of the zone it is in: an account whose library
+    /// Apple moved (`PrimarySync1`) is asked there, never of a `PrimarySync` it does not have.
+    #[tokio::test]
+    async fn readiness_is_asked_of_the_library_s_own_zone() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/zones/list$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "zones": [
+                { "zoneID": { "zoneName": "PrimarySync1", "zoneType": "REGULAR_CUSTOM_ZONE" } }
+            ] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/query$"))
+            .and(body_string_contains("\"zoneName\":\"PrimarySync1\""))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [{
+                "recordType": "CheckIndexingState",
+                "fields": { "state": { "value": "RUNNING" }, "progress": { "value": 7 } }
+            }] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            readiness(&reqwest::Client::new(), &server.uri(), vec![])
+                .await
+                .unwrap(),
+            Readiness::Preparing { progress: Some(7) }
+        );
     }
 
     /// No list to be had: `PrimarySync`, as every library was until Apple began moving some,

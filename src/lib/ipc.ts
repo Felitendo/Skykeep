@@ -34,9 +34,10 @@ export type TwoFactorOptions = {
   securityKey?: boolean;
 };
 
-/** How one service's refresh ended. */
-/** `paused`: Advanced Data Protection keeps it until the next approval — waiting, not failed. */
-export type SyncOutcome = "ok" | "unavailable" | "failed" | "paused";
+/** How one service's refresh ended. `paused`: Advanced Data Protection keeps it until the
+ * next approval — waiting, not failed. `preparing`: Apple is still preparing it (a Photos
+ * library just turned on) — nothing was read, and it is looked at again in a while. */
+export type SyncOutcome = "ok" | "unavailable" | "failed" | "paused" | "preparing";
 
 export type ServiceReport = {
   service: string;
