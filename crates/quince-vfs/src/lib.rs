@@ -20,12 +20,46 @@ use std::sync::{Arc, Mutex};
 /// A future the engine waits on, as the app's own async code gives it.
 pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
+/// Part of a file as Apple sent it, and how long Apple says the whole file is, where it said.
+#[derive(Debug, Clone, Default)]
+pub struct Part {
+    pub bytes: Vec<u8>,
+    /// The file's length as served (a range answer's `Content-Range` total, a whole answer's
+    /// length): the truth where a listing's size is not.
+    pub total: Option<u64>,
+}
+
+/// Whether a listing's size for `item` may not be the size of the file served for it.
+///
+/// Keynote, Pages and Numbers documents are packages — folders on a Mac — that iCloud lists
+/// with one size and serves, flattened into one file, with another (rclone #9798, measured:
+/// both larger and smaller). Their length is taken from what is served, never the listing.
+#[must_use]
+pub fn served_size_differs(item: &DriveItem) -> bool {
+    !item.is_container()
+        && item.extension.as_deref().is_some_and(|e| {
+            ["pages", "numbers", "key"]
+                .iter()
+                .any(|k| e.eq_ignore_ascii_case(k))
+        })
+}
+
 /// Apple's side, as the app reaches it with the signed-in session.
 pub trait Remote: Send + Sync + 'static {
     /// A folder's items, fetched from Apple (and kept in the library by the app).
     fn list(&self, folder: &str) -> Fut<Vec<DriveItem>>;
     /// `len` bytes of a file from `offset` (fewer only at its end).
     fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>>;
+    /// [`Remote::read`], with the file's length as served where Apple says it.
+    fn read_part(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Part> {
+        let bytes = self.read(item, offset, len);
+        Box::pin(async move {
+            Ok(Part {
+                bytes: bytes.await?,
+                total: None,
+            })
+        })
+    }
     /// A new folder in `parent`, as Apple made it. Read-only by default.
     fn mkdir(&self, _parent: &DriveItem, _name: &str) -> Fut<DriveItem> {
         Box::pin(async { Err("read-only".to_string()) })
@@ -300,6 +334,9 @@ pub struct Cache {
     since: std::sync::atomic::AtomicU64,
     /// Kept on this computer: never let go of to make room. See [`Kept`].
     kept: Mutex<Kept>,
+    /// Files whose length as served is known, by cache path: what they are read, kept and
+    /// shown as (see [`served_size_differs`]). Written beside the bytes (`.size`).
+    sizes: Mutex<HashMap<PathBuf, u64>>,
 }
 
 /// What is kept on this computer ("Keep on This Computer", as Finder's Keep Downloaded): the
@@ -344,7 +381,76 @@ impl Cache {
                     .and_then(|b| serde_json::from_slice(&b).ok())
                     .unwrap_or_default(),
             ),
+            sizes: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The file's length as served, once known: from a read of it here or written beside its
+    /// bytes by an earlier run.
+    #[must_use]
+    pub fn served_size(&self, item: &DriveItem) -> Option<u64> {
+        let path = self.path(item);
+        let mut sizes = self
+            .sizes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = sizes.get(&path) {
+            return Some(*n);
+        }
+        let n = std::fs::read_to_string(path.with_extension("size"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        sizes.insert(path, n);
+        Some(n)
+    }
+
+    /// The file's length: as served where that is known, else as listed. What it is read up
+    /// to and shown as.
+    #[must_use]
+    pub fn size(&self, item: &DriveItem) -> u64 {
+        self.served_size(item)
+            .unwrap_or_else(|| u64::try_from(item.size.unwrap_or(0)).unwrap_or(0))
+    }
+
+    /// The length as served taken as the file's. One differing from what was assumed so far
+    /// starts its bytes here over: kept chunks were cut to a length the file does not have.
+    fn learnt_size(&self, item: &DriveItem, served: u64) -> std::io::Result<()> {
+        let path = self.path(item);
+        if self.size(item) != served {
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path.with_extension("have"));
+            self.have
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&path);
+        }
+        let part = path.with_extension("size.part");
+        std::fs::write(&part, served.to_string())?;
+        std::fs::rename(&part, path.with_extension("size"))?;
+        self.sizes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path, served);
+        Ok(())
+    }
+
+    /// The file's length, asked of Apple first where a listing's may not be it and it is not
+    /// known yet (see [`served_size_differs`]).
+    ///
+    /// # Errors
+    /// When Apple cannot be reached to say, or the disk refuses.
+    pub async fn sized(&self, remote: &dyn Remote, item: &DriveItem) -> Result<u64, String> {
+        if !served_size_differs(item) || self.served_size(item).is_some() {
+            return Ok(self.size(item));
+        }
+        // Asked once: where Apple does not say, the listing's length stands until a read of
+        // the file finds it is not.
+        let part = remote.read_part(item, 0, 1).await?;
+        let total = part.total.unwrap_or_else(|| self.size(item));
+        self.learnt_size(item, total).map_err(|e| e.to_string())?;
+        Ok(total)
     }
 
     /// What is kept on this computer, as it stands.
@@ -391,10 +497,10 @@ impl Cache {
     /// # Errors
     /// When Apple cannot be reached, or the disk refuses.
     pub async fn fetch_whole(&self, remote: &dyn Remote, item: &DriveItem) -> Result<(), String> {
-        let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
         let mut at = 0;
-        while at < size {
-            let len = CHUNK.min(size - at);
+        // Its length as served, which a read may still learn: asked each time round.
+        while at < self.sized(remote, item).await? {
+            let len = CHUNK.min(self.size(item) - at);
             self.read(remote, item, at, len).await?;
             at += len;
         }
@@ -449,7 +555,7 @@ impl Cache {
                     .filter(|e| {
                         e.path()
                             .extension()
-                            .is_none_or(|x| x != "have" && x != "part")
+                            .is_none_or(|x| x != "have" && x != "part" && x != "size")
                     })
                     // Its own files, and what is kept on this computer, are never let go of.
                     .filter(|e| {
@@ -541,7 +647,11 @@ impl Cache {
     /// Whether every byte of a file is on disk already.
     #[must_use]
     pub fn whole(&self, item: &DriveItem) -> bool {
-        let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
+        // A length not known yet is a file not here yet.
+        if served_size_differs(item) && self.served_size(item).is_none() {
+            return false;
+        }
+        let size = self.size(item);
         size == 0 || self.present(&self.path(item), size).iter().all(|&b| b)
     }
 
@@ -556,9 +666,27 @@ impl Cache {
         offset: u64,
         len: u64,
     ) -> Result<Vec<u8>, String> {
-        let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
+        // Read again, once, where a fetch learns the file is not the length it was read as.
+        for _ in 0..2 {
+            if let Some(bytes) = self.read_sized(remote, item, offset, len).await? {
+                return Ok(bytes);
+            }
+        }
+        Err("the file's length kept changing while it was read".into())
+    }
+
+    /// [`Cache::read`] at the length known now: `None` when a fetch found the file is another
+    /// length, now taken as its own, to be read again at that.
+    async fn read_sized(
+        &self,
+        remote: &dyn Remote,
+        item: &DriveItem,
+        offset: u64,
+        len: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let size = self.sized(remote, item).await?;
         if offset >= size || len == 0 {
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         }
         let end = (offset + len).min(size);
         let path = self.path(item);
@@ -592,7 +720,19 @@ impl Cache {
                 }
                 let from = chunk as u64 * CHUNK;
                 let want = CHUNK.min(size - from);
-                let bytes = remote.read(item, from, want).await?;
+                let Part { bytes, total } = remote.read_part(item, from, want).await?;
+                // Served at another length than it was read as: that length is the file's,
+                // and it is read again at it — never cut short at the listing's.
+                if let Some(total) = total.filter(|t| *t != size) {
+                    self.learnt_size(item, total).map_err(|e| e.to_string())?;
+                    return Ok(None);
+                }
+                // Fewer only at its end: a package served shorter than listed ends here.
+                if total.is_none() && served_size_differs(item) && (bytes.len() as u64) < want {
+                    self.learnt_size(item, from + bytes.len() as u64)
+                        .map_err(|e| e.to_string())?;
+                    return Ok(None);
+                }
                 if bytes.len() as u64 != want {
                     return Err(format!("Apple sent {} of {want} bytes", bytes.len()));
                 }
@@ -632,6 +772,7 @@ impl Cache {
         })
         .await
         .map_err(|e| e.to_string())?
+        .map(Some)
         .map_err(|e| e.to_string())
     }
 }
@@ -839,6 +980,121 @@ mod tests {
                 .to_vec();
             Box::pin(async move { Ok(out) })
         }
+    }
+
+    /// A file served as Apple's download links serve one: a range answered with what of it
+    /// there is, and the length as served (`Content-Range`'s total) beside it.
+    struct Served(Vec<u8>, Mutex<Vec<(u64, u64)>>);
+    impl Remote for Served {
+        fn list(&self, _: &str) -> Fut<Vec<DriveItem>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn read(&self, _: &DriveItem, _: u64, _: u64) -> Fut<Vec<u8>> {
+            unreachable!("read in parts")
+        }
+        fn read_part(&self, _: &DriveItem, offset: u64, len: u64) -> Fut<Part> {
+            self.1.lock().unwrap().push((offset, len));
+            let n = self.0.len() as u64;
+            let (from, to) = (offset.min(n), (offset + len).min(n));
+            let part = Part {
+                bytes: self.0[usize::try_from(from).unwrap()..usize::try_from(to).unwrap()]
+                    .to_vec(),
+                total: Some(n),
+            };
+            Box::pin(async move { Ok(part) })
+        }
+    }
+
+    /// Every byte of a file read through the cache, as a program reading to the end would.
+    async fn read_all(cache: &Cache, remote: &dyn Remote, f: &DriveItem) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let got = cache
+                .read(remote, f, out.len() as u64, 1024 * 1024)
+                .await
+                .unwrap();
+            if got.is_empty() {
+                return out;
+            }
+            out.extend(got);
+        }
+    }
+
+    /// A Keynote document listed at one size and served, flattened, at a larger one: read
+    /// whole — not cut at the listed length — and shown at its served length from then on,
+    /// across a restart too.
+    #[tokio::test]
+    async fn a_package_served_larger_than_listed_is_read_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let served: Vec<u8> = (0..CHUNK + 5_000).map(|i| (i % 253) as u8).collect();
+        let remote = Served(served.clone(), Mutex::new(Vec::new()));
+        let f = item("FILE::x::k", "Deck", Some("key"), "FILE", 70_000, "v1");
+        let cache = Cache::new(dir.path()).unwrap();
+        assert_eq!(
+            cache.size(&f),
+            70_000,
+            "the listing's, until Apple has said"
+        );
+        assert!(!cache.whole(&f));
+        assert_eq!(read_all(&cache, &remote, &f).await, served);
+        assert_eq!(cache.size(&f), served.len() as u64);
+        assert!(cache.whole(&f));
+        // Its length asked once (one byte), then each chunk fetched once.
+        assert_eq!(
+            remote.1.lock().unwrap().clone(),
+            vec![(0, 1), (0, CHUNK), (CHUNK, 5_000)]
+        );
+        let again = Cache::new(dir.path()).unwrap();
+        assert_eq!(again.size(&f), served.len() as u64, "kept beside the bytes");
+        assert_eq!(read_all(&again, &remote, &f).await, served);
+        assert_eq!(remote.1.lock().unwrap().len(), 3, "nothing fetched again");
+    }
+
+    /// A Pages document served smaller than listed: read to its real end, never an error for
+    /// the bytes the listing promised and Apple never had — and found so even by a read that
+    /// was already part way through at the listing's length.
+    #[tokio::test]
+    async fn a_package_served_smaller_than_listed_ends_where_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let served: Vec<u8> = (0..30_000u32).map(|i| (i % 241) as u8).collect();
+        let remote = Served(served.clone(), Mutex::new(Vec::new()));
+        let f = item(
+            "FILE::x::p",
+            "Essay",
+            Some("pages"),
+            "FILE",
+            9_000_000,
+            "v1",
+        );
+        let cache = Cache::new(dir.path()).unwrap();
+        assert_eq!(read_all(&cache, &remote, &f).await, served);
+        assert_eq!(cache.size(&f), 30_000);
+        let other = tempfile::tempdir().unwrap();
+        let fresh = Cache::new(other.path()).unwrap();
+        // A plain file whose listing is right is read as before: no length asked for.
+        let plain_remote = Served(vec![7; 10], Mutex::new(Vec::new()));
+        let txt = item("FILE::x::t", "notes", Some("txt"), "FILE", 10, "v1");
+        assert_eq!(read_all(&fresh, &plain_remote, &txt).await, vec![7; 10]);
+        assert_eq!(plain_remote.1.lock().unwrap().clone(), vec![(0, 10)]);
+    }
+
+    /// Learnt from a chunk rather than asked for — a remote that cannot say up front — the
+    /// mismatch is still caught: what was kept at the wrong length is let go of and read again.
+    #[tokio::test]
+    async fn a_length_found_mid_read_starts_the_file_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let served: Vec<u8> = (0..CHUNK + 10).map(|i| (i % 239) as u8).collect();
+        let remote = Served(served.clone(), Mutex::new(Vec::new()));
+        let f = item("FILE::x::n", "Budget", Some("numbers"), "FILE", 100, "v1");
+        let cache = Cache::new(dir.path()).unwrap();
+        // As if an earlier run had read it at the listing's length and said so.
+        cache.learnt_size(&f, 100).unwrap();
+        assert_eq!(
+            cache.read(&remote, &f, 0, 100).await.unwrap(),
+            served[..100]
+        );
+        assert_eq!(cache.size(&f), served.len() as u64);
+        assert_eq!(read_all(&cache, &remote, &f).await, served);
     }
 
     /// Only the chunks read are fetched, each once; the bytes are the file's; a new version

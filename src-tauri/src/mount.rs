@@ -171,6 +171,11 @@ impl Remote for AppRemote {
     }
 
     fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>> {
+        let part = self.read_part(item, offset, len);
+        Box::pin(async move { Ok(part.await?.bytes) })
+    }
+
+    fn read_part(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<quince_vfs::Part> {
         let (app, links, item) = (self.app.clone(), Arc::clone(&self.links), item.clone());
         Box::pin(async move {
             let key = format!("{}~{}", item.drivewsid, item.etag.as_deref().unwrap_or(""));
@@ -210,11 +215,28 @@ impl Remote for AppRemote {
                     continue;
                 }
                 let whole = status == 200;
-                if status != 206 && !whole {
+                if status != 206 && !whole && status != 416 {
                     return Err(format!("Apple answered {status}"));
                 }
+                // The length as served: a range answer's total (`bytes 0-0/52311`), a 416's
+                // (`bytes */52311`: asked past the end of a file shorter than listed).
+                let total = r
+                    .headers()
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(served_total);
+                if status == 416 {
+                    return match total {
+                        Some(total) => Ok(quince_vfs::Part {
+                            bytes: Vec::new(),
+                            total: Some(total),
+                        }),
+                        None => Err(format!("Apple answered {status}")),
+                    };
+                }
                 let bytes = r.bytes().await.map_err(|e| e.to_string())?;
-                // A server that ignores the range sends the whole file: the part is cut from it.
+                // A server that ignores the range sends the whole file: the part is cut from it,
+                // and its length is the file's.
                 return Ok(if whole {
                     let from = usize::try_from(offset)
                         .unwrap_or(usize::MAX)
@@ -222,14 +244,33 @@ impl Remote for AppRemote {
                     let to = usize::try_from(offset + len)
                         .unwrap_or(usize::MAX)
                         .min(bytes.len());
-                    bytes[from..to].to_vec()
+                    quince_vfs::Part {
+                        bytes: bytes[from..to].to_vec(),
+                        total: Some(bytes.len() as u64),
+                    }
                 } else {
-                    bytes.to_vec()
+                    quince_vfs::Part {
+                        bytes: bytes.to_vec(),
+                        total,
+                    }
                 });
             }
             Err("Apple would not send the file".into())
         })
     }
+}
+
+/// The whole length a `Content-Range` gives: `bytes 0-9/52311` or `bytes */52311`. `None` for
+/// one that says it is not known (`/*`) or cannot be read.
+fn served_total(range: &str) -> Option<u64> {
+    range
+        .trim()
+        .strip_prefix("bytes")?
+        .rsplit_once('/')?
+        .1
+        .trim()
+        .parse()
+        .ok()
 }
 
 struct AppStore {
@@ -780,6 +821,15 @@ pub fn drive_keep(drivewsid: String, on: bool) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod stale_tests {
     use super::*;
+
+    /// The length a file is served at, from a range answer or a 416 past its end.
+    #[test]
+    fn a_served_length_is_read_from_content_range() {
+        assert_eq!(served_total("bytes 0-0/52311"), Some(52_311));
+        assert_eq!(served_total("bytes */52311"), Some(52_311));
+        assert_eq!(served_total("bytes 0-9/*"), None);
+        assert_eq!(served_total("items 0-9/10"), None);
+    }
 
     /// A dead mount is let go of before a new one is made over it; a folder that answers, or
     /// is not there, is left as it is.

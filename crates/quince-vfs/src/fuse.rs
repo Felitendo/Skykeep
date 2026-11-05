@@ -564,12 +564,10 @@ impl Inner {
             })
         };
         let dir = item.is_container();
+        // A file's length as served once that is known (a Pages document's is not its
+        // listing's), else as listed.
         let (mut size, mut mtime) = (
-            if dir {
-                0
-            } else {
-                u64::try_from(item.size.unwrap_or(0)).unwrap_or(0)
-            },
+            if dir { 0 } else { self.cache.size(item) },
             secs(item.modified_at),
         );
         // A file being written shows what has been written, as of when.
@@ -768,12 +766,19 @@ impl Inner {
         std::fs::create_dir_all(staged.parent().ok_or(Errno::EIO)?).map_err(disk)?;
         let file = std::fs::File::create(&staged).map_err(disk)?;
         if keep {
-            let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
             let (cache, remote, it) = (
                 Arc::clone(&self.cache),
                 Arc::clone(&self.remote),
                 item.clone(),
             );
+            // All of it, at its length as served: copied at the listing's, a Keynote document
+            // was cut short or padded, and sent back so.
+            let size = {
+                let (c, r, i) = (Arc::clone(&cache), Arc::clone(&remote), it.clone());
+                self.rt
+                    .block_on(async move { c.sized(r.as_ref(), &i).await })
+                    .map_err(|_| Errno::EIO)?
+            };
             let mut at = 0;
             while at < size {
                 let len = crate::CHUNK.min(size - at);
@@ -1398,6 +1403,20 @@ impl Filesystem for DriveFs {
                     && !inner.remote.is_local(&item)
                 {
                     return reply.error(Errno::EACCES);
+                }
+                // A file served at another length than listed (iWork's packages): its length
+                // asked of Apple before it is read, and read past what the kernel last heard,
+                // so it is never cut short at the listing's length.
+                if crate::served_size_differs(&item) && !inner.remote.is_local(&item) {
+                    let (c, r, i) = (
+                        Arc::clone(&inner.cache),
+                        Arc::clone(&inner.remote),
+                        item.clone(),
+                    );
+                    let _ = inner
+                        .rt
+                        .block_on(async move { c.sized(r.as_ref(), &i).await });
+                    return reply.opened(FileHandle(0), FopenFlags::FOPEN_DIRECT_IO);
                 }
                 return reply.opened(FileHandle(0), FopenFlags::empty());
             }
