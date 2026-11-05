@@ -1,6 +1,7 @@
 //! iCloud Photos: the library mirrored through CloudKit's change feed.
 //!
-//! Container `com.apple.photos.cloud`, zone `PrimarySync`. A photo is two records: a
+//! Container `com.apple.photos.cloud`, zone `PrimarySync` (or, for some accounts, another
+//! `PrimarySync*`: see [`library_zone`]). A photo is two records: a
 //! `CPLAsset` (what the person sees: the date, the flags, edits) pointing by `masterRef` at a
 //! `CPLMaster` (the original file and its renditions). Measured on his library: a full walk is
 //! 273 records in eight seconds, and a pass from the token with nothing new is under half a
@@ -14,7 +15,65 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 pub const CONTAINER: &str = "com.apple.photos.cloud";
-pub const ZONE: &str = "PrimarySync";
+/// The zone most libraries live in, and the one used when Apple names no other.
+pub const DEFAULT_ZONE: &str = "PrimarySync";
+
+/// Zones already found, by [`ZoneClient::scope`]: asked of Apple once per account per run.
+static ZONES: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
+
+/// The zone among `names` that holds the library: `PrimarySync` where it is there, else
+/// another `PrimarySync*` (Apple has moved some accounts' libraries to `PrimarySync1`,
+/// icloud_photos_downloader#1367, and answers `ZONE_NOT_FOUND` for `PrimarySync`). `None` when
+/// none is.
+#[must_use]
+pub fn pick_zone(names: &[String]) -> Option<&str> {
+    names
+        .iter()
+        .find(|n| *n == DEFAULT_ZONE)
+        .or_else(|| {
+            let mut moved: Vec<&String> = names
+                .iter()
+                .filter(|n| n.starts_with(DEFAULT_ZONE))
+                .collect();
+            moved.sort();
+            moved.into_iter().next()
+        })
+        .map(String::as_str)
+}
+
+/// The zone this account's library lives in, discovered from Apple's own list of zones
+/// rather than assumed. Where the list cannot be had, or names no library zone,
+/// [`DEFAULT_ZONE`]: what every account used until Apple began moving some. A failed list is
+/// not remembered, so it is asked again next time; an answer is, for the rest of the run.
+pub async fn library_zone(client: &ZoneClient<'_>) -> String {
+    let scope = client.scope();
+    if let Some(zone) = ZONES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(|m| m.get(&scope).cloned())
+    {
+        return zone;
+    }
+    match client.zone_names().await {
+        Ok(names) => {
+            let zone = pick_zone(&names).unwrap_or(DEFAULT_ZONE).to_string();
+            if zone != DEFAULT_ZONE {
+                quiet!("photos: the library is in zone {zone}");
+            }
+            ZONES
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_or_insert_with(HashMap::new)
+                .insert(scope, zone.clone());
+            zone
+        }
+        Err(e) => {
+            quiet!("photos: couldn't list the zones ({e}); reading {DEFAULT_ZONE}");
+            DEFAULT_ZONE.to_string()
+        }
+    }
+}
 /// The library's sync token, in the library's sync state.
 pub const SERVICE: &str = "photos";
 
@@ -103,10 +162,11 @@ async fn walk(
     client: &ZoneClient<'_>,
     since: Option<&str>,
 ) -> Result<(Vec<Value>, Option<String>, bool)> {
+    let zone = library_zone(client).await;
     let mut records = Vec::new();
     let mut token = since.map(str::to_string);
     for page_no in 0..PASS_PAGES {
-        let page = client.changes(ZONE, token.as_deref()).await?;
+        let page = client.changes(&zone, token.as_deref()).await?;
         // A token answered with no position at all was not taken: an expired one can come
         // back as the zone's error code alone, which reads as an empty zone.
         if page_no == 0 && since.is_some() && page.sync_token.is_none() {
@@ -674,6 +734,7 @@ pub async fn set_flag(
     on: bool,
 ) -> Result<Value> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     if flag == Flag::Expunged && on {
         return expunge_checked(&client, asset)
             .await
@@ -687,7 +748,7 @@ pub async fn set_flag(
     };
     client
         .update_record(
-            ZONE,
+            &zone,
             asset,
             "CPLAsset",
             change_tag,
@@ -704,8 +765,9 @@ async fn expunge_checked(
     client: &ZoneClient<'_>,
     asset: &str,
 ) -> std::result::Result<Value, String> {
+    let zone = library_zone(client).await;
     let current = client
-        .lookup_record(ZONE, asset)
+        .lookup_record(&zone, asset)
         .await
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in iCloud.")?;
@@ -718,7 +780,7 @@ async fn expunge_checked(
         .ok_or("Apple did not say which version of the photo it holds.")?;
     client
         .update_record_exact(
-            ZONE,
+            &zone,
             asset,
             "CPLAsset",
             tag,
@@ -745,6 +807,7 @@ pub async fn set_flags(
     on: bool,
 ) -> Result<Vec<std::result::Result<Value, String>>> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     if flag == Flag::Expunged && on {
         // Eight at a time: a full Recently Deleted empties quickly, each photo still checked.
         let mut out = Vec::with_capacity(assets.len());
@@ -773,7 +836,7 @@ pub async fn set_flags(
             )
         })
         .collect();
-    client.update_records(ZONE, "CPLAsset", &updates).await
+    client.update_records(&zone, "CPLAsset", &updates).await
 }
 
 /// A photo's title and caption set, as icloud.com's Info sets them: the title is `captionEnc`
@@ -808,8 +871,9 @@ pub async fn set_title_and_caption(
     }
     let fields = Value::Object(fields);
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     client
-        .edit_record(ZONE, asset, "CPLAsset", |_| Some(fields.clone()))
+        .edit_record(&zone, asset, "CPLAsset", |_| Some(fields.clone()))
         .await
 }
 
@@ -824,9 +888,10 @@ pub async fn set_rating(
     rating: i64,
 ) -> Result<Value> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     client
         .update_record(
-            ZONE,
+            &zone,
             asset,
             "CPLAsset",
             change_tag,
@@ -861,8 +926,9 @@ pub async fn set_keywords(
         .collect();
     let result = std::sync::Mutex::new(Vec::new());
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     let written = client
-        .edit_record(ZONE, asset, "CPLAsset", |current| {
+        .edit_record(&zone, asset, "CPLAsset", |current| {
             let mut words: Vec<String> = keywords_of(current)
                 .into_iter()
                 .filter(|w| !removed.iter().any(|r| same(r, w)))
@@ -905,9 +971,10 @@ pub async fn set_date(
     millis: i64,
 ) -> Result<Value> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     client
         .update_record(
-            ZONE,
+            &zone,
             asset,
             "CPLAsset",
             change_tag,
@@ -939,10 +1006,11 @@ pub async fn create_album(
     folder: bool,
 ) -> Result<Album> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     let position = first_position.map_or(MAX_POSITION, |p| (p - 2).max(0));
     let made = client
         .create_record_unnamed(
-            ZONE,
+            &zone,
             "CPLAlbum",
             serde_json::json!({
                 "albumNameEnc": { "value": album_name(name) },
@@ -989,10 +1057,11 @@ pub async fn rename_album(
     name: &str,
 ) -> Result<Option<String>> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     let now = jiff::Timestamp::now().as_millisecond();
     let answer = client
         .update_record(
-            ZONE,
+            &zone,
             album,
             "CPLAlbum",
             change_tag,
@@ -1017,9 +1086,10 @@ pub async fn delete_album(
     change_tag: Option<&str>,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     client
         .update_record(
-            ZONE,
+            &zone,
             album,
             "CPLAlbum",
             change_tag,
@@ -1040,6 +1110,7 @@ pub async fn add_to_album(
     last_position: Option<i64>,
 ) -> (Vec<(String, i64)>, Result<()>) {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     let mut at = last_position.unwrap_or(ITEM_SPACING);
     // What went in, even when a later one fails: the library records those, so they are not
     // shown as missing and asked for again.
@@ -1049,7 +1120,7 @@ pub async fn add_to_album(
         let name = format!("{asset}-IN-{album}");
         let made = client
             .create_record(
-                ZONE,
+                &zone,
                 &name,
                 "CPLContainerRelation",
                 serde_json::json!({
@@ -1062,11 +1133,11 @@ pub async fn add_to_album(
         if let Err(e) = made {
             // Already there — added before a failure, or taken out on another device (marked,
             // not removed): in the album now, revived if it was taken out.
-            match client.lookup_record(ZONE, &name).await {
+            match client.lookup_record(&zone, &name).await {
                 Ok(Some(existing)) => {
                     if field::int(&existing, "isDeleted") == Some(1) {
                         let revived = client
-                            .edit_record(ZONE, &name, "CPLContainerRelation", |_| {
+                            .edit_record(&zone, &name, "CPLContainerRelation", |_| {
                                 Some(serde_json::json!({
                                     "isDeleted": { "value": 0 },
                                     "position": { "value": at },
@@ -1098,9 +1169,10 @@ pub async fn remove_from_album(
     assets: &[String],
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let zone = library_zone(&client).await;
     for asset in assets {
         client
-            .delete_record(ZONE, &format!("{asset}-IN-{album}"))
+            .delete_record(&zone, &format!("{asset}-IN-{album}"))
             .await?;
     }
     Ok(())
@@ -1282,11 +1354,12 @@ pub async fn links(
     asset: &str,
 ) -> Result<Option<Links>> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let Some(m) = client.lookup_record(ZONE, master).await? else {
+    let zone = library_zone(&client).await;
+    let Some(m) = client.lookup_record(&zone, master).await? else {
         return Ok(None);
     };
     // The asset too, for an edit's pictures; without it, the master's alone.
-    let a = client.lookup_record(ZONE, asset).await.ok().flatten();
+    let a = client.lookup_record(&zone, asset).await.ok().flatten();
     Ok(Some(links_with_edit(a.as_ref(), &m)))
 }
 
@@ -2168,5 +2241,120 @@ mod tests {
             lib.sync_token(SERVICE).unwrap(),
             Some(format!("page-{PAGES}"))
         );
+    }
+}
+
+#[cfg(test)]
+mod zone_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{body_string_contains, method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn names(n: &[&str]) -> Vec<String> {
+        n.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn the_library_zone_is_primary_sync_where_there_else_the_one_apple_moved_it_to() {
+        assert_eq!(
+            pick_zone(&names(&["SharedSync-1", "PrimarySync1", "PrimarySync"])),
+            Some("PrimarySync")
+        );
+        assert_eq!(
+            pick_zone(&names(&["SharedSync-1", "PrimarySync2", "PrimarySync1"])),
+            Some("PrimarySync1")
+        );
+        assert_eq!(pick_zone(&names(&["SharedSync-1", "Other"])), None);
+        assert_eq!(pick_zone(&[]), None);
+    }
+
+    fn params(dsid: &str) -> Vec<(String, String)> {
+        vec![("dsid".into(), dsid.into())]
+    }
+
+    fn page() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({ "zones": [{
+            "records": [], "syncToken": "T", "moreComing": false
+        }] }))
+    }
+
+    /// icloud_photos_downloader#1367: an account whose library Apple moved to `PrimarySync1`
+    /// answers ZONE_NOT_FOUND for `PrimarySync`, and the library looked empty. The zone is
+    /// found from Apple's list (an entry Apple could not fetch passed over, even one named
+    /// like the library), asked once for the account, and every read goes to it.
+    #[tokio::test]
+    async fn a_library_apple_moved_is_read_from_the_zone_it_names() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(
+                r".*/com\.apple\.photos\.cloud/production/private/zones/list$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "zones": [
+                { "zoneID": { "zoneName": "PrimarySync" },
+                  "serverErrorCode": "ZONE_NOT_FOUND", "reason": "zone not found" },
+                { "zoneID": { "zoneName": "PrimarySync1", "zoneType": "REGULAR_CUSTOM_ZONE" },
+                  "syncToken": "Z" },
+                { "zoneID": { "zoneName": "SharedSync-ABC", "zoneType": "REGULAR_CUSTOM_ZONE" } }
+            ] })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .and(body_string_contains("\"zoneName\":\"PrimarySync1\""))
+            .respond_with(page())
+            .expect(2)
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let root = server.uri();
+        for _ in 0..2 {
+            let got = fetch(&http, &root, params("moved"), None).await.unwrap();
+            assert!(got.complete);
+        }
+        let client = ZoneClient::new(&http, &root, CONTAINER, params("moved"));
+        assert_eq!(library_zone(&client).await, "PrimarySync1", "remembered");
+    }
+
+    /// No list to be had: `PrimarySync`, as every library was until Apple began moving some,
+    /// and the list is asked for again next time rather than the failure remembered. A list
+    /// naming no library zone is remembered as `PrimarySync`.
+    #[tokio::test]
+    async fn without_a_list_the_library_is_read_from_primary_sync() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/zones/list$"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .and(body_string_contains("\"zoneName\":\"PrimarySync\""))
+            .respond_with(page())
+            .expect(2)
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let root = server.uri();
+        for _ in 0..2 {
+            fetch(&http, &root, params("unlisted"), None).await.unwrap();
+        }
+
+        let other = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/zones/list$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "zones": [
+                { "zoneID": { "zoneName": "SharedSync-ABC" } }
+            ] })))
+            .expect(1)
+            .mount(&other)
+            .await;
+        let other_root = other.uri();
+        for _ in 0..2 {
+            let client = ZoneClient::new(&http, &other_root, CONTAINER, params("a"));
+            assert_eq!(library_zone(&client).await, DEFAULT_ZONE);
+        }
     }
 }

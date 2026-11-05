@@ -1415,6 +1415,46 @@ impl ZoneClient<'_> {
             .collect())
     }
 
+    /// The names of the container's private zones Apple could read (`zones/list`). An entry it
+    /// could not fetch still names its zone but carries `serverErrorCode`, and is left out.
+    pub async fn zone_names(&self) -> Result<Vec<String>> {
+        let url = format!(
+            "{}/database/1/{}/production/private/zones/list",
+            self.base, self.container
+        );
+        let (status, text) = self.post_json(&url, &json!({})).await?;
+        if status.as_u16() == 450 || status.as_u16() == 401 {
+            return Err(Error::ReauthRequired);
+        }
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "CloudKit couldn't list its zones ({status})"
+            )));
+        }
+        let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        Ok(parsed
+            .get("zones")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|z| z.get("serverErrorCode").is_none())
+            .filter_map(|z| z.pointer("/zoneID/zoneName").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Who this client reads for: the database, the container and the account (`dsid`), so
+    /// something learnt of one account is never taken for another's.
+    #[must_use]
+    pub fn scope(&self) -> String {
+        let dsid = self
+            .params
+            .iter()
+            .find(|(k, _)| k == "dsid")
+            .map_or("", |(_, v)| v.as_str());
+        format!("{}|{}|{dsid}", self.base, self.container)
+    }
+
     pub async fn lookup_record(&self, zone: &str, record_name: &str) -> Result<Option<Value>> {
         let url = format!(
             "{}/database/1/{}/production/private/records/lookup",

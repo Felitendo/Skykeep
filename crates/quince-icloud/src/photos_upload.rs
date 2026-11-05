@@ -154,12 +154,14 @@ impl Service<'_> {
 }
 
 /// One file uploaded to the library: checked, sent, made into a photo, and waited on until
-/// Apple says it is there. `progress` hears each stage.
+/// Apple says it is there. `library` is the zone the library lives in
+/// ([`crate::photos::library_zone`]). `progress` hears each stage.
 #[allow(clippy::too_many_arguments)]
 pub async fn upload(
     http: &reqwest::Client,
     photosupload_root: &str,
     dsid: &str,
+    library: &str,
     path: &std::path::Path,
     name: &str,
     modified_ms: i64,
@@ -186,7 +188,7 @@ pub async fn upload(
     let (status, answer) = service
         .call(
             "createUploadUrl",
-            &json!({ "zoneName": crate::photos::ZONE, "assets": { &key: size } }),
+            &json!({ "zoneName": library, "assets": { &key: size } }),
         )
         .await?;
     if status == 507 {
@@ -255,7 +257,7 @@ pub async fn upload(
         .call(
             "putAsset",
             &json!({
-                "zoneName": crate::photos::ZONE,
+                "zoneName": library,
                 "localTimeZoneId": time_zone,
                 "importGroup": import_group,
                 "files": [{

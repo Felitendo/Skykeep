@@ -2288,13 +2288,14 @@ pub async fn photo_download(
         quince_icloud::photos::CONTAINER,
         params,
     );
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let asset = zc
-        .lookup_record(quince_icloud::photos::ZONE, &id)
+        .lookup_record(&zone, &id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in iCloud.")?;
     let master = zc
-        .lookup_record(quince_icloud::photos::ZONE, &photo.master)
+        .lookup_record(&zone, &photo.master)
         .await
         .map_err(|e| e.to_string())?
         .ok_or("That photo's file is no longer in iCloud.")?;
@@ -2815,11 +2816,20 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some((u.id.clone(), u.batch.clone(), handle));
+        let library =
+            quince_icloud::photos::library_zone(&quince_icloud::cloudkit::ZoneClient::new(
+                &http,
+                &ck,
+                quince_icloud::photos::CONTAINER,
+                params.clone(),
+            ))
+            .await;
         let result = futures_util::future::Abortable::new(
             quince_icloud::photos_upload::upload(
                 &http,
                 &upload_root,
                 &dsid,
+                &library,
                 &path,
                 &u.name,
                 modified,
@@ -2938,7 +2948,8 @@ async fn already_made(
         quince_icloud::photos::CONTAINER,
         params.to_vec(),
     );
-    match zc.lookup_record(quince_icloud::photos::ZONE, &asset).await {
+    let zone = quince_icloud::photos::library_zone(&zc).await;
+    match zc.lookup_record(&zone, &asset).await {
         Ok(Some(_)) => Made::Yes(asset),
         Ok(None) => Made::No,
         Err(_) => Made::Unknown,
