@@ -266,7 +266,7 @@ cd Skykeep && npm ci && ./run.sh
 
 Found a security problem? Please report it privately, as [SECURITY.md](SECURITY.md) explains.
 
-If Skykeep saves you a trip to the browser, a star helps other iPhone owners find it.
+If Skykeep saves you a trip to the browser, a ⭐ helps other iPhone owners find it.
 
 ## License
 
