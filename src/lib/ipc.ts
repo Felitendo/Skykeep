@@ -35,7 +35,8 @@ export type TwoFactorOptions = {
 };
 
 /** How one service's refresh ended. */
-export type SyncOutcome = "ok" | "unavailable" | "failed";
+/** `paused`: Advanced Data Protection keeps it until the next approval — waiting, not failed. */
+export type SyncOutcome = "ok" | "unavailable" | "failed" | "paused";
 
 export type ServiceReport = {
   service: string;
@@ -137,11 +138,13 @@ export type DataAccess = {
 
 export const api = {
   /** One refresh for every service. Never rejects for a single service failing. */
-  syncAll: () => invoke<Refresh>("sync_all"),
+  /** `asked`: the person pressed Sync Now, so Advanced Data Protection's approval may be asked for. */
+  syncAll: (asked?: boolean) => invoke<Refresh>("sync_all", { asked: asked ?? false }),
   /** What the library already knows about its own freshness, fetching nothing. */
   syncStatus: () => invoke<Refresh>("sync_status"),
   /** A refresh of only the services named — one app's "update now". */
-  syncSome: (services: string[]) => invoke<Refresh>("sync_some", { services }),
+  syncSome: (services: string[], asked?: boolean) =>
+    invoke<Refresh>("sync_some", { services, asked: asked ?? false }),
 
   status: () => invoke<Status>("auth_status"),
   /** Where a returning person goes: their library, the code Apple wants, or sign-in. */

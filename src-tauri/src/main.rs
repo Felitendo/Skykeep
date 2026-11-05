@@ -1715,6 +1715,17 @@ fn still_owned(library: &quince_core::Library, account: Option<&str>) -> Result<
 /// Signed in, then the library made this account's; if it could not be, signed out again with
 /// the reason, never left signed in over someone else's data.
 async fn signed_in(app: &tauri::AppHandle, client: &mut Client) -> Result<(), String> {
+    signed_in_as(app, client, data_access::Ask::Background).await
+}
+
+/// [`signed_in`], saying who it was for: the person signing in by hand is an action of theirs,
+/// and Advanced Data Protection's approval is asked for with it; a session taken up again at a
+/// launch — perhaps at login, the window in the tray — asks Apple nothing about it.
+async fn signed_in_as(
+    app: &tauri::AppHandle,
+    client: &mut Client,
+    ask: data_access::Ask,
+) -> Result<(), String> {
     if let Err(e) = claim_library(app, client).await {
         let _ = client.sign_out();
         return Err(e);
@@ -1726,13 +1737,14 @@ async fn signed_in(app: &tauri::AppHandle, client: &mut Client) -> Result<(), St
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = SessionFacts::of(client);
         // Under Advanced Data Protection, Notes, Reminders, Photos and iCloud Drive wait on an
-        // approval on the person's devices: asked for now, as they sign in or open Skykeep —
-        // once the caller has let the session go, which this step takes for itself.
+        // approval on the person's devices: asked for when they sign in by hand, read from what
+        // is held here otherwise — once the caller has let the session go, which this step
+        // takes for itself.
         data_access::forget(app);
         let app = app.clone();
         let client = Arc::clone(&auth.client);
         tauri::async_runtime::spawn(async move {
-            data_access::check(&app, &client, data_access::Ask::Window).await;
+            data_access::check(&app, &client, ask).await;
         });
     }
     Ok(())
@@ -1760,7 +1772,7 @@ async fn auth_sign_in(
     let mut client = auth.client.lock().await;
     match client.sign_in(&apple_id, &password).await {
         Ok(SignInOutcome::Complete) => {
-            signed_in(&app, &mut client).await?;
+            signed_in_as(&app, &mut client, data_access::Ask::Person).await?;
             drop(client);
             folders_up(&app).await;
             Ok("complete")
@@ -1781,7 +1793,7 @@ async fn auth_submit_code(
         .submit_two_factor(&code)
         .await
         .map_err(|e| e.to_string())?;
-    signed_in(&app, &mut client).await?;
+    signed_in_as(&app, &mut client, data_access::Ask::Person).await?;
     drop(client);
     folders_up(&app).await;
     Ok(())
@@ -1828,7 +1840,7 @@ async fn auth_submit_sms_code(
         .submit_sms_code(phone_id, &code)
         .await
         .map_err(|e| e.to_string())?;
-    signed_in(&app, &mut client).await?;
+    signed_in_as(&app, &mut client, data_access::Ask::Person).await?;
     drop(client);
     folders_up(&app).await;
     Ok(())
@@ -5498,11 +5510,17 @@ async fn sync_all(
     app: tauri::AppHandle,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
+    asked: Option<bool>,
 ) -> UiResult<refresh::Refresh> {
     let client = Arc::clone(&auth.client);
     keep_signed_in(&app, &client).await;
+    // The person pressed Sync Now: Advanced Data Protection's approval is asked for with it.
+    // A pass the window starts by itself (opening, coming back) asks Apple nothing about it.
+    if asked == Some(true) {
+        data_access::check(&app, &client, data_access::Ask::Person).await;
+    }
     let result = refresh::all(&client, &data.0).await;
-    data_access::after_pass(&app, &client, data_access::Ask::Window).await;
+    data_access::after_pass(&app, &client).await;
     alerts::changed();
     warm_contact_photos(app.clone());
     // Screens read the library, not the network, so they only need to be told to look again —
@@ -5522,12 +5540,16 @@ async fn sync_some(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
     services: Vec<String>,
+    asked: Option<bool>,
 ) -> UiResult<refresh::Refresh> {
     let client = Arc::clone(&auth.client);
     keep_signed_in(&app, &client).await;
+    if asked == Some(true) {
+        data_access::check(&app, &client, data_access::Ask::Person).await;
+    }
     let names: Vec<&str> = services.iter().map(String::as_str).collect();
     let result = refresh::some(&client, &data.0, &names).await;
-    data_access::after_pass(&app, &client, data_access::Ask::Window).await;
+    data_access::after_pass(&app, &client).await;
     alerts::changed();
     if names.contains(&"contacts") {
         warm_contact_photos(app.clone());
@@ -5559,7 +5581,7 @@ fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
             keep_signed_in(&app, &client).await;
             let data = app.state::<Data>();
             let result = refresh::all(&client, &data.0).await;
-            data_access::after_pass(&app, &client, data_access::Ask::Background).await;
+            data_access::after_pass(&app, &client).await;
             alerts::changed();
             warm_contact_photos(app.clone());
             app.emit(SYNCED, told(&result)).ok();

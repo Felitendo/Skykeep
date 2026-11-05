@@ -2,11 +2,20 @@
 //!
 //! An account with Advanced Data Protection and "Access iCloud Data on the Web" on lets this
 //! session read Notes, Reminders, Photos and iCloud Drive only once the person approves it on
-//! one of their devices, and for about an hour at a time. Here that is asked for, followed and
-//! told: the approval is put on their devices when they sign in or open a window — at most once
-//! a lapse unless they ask again — and never by a background pass; while it is on its way the
-//! client is taken only for each step, so nothing else waits behind it; and once it is given,
-//! the services that were waiting on it are read at once.
+//! one of their devices, for about an hour at a time, and every key Apple then releases shows a
+//! notice on their devices. So this is never background work:
+//!
+//! * Apple is asked only when the person acts — signing in, or pressing Sync Now (the approval
+//!   card's button, or an explicit refresh). Every protected service is asked for in that one
+//!   go, back to back, so one approval covers them all.
+//! * A background pass (the timer, a push, a window coming back) asks Apple nothing about it:
+//!   it reads where things stand from what is held here ([`Client::data_access_standing`]), and
+//!   the protected services wait — not fail — until the next approval. Calendar and Contacts,
+//!   which Apple does not protect this way, carry on as usual.
+//! * Keys are held only until they run out, by the time recorded when they arrived, so passes
+//!   stop asking for a protected service before Apple would refuse it.
+//! * While an approval is on its way the client is taken only for each step, so nothing waits
+//!   behind it; once it is given, what was waiting is read and the changes queued meanwhile go.
 
 use crate::Auth;
 use quince_auth::pcs::{self, DataAccess};
@@ -43,21 +52,23 @@ impl Access {
 static NOW: std::sync::Mutex<Access> = std::sync::Mutex::new(Access::OPEN);
 /// An approval is being followed: a second follower would only double the requests.
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
-/// The approval was put on the person's devices without their asking, this lapse: not again
-/// until access opens or they ask.
-static ASKED_UNASKED: AtomicBool = AtomicBool::new(false);
-/// Services a pass found refused for want of their key, for the next step to ask for again.
+/// Services a pass found refused for want of their key, for the next step to count as missing.
 static REFUSED: std::sync::Mutex<BTreeSet<&'static str>> = std::sync::Mutex::new(BTreeSet::new());
 
-/// Who is asking for a step, which decides whether it may put a prompt on the person's phone.
+/// Who is asking, which decides whether Apple is asked at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
-    /// The person, from the prompt's button: always.
+    /// The person: signing in, or pressing Sync Now. Apple is asked, and the approval put on
+    /// their devices when it is needed.
     Person,
-    /// A sign-in, or a window opening or coming back: once a lapse.
-    Window,
-    /// A background pass: never.
+    /// Anything else — the timer, a push, a window opening or coming back. Nothing is asked of
+    /// Apple; where things stand is read from what is held here.
     Background,
+}
+
+/// Whether a step for `ask` may send anything to Apple.
+fn asks_apple(ask: Ask) -> bool {
+    ask == Ask::Person
 }
 
 /// Where it stands now.
@@ -67,10 +78,14 @@ pub fn current() -> Access {
         .clone()
 }
 
-/// A new sign-in, or a sign-out: nothing from the session before carries over — its approval,
-/// its refusals, or that it already asked once.
+/// The protected services a pass should leave alone now: their keys are not held, so asking
+/// Apple for them would only be refused. Read from what is held here; asks Apple nothing.
+pub fn waiting(client: &Client) -> Vec<&'static str> {
+    client.data_access_missing()
+}
+
+/// A new sign-in, or a sign-out: nothing from the session before carries over.
 pub fn forget(app: &tauri::AppHandle) {
-    ASKED_UNASKED.store(false, Ordering::SeqCst);
     REFUSED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -78,7 +93,7 @@ pub fn forget(app: &tauri::AppHandle) {
     set(app, Access::OPEN);
 }
 
-/// A pass found `service` refused by Advanced Data Protection.
+/// A pass found `service` refused by Advanced Data Protection: a key Apple let go early.
 pub fn refused(service: &'static str) {
     REFUSED
         .lock()
@@ -100,16 +115,9 @@ fn set(app: &tauri::AppHandle, next: Access) {
     }
 }
 
-/// Whether this step may ask the person's devices.
-fn may_ask(ask: Ask) -> bool {
-    match ask {
-        Ask::Person => true,
-        Ask::Window => !ASKED_UNASKED.swap(true, Ordering::SeqCst),
-        Ask::Background => false,
-    }
-}
-
-/// Take one step, tell the window, and follow an approval that is on its way.
+/// Take one step and tell the window. For the person, Apple is asked — every missing service
+/// in one go — and an approval on its way is followed; for anything else, only what is held
+/// here is read.
 pub async fn check(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>, ask: Ask) {
     let (step, missing) = {
         let mut guard = client.lock().await;
@@ -123,27 +131,30 @@ pub async fn check(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>, ask: Ask
         ) {
             guard.data_access_lapsed(service);
         }
-        let missing = guard.data_access_missing();
-        if missing.is_empty() && guard.session().web_access_allowed != Some(false) {
-            (Ok(DataAccess::Open), missing)
+        let step = if asks_apple(ask) {
+            guard.data_access(true).await
         } else {
-            let asking = may_ask(ask);
-            let step = guard.data_access(asking).await;
-            (step, guard.data_access_missing())
-        }
+            Ok(guard.data_access_standing())
+        };
+        (step, guard.data_access_missing())
     };
+    // An approval being followed is the follower's to settle; a background look at what is
+    // held here (nothing yet) must not say "needed" over "waiting".
+    if ask == Ask::Background && FOLLOWING.load(Ordering::SeqCst) {
+        return;
+    }
     settle(app, client, step, missing, ask);
 }
 
-/// After a pass: when Advanced Data Protection kept a service out, the step that asks for its
-/// key again — at once, so the window says so rather than the service's failure alone.
-pub async fn after_pass(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>, ask: Ask) {
+/// After a pass: when Advanced Data Protection kept a service out (a key let go early), say
+/// where things stand — from what is held here, asking Apple nothing.
+pub async fn after_pass(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
     let any = !REFUSED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .is_empty();
     if any {
-        check(app, client, ask).await;
+        check(app, client, Ask::Background).await;
     }
 }
 
@@ -177,8 +188,8 @@ fn settle(
                 problem: None,
             },
         ),
-        // Not reached, or Apple busy: nothing is known to have changed. Said only when the
-        // person asked; a background pass simply tries again next time.
+        // Not reached, or Apple busy: nothing is known to have changed. Said to the person who
+        // asked; nothing else asks.
         Err(e @ (quince_auth::Error::Network(_) | quince_auth::Error::Unavailable(_))) => {
             if ask == Ask::Person {
                 set(
@@ -204,9 +215,9 @@ fn settle(
     }
 }
 
-/// Every key is here (or none was ever needed): said, and what was waiting on it read now.
+/// Every key is here (or none was ever needed): said, and what was waiting on it read now —
+/// and the changes made here meanwhile sent.
 fn opened(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>, was: &Access) {
-    ASKED_UNASKED.store(false, Ordering::SeqCst);
     set(app, Access::OPEN);
     if was.state == DataAccess::Open || was.services.is_empty() {
         return;
@@ -215,6 +226,7 @@ fn opened(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>, was: &Access) {
     let app = app.clone();
     let client = Arc::clone(client);
     tauri::async_runtime::spawn(async move {
+        crate::outbox::kick();
         let data = app.state::<crate::Data>();
         crate::refresh::some(&client, &data.0, &services).await;
         crate::alerts::changed();
@@ -224,8 +236,9 @@ fn opened(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>, was: &Access) {
     });
 }
 
-/// Follow an approval on its way, one step at a time on [`pcs::APPROVAL_SCHEDULE`], taking the
-/// client only for each step.
+/// Follow an approval the person asked for, one step at a time on [`pcs::APPROVAL_SCHEDULE`],
+/// taking the client only for each step. Each step asks only whether it was given, and fetches
+/// the keys once it is: no second prompt.
 fn follow(app: tauri::AppHandle, client: Arc<Mutex<Client>>, waiting_on: Vec<&'static str>) {
     if FOLLOWING.swap(true, Ordering::SeqCst) {
         return;
@@ -254,7 +267,7 @@ fn follow(app: tauri::AppHandle, client: Arc<Mutex<Client>>, waiting_on: Vec<&'s
         FOLLOWING.store(false, Ordering::SeqCst);
         let still = client.lock().await.data_access_missing();
         let waiting_on = if still.is_empty() { waiting_on } else { still };
-        settle(&app, &client, landed, waiting_on, Ask::Background);
+        settle(&app, &client, landed, waiting_on, Ask::Person);
     });
 }
 
@@ -264,7 +277,8 @@ pub async fn data_access_status() -> Result<Access, String> {
     Ok(current())
 }
 
-/// The person asked: put the approval on their devices again, and follow it.
+/// The person pressed Sync Now: ask Apple — the approval on their devices when it is needed,
+/// every protected service in one go — and follow it.
 #[tauri::command]
 pub async fn data_access_ask(
     app: tauri::AppHandle,
@@ -279,24 +293,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_background_pass_never_puts_a_prompt_on_the_phone() {
-        assert!(!may_ask(Ask::Background));
-        assert!(may_ask(Ask::Person));
-    }
-
-    #[test]
-    fn a_window_asks_once_a_lapse_and_the_person_whenever_they_like() {
-        ASKED_UNASKED.store(false, Ordering::SeqCst);
-        assert!(may_ask(Ask::Window), "the first window asks");
+    fn only_the_person_ever_has_apple_asked() {
+        assert!(asks_apple(Ask::Person));
         assert!(
-            !may_ask(Ask::Window),
-            "the next ones do not, until access opens"
-        );
-        assert!(may_ask(Ask::Person), "the person's own ask always goes");
-        ASKED_UNASKED.store(false, Ordering::SeqCst);
-        assert!(
-            may_ask(Ask::Window),
-            "after access opened, the next lapse asks again"
+            !asks_apple(Ask::Background),
+            "no background pass sends Apple anything about keys"
         );
     }
 

@@ -627,6 +627,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             <span className={`settings-value${s.outcome === "failed" ? " is-trouble" : ""}`}>
               {s.outcome === "failed"
                 ? (s.detail ?? "Didn't update")
+                : s.outcome === "paused"
+                  ? `${freshness(s.lastSyncedAt ?? null)}. Syncs when you approve`
                 : syncing && !s.lastSyncedAt
                   ? "Downloading…"
                   : freshness(s.lastSyncedAt ?? null)}
@@ -635,7 +637,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         ))}
         <div className="settings-row">
           <span className="settings-label settings-hint">Changes from your other devices arrive within seconds.</span>
-          <button className="quiet" onClick={() => void refresh()} disabled={syncing}>
+          <button className="quiet" onClick={() => void refresh(true)} disabled={syncing}>
             {syncing ? "Syncing…" : "Sync Now"}
           </button>
         </div>

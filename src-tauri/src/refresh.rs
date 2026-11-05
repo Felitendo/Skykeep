@@ -34,6 +34,10 @@ pub enum Outcome {
     Unavailable,
     /// It was tried and failed. What is on screen is the last good data.
     Failed,
+    /// Advanced Data Protection keeps it until the person next approves on one of their
+    /// devices: not asked for, not failed. What is on screen is the copy here, and changes
+    /// made meanwhile wait to be sent.
+    Paused,
 }
 
 /// What one service's refresh did.
@@ -131,6 +135,8 @@ struct Context {
     /// The account it is all for (`account_tag`): nothing it brings is kept in a library that
     /// is not that account's.
     account: Option<String>,
+    /// Services Advanced Data Protection keeps until the next approval: left alone this pass.
+    waiting: Vec<&'static str>,
 }
 
 async fn context(client: &Arc<Mutex<Client>>) -> Context {
@@ -144,7 +150,34 @@ async fn context(client: &Arc<Mutex<Client>>) -> Context {
         cloudkit: session.service_url("ckdatabasews"),
         drive: session.service_url("drivews"),
         account: session.dsid.as_deref().map(crate::account_tag),
+        waiting: crate::data_access::waiting(&guard),
     }
+}
+
+/// A service Advanced Data Protection keeps until the next approval, reported as waiting —
+/// with when it last synced — and not asked of Apple: asked, it would only be refused.
+async fn paused(service: &'static str, label: &'static str, data: &LibraryLock) -> ServiceReport {
+    ServiceReport {
+        service,
+        label,
+        outcome: Outcome::Paused,
+        detail: Some(PAUSED_WORDS.into()),
+        last_synced_at: data
+            .read(|library| Ok(library.last_synced(service).ok().flatten()))
+            .await
+            .ok()
+            .flatten(),
+        changed: false,
+        items: None,
+    }
+}
+
+/// What a waiting service says.
+pub const PAUSED_WORDS: &str = "Syncs when you approve Skykeep on your iPhone, iPad or Mac.";
+
+/// Whether this pass leaves `service` alone for Advanced Data Protection.
+fn waits(service: &str, waiting: &[&'static str]) -> bool {
+    waiting.contains(&service)
 }
 
 /// Told each time one service's part of a pass has been stored, before the rest are done,
@@ -320,6 +353,9 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
         }
         let report = match ctx.cloudkit.as_deref() {
             None => arrived((unavailable("reminders", "Reminders"), true)),
+            Some(_) if waits("reminders", &ctx.waiting) => {
+                paused("reminders", "Reminders", data).await
+            }
             Some(root) => arrived(
                 once("reminders", &crate::REMINDERS_PASS, || async {
                     let since = token(data, "reminders").await;
@@ -368,6 +404,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
         }
         let report = match ctx.cloudkit.as_deref() {
             None => arrived((unavailable("notes", "Notes"), true)),
+            Some(_) if waits("notes", &ctx.waiting) => paused("notes", "Notes", data).await,
             Some(root) => arrived(
                 once("notes", &crate::NOTES_PASS, || async {
                     // One notes pass at a time, from reading the position through storing what came
@@ -477,6 +514,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
         }
         let report = match ctx.drive.as_deref() {
             None => arrived((unavailable("drive", "Drive"), true)),
+            Some(_) if waits("drive", &ctx.waiting) => paused("drive", "Drive", data).await,
             Some(root) => {
                 let pass = crate::drive_pass(quince_core::drive::ROOT);
                 arrived(
@@ -520,6 +558,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
         }
         let report = match ctx.cloudkit.as_deref() {
             None => arrived((unavailable("photos", "Photos"), true)),
+            Some(_) if waits("photos", &ctx.waiting) => paused("photos", "Photos", data).await,
             Some(root) => arrived(
                 once("photos", &crate::PHOTOS_PASS, || async {
                     // A large library is read a few pages at a time, each stored before the next
@@ -852,6 +891,15 @@ where
             // and the service read again once it is given (`data_access`).
             if matches!(e, quince_icloud::Error::NeedsDeviceApproval) {
                 crate::data_access::refused(service);
+                return ServiceReport {
+                    service,
+                    label,
+                    outcome: Outcome::Paused,
+                    detail: Some(PAUSED_WORDS.into()),
+                    last_synced_at: library.last_synced(service).ok().flatten(),
+                    changed: false,
+                    items: None,
+                };
             }
             let message = e.to_string();
             library.mark_sync_failed(service, &message).ok();
@@ -1042,5 +1090,31 @@ mod tests {
         let (report, ran) = once("contacts", &LOCK, pass(None)).await;
         assert!(ran, "an ask after the burst runs its own pass");
         assert_eq!(report.detail.as_deref(), Some("pass 3"));
+    }
+}
+
+#[cfg(test)]
+mod paused_tests {
+    use super::*;
+
+    #[test]
+    fn a_waiting_service_is_left_alone_and_the_rest_are_not() {
+        let waiting = ["notes", "reminders", "photos", "drive"];
+        for s in waiting {
+            assert!(waits(s, &waiting));
+        }
+        for s in ["calendar", "contacts"] {
+            assert!(
+                !waits(s, &waiting),
+                "{s} is never held by Advanced Data Protection"
+            );
+        }
+        assert!(!waits("notes", &[]), "approved: nothing is left alone");
+    }
+
+    #[test]
+    fn waiting_reads_as_waiting_not_failure() {
+        assert_eq!(serde_json::to_value(Outcome::Paused).unwrap(), "paused");
+        assert!(!PAUSED_WORDS.to_lowercase().contains("error"));
     }
 }

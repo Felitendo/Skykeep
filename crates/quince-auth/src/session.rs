@@ -117,6 +117,11 @@ pub struct Session {
     /// whose key cookie is not known by name; the rest are read from the cookies themselves.
     #[serde(default)]
     pub pcs_until: std::collections::BTreeMap<String, u64>,
+    /// Whether Advanced Data Protection is in effect, as Apple itself has shown it — its
+    /// `requestWebAccessState` answer, or a refusal for want of a key — rather than as the
+    /// sign-in's flags say. `None` until Apple has shown either.
+    #[serde(default)]
+    pub data_protection_seen: Option<bool>,
     /// Apple has new iCloud terms the person has not agreed to (`termsUpdateNeeded`). Until
     /// they do, `accountLogin` opens only part of a web session — no `X-APPLE-WEBAUTH-TOKEN`
     /// — and every service, Calendar and Contacts too, answers "Missing X-APPLE-WEBAUTH-TOKEN

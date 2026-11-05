@@ -164,9 +164,6 @@ where
 /// What this run of the app knows about approvals, beside what the session keeps.
 #[derive(Debug, Default)]
 pub(crate) struct Pcs {
-    /// Apple said recovery is on — Advanced Data Protection is not in effect — until then
-    /// (unix seconds): not asked again every pass.
-    open_until: Option<u64>,
     /// When an approval was last put on the person's devices.
     asked_at: Option<u64>,
     /// Services already asked for with `derivedFromUserAction`, so the ones after are not
@@ -175,9 +172,6 @@ pub(crate) struct Pcs {
     /// Services Apple refused for want of their key even though one was held — it ran out,
     /// or Apple let it go: asked for again whatever the cookies say.
     stale: HashSet<&'static str>,
-    /// A service was refused for want of its key on an account that never said it had
-    /// Advanced Data Protection: it does, so every covered service is treated as protected.
-    seen_locked: bool,
 }
 
 /// One answer from the setup service: its status and JSON body.
@@ -202,13 +196,6 @@ impl Client {
         if self.session.web_access_allowed == Some(false) || self.waits_on_icloud_com() {
             return Vec::new();
         }
-        if self
-            .pcs
-            .open_until
-            .is_some_and(|until| until > crate::unix_now())
-        {
-            return Vec::new();
-        }
         self.protected_here()
             .filter(|p| !self.holds_key(p))
             .map(|p| p.service)
@@ -220,8 +207,9 @@ impl Client {
     /// cookies held say.
     pub fn data_access_lapsed(&mut self, service: &str) {
         let Some(p) = protected(service) else { return };
-        self.pcs.seen_locked = true;
-        self.pcs.open_until = None;
+        // Apple's own refusal is proof the account has Advanced Data Protection, whatever its
+        // flags said (iCDPEnabled can read false with it on: rclone#9658).
+        self.session.data_protection_seen = Some(true);
         self.pcs.stale.insert(p.service);
         self.session.pcs_until.remove(p.app_name);
     }
@@ -235,22 +223,31 @@ impl Client {
             ..Pcs::default()
         };
         self.session.pcs_until.clear();
+        // Perhaps another account: what Apple showed of the last one says nothing of this one.
+        self.session.data_protection_seen = None;
     }
 
-    /// The protected services Apple offers this account and says it guards: by Advanced Data
-    /// Protection being on, by the service map's `pcsRequired`, or by a refusal seen here.
+    /// Whether this account has Advanced Data Protection in effect, on evidence: Apple's own
+    /// word from `requestWebAccessState` or a refusal for want of a key, which outrank the
+    /// sign-in's `iCDPEnabled`. `pcsRequired` alone is not evidence (icloudpy#214): an account
+    /// without ADP can carry it, and reading it as ADP held such an account's Notes back.
+    fn data_protection_on(&self) -> bool {
+        match self.session.data_protection_seen {
+            Some(seen) => seen,
+            None => self.session.data_protection == Some(true),
+        }
+    }
+
+    /// The protected services Apple offers this account, when it has Advanced Data Protection.
     fn protected_here(&self) -> impl Iterator<Item = &'static Protected> + '_ {
-        let adp = self.session.data_protection == Some(true) || self.pcs.seen_locked;
+        let adp = self.data_protection_on();
         PROTECTED.iter().filter(move |p| {
-            let Some(ws) = self
+            adp && self
                 .session
                 .webservices
                 .as_ref()
                 .and_then(|w| w.get(p.webservice))
-            else {
-                return false;
-            };
-            adp || ws.get("pcsRequired").and_then(Value::as_bool) == Some(true)
+                .is_some()
         })
     }
 
@@ -260,13 +257,19 @@ impl Client {
             return false;
         }
         let now = crate::unix_now();
+        // Every key is held only until the time recorded when it arrived — its cookie's
+        // expiry, the approval's, and Apple's hour, whichever is first — so a pass stops asking
+        // for the service before Apple would refuse it, never after.
         let recorded = self
             .session
             .pcs_until
             .get(p.app_name)
             .is_some_and(|until| *until > now);
+        if !recorded {
+            return false;
+        }
         if p.cookies.is_empty() {
-            return recorded;
+            return true;
         }
         let jar = self
             .jar
@@ -276,24 +279,44 @@ impl Client {
         p.cookies.iter().all(|name| held.contains(name))
     }
 
-    /// When the keys just attached run out: the earliest PCS cookie's expiry, else the
-    /// approval's, else Apple's hour from now.
+    /// When the keys just attached run out: whichever comes first of the earliest PCS cookie's
+    /// expiry, the approval's (`deviceConsentForPCSExpiry`) and Apple's hour from now — the
+    /// hour Apple's security guide gives an approval, and what people report seeing.
     fn keys_until(&self, consent_until: Option<u64>) -> u64 {
         let now = crate::unix_now();
         let jar = self
             .jar
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        jar.iter_unexpired()
+        let cookie = jar
+            .iter_unexpired()
             .filter(|c| c.name().starts_with("X-APPLE-WEBAUTH-PCS-"))
             .filter_map(|c| match c.expires {
                 cookie_store::CookieExpiration::AtUtc(t) => u64::try_from(t.unix_timestamp()).ok(),
                 cookie_store::CookieExpiration::SessionEnd => None,
             })
-            .min()
-            .or(consent_until)
+            .min();
+        [cookie, consent_until, Some(now + KEY_HOUR)]
+            .into_iter()
+            .flatten()
             .filter(|t| *t > now)
+            .min()
             .unwrap_or(now + KEY_HOUR)
+    }
+
+    /// Where letting this session read end-to-end encrypted data stands, from what is held
+    /// here alone: no request, no prompt, no notification on anyone's phone. What a background
+    /// pass goes by — only the person's own action asks Apple ([`Self::data_access`]).
+    #[must_use]
+    pub fn data_access_standing(&self) -> DataAccess {
+        if self.session.web_access_allowed == Some(false) {
+            return DataAccess::WebAccessOff;
+        }
+        if self.data_access_missing().is_empty() {
+            DataAccess::Open
+        } else {
+            DataAccess::Needed
+        }
     }
 
     /// One `POST` to the setup service. Apple's words stay out of every error: what it says
@@ -326,9 +349,11 @@ impl Client {
     /// Take one step toward reading this account's end-to-end encrypted services, and say
     /// where it got to. Asks Apple nothing when nothing is missing.
     ///
-    /// `ask` lets this put the approval on the person's devices when it is needed — for a
-    /// sign-in, a window opening, or the person asking. A background pass does not: a prompt
-    /// on their phone every hour, unasked, is not something to do to anyone.
+    /// Called only for something the person did — signing in, pressing Sync Now — or to follow
+    /// the approval that asked for: every key Apple releases shows a notice on their devices,
+    /// so a background pass reads [`Self::data_access_standing`] instead and asks nothing.
+    /// `ask` lets this put the approval itself on their devices when none is given; following
+    /// one already asked for, it is `false`.
     pub async fn data_access(&mut self, ask: bool) -> Result<DataAccess> {
         if self.session.web_access_allowed == Some(false) {
             return Ok(DataAccess::WebAccessOff);
@@ -356,7 +381,7 @@ impl Client {
         // An account that said it has Advanced Data Protection, or was refused for want of a
         // key, and an answer with no word of recovery either way: not something to read as
         // "nothing to approve", which would leave its services failing without saying why.
-        let said_adp = self.session.data_protection == Some(true) || self.pcs.seen_locked;
+        let said_adp = self.data_protection_on();
         if said_adp && state.flag("isICDRSDisabled").is_none() {
             return Err(Error::Protocol(format!(
                 "Apple didn't say whether this session may read your encrypted data (HTTP {})",
@@ -364,10 +389,13 @@ impl Client {
             )));
         }
         if state.flag("isICDRSDisabled") != Some(true) {
-            // Recovery is on, so Apple holds the keys itself: no approval opens anything more.
-            self.pcs.open_until = Some(crate::unix_now() + KEY_HOUR);
+            // Recovery is on, so Apple holds the keys itself: no approval opens anything more,
+            // and nothing is held back for one — remembered, so it is not asked again.
+            self.session.data_protection_seen = Some(false);
+            self.keep();
             return Ok(DataAccess::Open);
         }
+        self.session.data_protection_seen = Some(true);
         let consent_until = state
             .body
             .get("deviceConsentForPCSExpiry")
@@ -425,7 +453,8 @@ impl Client {
             }
             // Recovery on after all (Apple's "User has not disabled iCloud DRS"): no key needed.
             if answer.status.as_u16() == 412 || message.contains("iCloud DRS") {
-                self.pcs.open_until = Some(crate::unix_now() + KEY_HOUR);
+                self.session.data_protection_seen = Some(false);
+                self.keep();
                 return Ok(DataAccess::Open);
             }
             if answer.status.as_u16() == 500 && message.contains(WEB_AUTH_COOKIE) {

@@ -134,13 +134,15 @@ plainly and shows the switch; it does not work around it.
 With "Access iCloud Data on the Web" on, Skykeep uses Apple's own approval, the one
 icloud.com uses (`crates/quince-auth/src/pcs.rs`). Calendar and Contacts work as usual. For
 Notes, Reminders, Photos and iCloud Drive, Skykeep asks Apple to put an approval request on
-your trusted iPhone, iPad or Mac. It asks when you sign in or open a window, at most once
-each time access runs out, or when you press Try Again, and never from a background sync.
-Once you approve, Apple's servers have that device send each service's key to this session.
-The keys arrive as `X-APPLE-WEBAUTH-PCS-*` cookies and are kept in Skykeep's sealed cookie
-jar with the rest of the session. Apple limits an approval to about an hour. While it lasts,
-Skykeep collects a key that ran out again without asking you. After that, it asks you to
-approve again.
+your trusted iPhone, iPad or Mac. It asks only when you act: when you sign in, or when you
+press Sync Now. It never asks from a background sync, a window opening or the timer. One
+approval covers all four services, which Skykeep asks for one after another.
+Once you approve, Apple's servers have that device send each service's key to this session,
+and your devices show that they did. The keys arrive as `X-APPLE-WEBAUTH-PCS-*` cookies and
+are kept in Skykeep's sealed cookie jar with the rest of the session. Apple limits an
+approval to about an hour. Skykeep stops syncing those four services when the approval or
+its keys run out, whichever comes first. Your copy on this computer stays readable, and
+changes you make wait in the queue until you approve again.
 
 Skykeep never sees your device keys. It never approves anything for you, and it never turns
 Advanced Data Protection or any other Apple setting on or off. Health data and passwords in

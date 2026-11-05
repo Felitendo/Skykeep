@@ -100,8 +100,8 @@ function UpdateKeys({ screen }: { screen: string | null }) {
       if (!reload) return;
       e.preventDefault();
       if (e.repeat) return;
-      if (screen && SCREENS.some((s) => s.key === screen)) void refreshService(serviceOf(screen));
-      else void refresh();
+      if (screen && SCREENS.some((s) => s.key === screen)) void refreshService(serviceOf(screen), true);
+      else void refresh(true);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -334,13 +334,19 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
   useEffect(() => {
     if (access?.state === "webAccessOff") setWebAccess(false);
   }, [access]);
-  /** Which services already have their copy on this computer, while an approval is awaited. */
-  const [held, setHeld] = useState<Record<string, boolean>>({});
+  /** When each service last synced, while an approval is awaited: one with a copy here keeps it. */
+  const [lastSynced, setLastSynced] = useState<Record<string, number | null>>({});
   useEffect(() => {
-    if (!access || access.state === "open") return;
-    api
-      .syncStatus()
-      .then((r) => setHeld(Object.fromEntries(r.services.map((s) => [s.service, Boolean(s.lastSyncedAt)]))), () => {});
+    if (!access || access.state === "open") return undefined;
+    const read = () =>
+      api
+        .syncStatus()
+        .then((r) => setLastSynced(Object.fromEntries(r.services.map((s) => [s.service, s.lastSyncedAt ?? null]))), () => {});
+    void read();
+    const off = listen(SYNCED, () => void read());
+    return () => {
+      void off.then((f) => f());
+    };
   }, [access]);
 
   useEffect(() => {
@@ -409,7 +415,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
    */
   const frontService = selected && selected !== "settings" ? serviceOf(selected) : null;
   const approval: "screen" | "notice" | null =
-    frontService && access && awaitsApproval(access, frontService) ? (held[frontService] ? "notice" : "screen") : null;
+    frontService && access && awaitsApproval(access, frontService) ? (lastSynced[frontService] ? "notice" : "screen") : null;
   const noScreen =
     Boolean(error) || (ready && (!selected || webAccess === false || approval === "screen" || atIcloud !== null));
   useEffect(() => {
@@ -708,7 +714,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
                   selection, its scroll — as a Mac app's windows are. Out of sight it is inert,
                   draws no menus and answers no keys (lib/screen). */}
               {approval === "screen" && access && frontService && (
-                <ApprovalScreen access={access} service={frontService} onAccess={setAccess} />
+                <ApprovalScreen access={access} onAccess={setAccess} />
               )}
               {kept.map((key) => {
                 const on = key === selected && approval !== "screen";
@@ -736,7 +742,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
         </main>
         <ToastHost>
           {approval === "notice" && access && frontService && (
-            <ApprovalNotice access={access} service={frontService} onAccess={setAccess} />
+            <ApprovalNotice access={access} lastSyncedAt={lastSynced[frontService] ?? null} onAccess={setAccess} />
           )}
           <UpdateNotice />
         </ToastHost>

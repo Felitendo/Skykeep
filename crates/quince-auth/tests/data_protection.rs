@@ -241,6 +241,23 @@ async fn pcs_required_with_recovery_on_asks_once_and_needs_nothing() {
         })))
         .mount(&server)
         .await;
+    // `pcsRequired` alone is no evidence: nothing held back, nothing asked.
+    assert!(client.data_access_missing().is_empty());
+    assert_eq!(client.data_access_standing(), DataAccess::Open);
+    assert_eq!(client.data_access(true).await.unwrap(), DataAccess::Open);
+    assert_eq!(asked(&server, STATE).await, 0, "nothing asked of Apple");
+
+    // iCDPEnabled, and Apple says recovery is on: asked once, then remembered, a restart too.
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = signed_in(&server, dir.path(), ADP, false).await;
+    Mock::given(method("POST"))
+        .and(path(STATE))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "dsid": 1234567890, "isWebAccessAllowed": true, "isICDRSDisabled": false
+        })))
+        .mount(&server)
+        .await;
     assert_eq!(client.data_access(true).await.unwrap(), DataAccess::Open);
     assert_eq!(client.data_access(true).await.unwrap(), DataAccess::Open);
     assert_eq!(
@@ -254,6 +271,17 @@ async fn pcs_required_with_recovery_on_asks_once_and_needs_nothing() {
         "no prompt on anyone's phone"
     );
     assert!(client.data_access_missing().is_empty());
+    drop(client);
+    let again = Client::with(
+        dir.path(),
+        Endpoints::at(&server.uri()),
+        Store::file(dir.path()).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        again.data_access_missing().is_empty(),
+        "and after a restart"
+    );
 }
 
 /// Advanced Data Protection with web access off: the existing page, and nothing asked.
@@ -816,4 +844,107 @@ async fn signing_out_forgets_the_keys() {
         client.data_access_missing().is_empty(),
         "signed out: no services at all"
     );
+}
+
+/// What a background pass goes by: read from what is held here — no request to Apple, so no
+/// prompt and no notice on anyone's phone, however often it runs.
+#[tokio::test]
+async fn where_access_stands_is_read_without_asking_apple() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let client = signed_in(&server, dir.path(), ADP, false).await;
+    let before = server.received_requests().await.unwrap().len();
+    for _ in 0..10 {
+        assert_eq!(client.data_access_standing(), DataAccess::Needed);
+    }
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        before,
+        "nothing asked of Apple"
+    );
+
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let client = signed_in(&server, dir.path(), STANDARD, false).await;
+    assert_eq!(
+        client.data_access_standing(),
+        DataAccess::Open,
+        "no ADP: nothing waits"
+    );
+    let shape = Shape {
+        web_access: Some(false),
+        ..ADP
+    };
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let client = signed_in(&server, dir.path(), shape, false).await;
+    assert_eq!(client.data_access_standing(), DataAccess::WebAccessOff);
+}
+
+/// One approval, every protected service: a single consent request, then each service's key
+/// asked for back to back in the same step.
+#[tokio::test]
+async fn one_approval_covers_every_protected_service_in_one_go() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = signed_in(&server, dir.path(), ADP, false).await;
+    Mock::given(method("POST"))
+        .and(path(STATE))
+        .respond_with(state(false, 0))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(STATE))
+        .respond_with(state(true, in_an_hour_ms()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(CONSENT))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "isDeviceConsentNotificationSent": true
+        })))
+        .mount(&server)
+        .await;
+    mount_keys(&server, 3600).await;
+    assert_eq!(client.data_access(true).await.unwrap(), DataAccess::Waiting);
+    assert_eq!(client.data_access(false).await.unwrap(), DataAccess::Open);
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(to(&reqs, CONSENT).len(), 1, "one approval");
+    assert_eq!(
+        app_names(&to(&reqs, PCS)),
+        ["notes3", "reminders", "photos", "iclouddrive"],
+        "every service, one after another, in the step after it"
+    );
+}
+
+/// Keys are held only until the approval runs out, even when their cookies would last longer:
+/// a pass stops asking for the service at that moment, never after Apple refuses it.
+#[tokio::test]
+async fn keys_are_let_go_when_the_approval_runs_out() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = signed_in(&server, dir.path(), ADP, false).await;
+    let soon_ms = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        u64::try_from(now).unwrap() + 1500
+    };
+    Mock::given(method("POST"))
+        .and(path(STATE))
+        .respond_with(state(true, soon_ms))
+        .mount(&server)
+        .await;
+    mount_keys(&server, 3600).await; // cookies good for an hour
+    assert_eq!(client.data_access(false).await.unwrap(), DataAccess::Open);
+    assert!(client.data_access_missing().is_empty());
+    tokio::time::sleep(Duration::from_millis(2600)).await;
+    assert_eq!(
+        client.data_access_missing(),
+        ["notes", "reminders", "photos", "drive"],
+        "the approval's expiry, not the cookies', is when they go"
+    );
+    assert_eq!(client.data_access_standing(), DataAccess::Needed);
 }

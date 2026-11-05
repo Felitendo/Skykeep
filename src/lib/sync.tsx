@@ -30,11 +30,12 @@ type Sync = {
   /** Ticks per service whose rows a pass changed; `all` for a change not placed. */
   revisions: Readonly<Record<string, number>>;
   /** Ask for a pass now. Safe to call while one is running; it will not start a second. */
-  refresh: () => Promise<void>;
+  /** `asked`: the person pressed Sync Now (see `api.syncAll`). */
+  refresh: (asked?: boolean) => Promise<void>;
   /** The last refresh that failed outright, rather than a single service reporting trouble. */
   error: string | null;
   /** Refresh one service alone — one app's "update now". Never starts a second pass of it. */
-  refreshService: (service: string) => Promise<void>;
+  refreshService: (service: string, asked?: boolean) => Promise<void>;
   /** The services being refreshed on their own right now. */
   updating: readonly string[];
   /** Why a service's own refresh failed outright, by service. */
@@ -106,7 +107,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const [passStartedAt, setPassStartedAt] = useState<number | null>(null);
   const serviceInFlight = useRef(new Set<string>());
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (asked?: boolean) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setSyncing(true);
@@ -116,7 +117,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     // that cannot say so has every screen read again, as before.
     let told = false;
     try {
-      const done = await api.syncAll();
+      const done = await api.syncAll(asked);
       told = Array.isArray(done?.changed);
       setReport(done);
     } catch (e) {
@@ -129,14 +130,14 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     }
   }, [bump]);
 
-  const refreshService = useCallback(async (service: string) => {
+  const refreshService = useCallback(async (service: string, asked?: boolean) => {
     if (serviceInFlight.current.has(service)) return;
     serviceInFlight.current.add(service);
     setUpdating([...serviceInFlight.current]);
     setServiceErrors(({ [service]: _gone, ...rest }) => rest);
     let told = false;
     try {
-      const part = await api.syncSome([service]);
+      const part = await api.syncSome([service], asked);
       told = Array.isArray(part?.changed);
       // The backend's event brings the whole picture; this keeps the answer on screen even
       // where no event arrives, by folding this service's own report into the last one.
@@ -317,7 +318,7 @@ export function useArriving(service: string): boolean {
   const { report, syncing, error } = useSync();
   if (error) return false;
   const mine = report?.services.find((s) => s.service === service);
-  if (mine?.outcome === "failed" || mine?.outcome === "unavailable") return false;
+  if (mine?.outcome === "failed" || mine?.outcome === "unavailable" || mine?.outcome === "paused") return false;
   if (mine?.lastSyncedAt) return false;
   return syncing || report === null;
 }
@@ -342,7 +343,9 @@ export function useServiceState(service: string): ServiceState {
   const mine = report?.services.find((s) => s.service === service);
   const lastSyncedAt = mine?.lastSyncedAt ?? null;
   const landed = passStartedAt !== null && lastSyncedAt !== null && lastSyncedAt >= passStartedAt;
-  const working = updating.includes(service) || (syncing && !landed && mine?.outcome !== "unavailable");
+  const working =
+    updating.includes(service) ||
+    (syncing && !landed && mine?.outcome !== "unavailable" && mine?.outcome !== "paused");
   const failure = serviceErrors[service] ?? (mine?.outcome === "failed" ? (mine.detail ?? "It didn’t update") : null);
   return { working, failure, lastSyncedAt, unavailable: mine?.outcome === "unavailable" };
 }

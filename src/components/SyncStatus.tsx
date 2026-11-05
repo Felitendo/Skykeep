@@ -25,7 +25,7 @@ export function SyncStatus() {
     <div className="sync">
       <button
         className="sync-row"
-        onClick={() => void refresh()}
+        onClick={() => void refresh(true)}
         disabled={syncing}
         aria-label={syncing ? "Updating your iCloud" : `${label}. Update now`}
       >

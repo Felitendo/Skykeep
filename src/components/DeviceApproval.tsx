@@ -2,15 +2,23 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Smartphone } from "lucide-react";
 import { fadeIn } from "../lib/fade";
 import { api, messageOf, type DataAccess } from "../lib/ipc";
+import { freshness } from "../lib/sync";
 import { Spinner } from "./Spinner";
 
-/** What each service is called on screen. */
-const NAMES: Record<string, string> = {
-  notes: "Notes",
-  reminders: "Reminders",
-  photos: "Photos",
-  drive: "iCloud Drive",
-};
+/** What each service is called on screen, in the order they are listed. */
+const NAMES: [string, string][] = [
+  ["notes", "Notes"],
+  ["reminders", "Reminders"],
+  ["drive", "iCloud Drive"],
+  ["photos", "Photos"],
+];
+
+/** "Notes, Reminders and iCloud Drive". */
+function listed(services: readonly string[]): string {
+  const names = NAMES.filter(([key]) => services.includes(key)).map(([, name]) => name);
+  if (names.length <= 1) return names[0] ?? "your iCloud";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
 
 /** The states in which a service waits on an approval on the person's devices. */
 export function awaitsApproval(access: DataAccess | null, service: string): boolean {
@@ -19,8 +27,8 @@ export function awaitsApproval(access: DataAccess | null, service: string): bool
   );
 }
 
-/** Ask Apple again, saying what came back or why it could not be asked. */
-function useAsk(onAccess: (a: DataAccess) => void) {
+/** Sync Now: Apple is asked, the approval put on the person's devices when it is needed. */
+function useSyncNow(onAccess: (a: DataAccess) => void) {
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ask = () => {
@@ -34,85 +42,84 @@ function useAsk(onAccess: (a: DataAccess) => void) {
   return { ask, asking, error };
 }
 
-/** The line under the heading: where the approval stands. */
-function standing(access: DataAccess): string {
+/** The line that says where the approval stands, when there is something to say. */
+function standing(access: DataAccess, problem: string | null): string | null {
+  if (problem) return problem;
   if (access.state === "notSent") {
     return "Apple couldn’t reach your devices. Check that your iPhone, iPad or Mac is on and connected, then try again.";
   }
   if (access.state === "waiting") return "Waiting for your iPhone, iPad or Mac…";
-  return "Click Try Again, then approve on your iPhone, iPad or Mac.";
+  return null;
 }
 
 /**
- * Advanced Data Protection keeps this service end-to-end encrypted, and Apple opens it to
- * Skykeep once the person approves on one of their devices. Drawn in place of a screen that has
- * nothing on this computer yet, in the same calm layout as the web-access screen beside it.
+ * Advanced Data Protection keeps these services end-to-end encrypted, and Apple lets Skykeep
+ * sync them for a while each time the person approves on one of their devices. Drawn in place
+ * of a screen that has nothing on this computer yet, in the same calm layout as the web-access
+ * page beside it.
  */
 export function ApprovalScreen({
   access,
-  service,
   onAccess,
 }: {
   access: DataAccess;
-  service: string;
   onAccess: (a: DataAccess) => void;
 }) {
-  const { ask, asking, error } = useAsk(onAccess);
-  const name = NAMES[service] ?? "this";
+  const { ask, asking, error } = useSyncNow(onAccess);
   const waiting = access.state === "waiting";
-  const problem = error ?? access.problem;
+  const line = standing(access, error ?? access.problem);
   return (
     <div className="web-access-off device-approval">
       <Smartphone className="device-approval-glyph" size={30} strokeWidth={1.6} aria-hidden="true" />
       <h1>Approve on your iPhone, iPad or Mac</h1>
       <p>
-        Your Apple Account uses Advanced Data Protection, which keeps {name} end-to-end encrypted. Once you
-        approve Skykeep on one of your devices, it opens here.
+        Advanced Data Protection is on, so Skykeep syncs {listed(access.services)} when you approve it on one of
+        your devices.
       </p>
       <p className="device-approval-status" role="status" aria-live="polite">
         {waiting && <Spinner small />}
-        <span>{problem ?? standing(access)}</span>
+        <span>{line ?? ""}</span>
       </p>
       <button className="primary" onClick={ask} disabled={asking}>
-        Try Again
+        Sync Now
       </button>
     </div>
   );
 }
 
 /**
- * The same, for a screen that already has its copy on this computer: the screen stays, and
- * one card at the foot of the content says what would bring it up to date.
+ * The same, for a screen whose copy is already on this computer: the screen stays, readable and
+ * editable, and one card at the foot of the content says how it syncs and when it last did.
  */
 export function ApprovalNotice({
   access,
-  service,
+  lastSyncedAt,
   onAccess,
 }: {
   access: DataAccess;
-  service: string;
+  lastSyncedAt: number | null;
   onAccess: (a: DataAccess) => void;
 }) {
-  const { ask, asking, error } = useAsk(onAccess);
+  const { ask, asking, error } = useSyncNow(onAccess);
   const card = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => fadeIn(card.current, { duration: 140 }), []);
-  const name = NAMES[service] ?? "this";
   const waiting = access.state === "waiting";
-  const problem = error ?? access.problem;
+  const names = listed(access.services);
+  const line = standing(access, error ?? access.problem);
   return (
-    <div ref={card} className="toast update-notice device-approval-notice" role="group" aria-label="Approve on your devices">
+    <div ref={card} className="toast update-notice device-approval-notice" role="group" aria-label="Advanced Data Protection">
       {waiting ? <Spinner small /> : <Smartphone className="toast-glyph" size={15} strokeWidth={2} aria-hidden="true" />}
       <div className="update-body">
         <p className="update-line" role="status" aria-live="polite">
-          {problem ??
-            (waiting
-              ? `Approve Skykeep on your iPhone, iPad or Mac to bring ${name} up to date.`
-              : `To bring ${name} up to date, approve Skykeep on your iPhone, iPad or Mac.`)}
+          {waiting
+            ? `Approve on your iPhone, iPad or Mac to sync ${names}.`
+            : `Advanced Data Protection is on, so Skykeep syncs ${names} when you approve on your iPhone, iPad or Mac. Your copy here stays available in between.`}
         </p>
+        <p className="update-line device-approval-when">{line ?? freshness(lastSyncedAt)}</p>
         {!waiting && (
           <div className="update-actions">
             <button className="toast-action" onClick={ask} disabled={asking}>
-              Try Again
+              Sync Now
             </button>
           </div>
         )}

@@ -1152,9 +1152,30 @@ pub fn start(app: AppHandle) {
                 () = WAKE.notified() => {}
                 () = tokio::time::sleep(wait) => {}
             }
+            // Reminders and Notes changes wait in the queue while Advanced Data Protection keeps
+            // their keys until the next approval — sent then, never refused meanwhile.
+            let waiting = {
+                let auth = app.state::<Auth>();
+                let client = auth.client.lock().await;
+                crate::data_access::waiting(&client)
+            };
             let outcomes = [
-                (REMINDERS, drain_reminders(&app).await),
-                (NOTES, drain_notes(&app).await),
+                (
+                    REMINDERS,
+                    if held(REMINDERS, &waiting) {
+                        Outcome::Idle
+                    } else {
+                        drain_reminders(&app).await
+                    },
+                ),
+                (
+                    NOTES,
+                    if held(NOTES, &waiting) {
+                        Outcome::Idle
+                    } else {
+                        drain_notes(&app).await
+                    },
+                ),
                 (CONTACTS, drain_contacts(&app).await),
                 (CALENDAR, drain_calendar(&app).await),
             ];
@@ -1173,6 +1194,12 @@ pub fn start(app: AppHandle) {
             };
         }
     });
+}
+
+/// Whether `service`'s queued changes wait for Advanced Data Protection's next approval:
+/// its key is not held, so sending would only be refused. Kept, in order, for then.
+fn held(service: &str, waiting: &[&'static str]) -> bool {
+    waiting.contains(&service)
 }
 
 /// Told to the window whenever what waits may have changed.
@@ -4019,5 +4046,21 @@ mod tests {
                 ("Dentist — bring forms", Some("Room 9"))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    #[test]
+    fn changes_wait_for_the_next_approval_and_go_with_it() {
+        let waiting = ["notes", "reminders", "photos", "drive"];
+        assert!(held(NOTES, &waiting) && held(REMINDERS, &waiting));
+        assert!(
+            !held(CONTACTS, &waiting) && !held(CALENDAR, &waiting),
+            "never held"
+        );
+        assert!(!held(NOTES, &[]), "approved: sent");
     }
 }

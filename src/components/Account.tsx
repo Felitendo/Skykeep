@@ -107,7 +107,7 @@ export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen
   const asked = useRef(false);
   const refresh = () => {
     asked.current = true;
-    void (app ? refreshService(app.service) : refreshAll());
+    void (app ? refreshService(app.service, true) : refreshAll(true));
   };
   // Said aloud, politely: how an update someone asked for ended, and any update that newly
   // failed. The routine updates in the background are left unsaid — a line every few minutes
