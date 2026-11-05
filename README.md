@@ -11,7 +11,7 @@ Six real desktop apps for Notes, Reminders, Calendar, Contacts, iCloud Drive and
 <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe"><img src="https://img.shields.io/badge/Download%20for-Windows-2f6fd6?style=for-the-badge" alt="Download for Windows" height="36"></a>&nbsp;
 <a href="#install"><img src="https://img.shields.io/badge/Download%20for-Linux-2f6fd6?style=for-the-badge" alt="Download for Linux" height="36"></a>
 
-<sub><b>Windows 10/11:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe"><code>setup.exe</code></a> · <b>Ubuntu, Debian, Mint:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb"><code>.deb</code></a> · <b>Fedora, openSUSE:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm"><code>.rpm</code></a> · <b>Any other Linux:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.AppImage"><code>.AppImage</code></a> · <a href="#install">All install options</a></sub>
+<sub><b>Windows 10/11:</b> <a href="https://apps.microsoft.com/detail/9P6B042JNK54">Microsoft Store</a> or <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe"><code>setup.exe</code></a> · <b>Ubuntu, Debian, Mint:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb"><code>.deb</code></a> · <b>Fedora, openSUSE:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm"><code>.rpm</code></a> · <b>Any other Linux:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.AppImage"><code>.AppImage</code></a> · <a href="#install">All install options</a></sub>
 
 <sub>Works offline · No extra account · No analytics · GPL-3.0</sub>
 
@@ -146,6 +146,7 @@ Skykeep is free. Each link below downloads the newest version straight away. The
 
 | Your system | Download | |
 |---|---|---|
+| **Windows 10 and 11, from the Microsoft Store** | [Skykeep in the Microsoft Store](https://apps.microsoft.com/detail/9P6B042JNK54) | Installs and updates through the Store |
 | **Windows 10 and 11** | [`Skykeep-windows-x64-setup.exe`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe) | Installs just for you, no administrator password |
 | **Windows, with Scoop** | [Scoop bucket](https://github.com/YashwanthKamireddi/scoop-bucket) | `scoop bucket add skykeep https://github.com/YashwanthKamireddi/scoop-bucket` then `scoop install skykeep/skykeep` |
 | **Ubuntu 24.04+, Debian 13, Linux Mint 22** | [`Skykeep-linux-amd64.deb`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb) | `sudo apt install ./Skykeep-linux-amd64.deb` |
@@ -157,6 +158,10 @@ Skykeep is free. Each link below downloads the newest version straight away. The
 | **Arch, CachyOS, EndeavourOS, Manjaro** | [Build from the PKGBUILD](#arch-linux) | Coming to the AUR as `skykeep` |
 
 ### Windows
+
+The simplest way is [Skykeep in the Microsoft Store](https://apps.microsoft.com/detail/9P6B042JNK54): **Get**, then open **Skykeep** from the Start menu and sign in. The Store keeps it up to date.
+
+Or with the installer:
 
 1. Download [`Skykeep-windows-x64-setup.exe`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe).
 2. Double-click it. Windows may say **Windows protected your PC**: that's normal for a new free app that isn't code-signed yet. Click **More info**, then **Run anyway**.
@@ -244,7 +249,7 @@ Windows 10 or 11. Or a Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Key
 
 ### Staying up to date
 
-The Windows installer and the AppImage keep Skykeep current on their own. A new version appears as a notice with **Update and Restart**. It installs only after it passes its signature check, and never while a change is still on its way to iCloud or while you're typing. The Snap, COPR and Scoop copies are updated by Snap, dnf and Scoop. For the `.deb` or `.rpm`, install a new version from the [Releases page](https://github.com/YashwanthKamireddi/Skykeep/releases/latest) over the old one; your library and sign-in stay.
+The Windows installer and the AppImage keep Skykeep current on their own. A new version appears as a notice with **Update and Restart**. It installs only after it passes its signature check, and never while a change is still on its way to iCloud or while you're typing. The Microsoft Store, Snap, COPR and Scoop copies are updated by the Store, Snap, dnf and Scoop. For the `.deb` or `.rpm`, install a new version from the [Releases page](https://github.com/YashwanthKamireddi/Skykeep/releases/latest) over the old one; your library and sign-in stay.
 
 **Settings ▸ Software Update** has **Check for Updates**, and a switch for the daily automatic check.
 
@@ -333,7 +338,7 @@ Notes and Reminders usually arrive in about a second. Calendar and Contacts are 
 <details>
 <summary><b>Windows says it protected my PC. Is Skykeep safe?</b></summary>
 
-The installer isn't code-signed with a certificate yet, so SmartScreen asks you to confirm: **More info**, then **Run anyway**. Every release is built by the release workflow in this repository, the release page lists SHA-256 checksums, and in-app updates are signature-checked.
+The installer isn't code-signed with a certificate yet, so SmartScreen asks you to confirm: **More info**, then **Run anyway**. The copy in the [Microsoft Store](https://apps.microsoft.com/detail/9P6B042JNK54) is checked by Microsoft and installs without that question. Every release is built by the release workflow in this repository, the release page lists SHA-256 checksums, and in-app updates are signature-checked.
 </details>
 
 <details>
