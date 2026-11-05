@@ -130,6 +130,9 @@ pub async fn fetch_folder(
     if status.as_u16() == 450 {
         return Err(Error::ReauthRequired);
     }
+    if busy_status(status) {
+        return Err(Error::Refused(BUSY.into()));
+    }
     if !status.is_success() {
         crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
@@ -202,6 +205,9 @@ async fn link(
     if status.as_u16() == 450 {
         return Err(Error::ReauthRequired);
     }
+    if busy_status(status) {
+        return Err(Error::Refused(BUSY.into()));
+    }
     if !status.is_success() {
         crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
@@ -250,6 +256,62 @@ pub async fn download_to(
     item: &DriveItem,
     destination: &std::path::Path,
 ) -> Result<()> {
+    download_with_progress(
+        http,
+        docws_root,
+        params,
+        item,
+        destination,
+        None,
+        Placing::New,
+    )
+    .await
+}
+
+/// How a download takes its place at its destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placing {
+    /// Only where nothing is: anything already under the name is left as it is, and the
+    /// download refused.
+    New,
+    /// In place of what is there: for a download resumed into the folder made for it, where a
+    /// file of the name is an earlier copy of this one. Never over a folder; a link there is
+    /// replaced itself, never followed.
+    Replace,
+}
+
+/// A partial download's own file, removed when the download stops short for any reason — an
+/// error, or the download itself being dropped (cancelled) part-way, which no `?` sees.
+struct Partial(Option<std::path::PathBuf>);
+
+impl Partial {
+    /// It is whole and in place: nothing to remove.
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Partial {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// [`download_to`], telling `progress` how many bytes have arrived, of how many (the size
+/// Apple sends with the bytes, else the item's own; 0 when neither is known), and placed as
+/// `placing` says. The file is only ever moved into place whole: every byte Apple said it would
+/// send, and no fewer.
+pub async fn download_with_progress(
+    http: &reqwest::Client,
+    docws_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    destination: &std::path::Path,
+    progress: Option<Progress>,
+    placing: Placing,
+) -> Result<()> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
@@ -260,6 +322,9 @@ pub async fn download_to(
     } else {
         let url = download_url(http, docws_root, params, item).await?;
         let response = http.get(&url).send().await?;
+        if busy_status(response.status()) {
+            return Err(Error::Refused(BUSY.into()));
+        }
         if !response.status().is_success() {
             return Err(Error::Protocol(format!(
                 "the download itself failed ({})",
@@ -268,6 +333,12 @@ pub async fn download_to(
         }
         Some(response)
     };
+    let promised = response
+        .as_ref()
+        .and_then(reqwest::Response::content_length);
+    let total = promised
+        .or_else(|| item.size.and_then(|n| u64::try_from(n).ok()))
+        .unwrap_or(0);
 
     // Into a folder that is already there, never one made on the way: the caller chose the
     // folder (Downloads), and a name that reached for others would have them made for it.
@@ -311,25 +382,48 @@ pub async fn download_to(
             "too many unfinished downloads of this file are in the way".into(),
         ));
     };
-    let written: Result<()> = async {
-        if let Some(response) = response {
-            let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                file.write_all(&chunk?).await?;
+    // From here on, however this ends short of the file in place, its partial file goes.
+    let mut cleanup = Partial(Some(partial.clone()));
+    let mut received = 0u64;
+    if let Some(response) = response {
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            received += chunk.len() as u64;
+            if let Some(progress) = &progress {
+                progress(received, total.max(received));
             }
         }
-        file.flush().await?;
-        file.sync_all().await?;
-        Ok(())
     }
-    .await;
-    if let Err(e) = written {
-        tokio::fs::remove_file(&partial).await.ok();
-        return Err(e);
+    file.flush().await?;
+    file.sync_all().await?;
+    drop(file);
+    // Fewer bytes than were promised is a connection that ended early, whatever it said: never
+    // kept, and asked again.
+    if promised.is_some_and(|n| n != received) {
+        return Err(Error::Refused(BUSY.into()));
+    }
+    if placing == Placing::Replace {
+        if std::fs::symlink_metadata(destination).is_ok_and(|m| m.is_dir()) {
+            return Err(Error::Protocol(
+                "a folder is where the file would go".into(),
+            ));
+        }
+        let (from, to) = (partial.clone(), destination.to_path_buf());
+        let moved = tokio::task::spawn_blocking(move || quince_core::files::rename(&from, &to))
+            .await
+            .map_err(std::io::Error::other)
+            .and_then(|r| r);
+        if moved.is_ok() {
+            cleanup.keep();
+        }
+        return moved.map_err(Into::into);
     }
     // A link, unlike a rename, refuses an existing name: nothing already there is replaced.
     match tokio::fs::hard_link(&partial, destination).await {
         Ok(()) => {
+            cleanup.keep();
             tokio::fs::remove_file(&partial).await.ok();
             Ok(())
         }
@@ -342,14 +436,65 @@ pub async fn download_to(
                 .await
                 .map_err(std::io::Error::other)
                 .and_then(|r| r);
-            moved.map_err(|e| {
-                let _ = std::fs::remove_file(&partial);
-                e.into()
-            })
+            if moved.is_ok() {
+                cleanup.keep();
+            }
+            moved.map_err(Into::into)
         }
-        Err(e) => {
-            tokio::fs::remove_file(&partial).await.ok();
-            Err(e.into())
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Whether a status is Drive saying it is too busy for now: asked again shortly, it passes.
+fn busy_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504)
+}
+
+/// Whether `e` is one that passes if the same request is made again shortly: the connection
+/// dropping or timing out, or Drive saying it is busy. Anything else — a sign-in to renew, a
+/// file no longer there, a full disk — is said at once.
+#[must_use]
+pub fn transient(e: &Error) -> bool {
+    match e {
+        Error::Network(_) | Error::Busy => true,
+        Error::Refused(m) => m == BUSY,
+        _ => false,
+    }
+}
+
+/// How many times [`patiently`] makes a request before it gives up.
+pub const TRIES: u32 = 4;
+
+/// `op`, made again while it fails in a way that passes ([`transient`]) — up to [`TRIES`]
+/// times in all, waiting longer each time (about one, two, then four seconds, a little apart
+/// for each caller so many at once do not come back together). A folder of a thousand files
+/// meets a dropped connection or a busy moment somewhere; each is ridden out here rather than
+/// reported as a file that did not download.
+pub async fn patiently<T, F, Fut>(mut op: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    patiently_after(std::time::Duration::from_secs(1), &mut op).await
+}
+
+/// [`patiently`], with the first wait given: short in tests.
+pub async fn patiently_after<T, F, Fut>(first: std::time::Duration, op: &mut F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut tried = 0;
+    loop {
+        tried += 1;
+        match op().await {
+            Err(e) if transient(&e) && tried < TRIES => {
+                // Up to half the wait again, by chance: callers that met the same busy moment
+                // come back apart.
+                let jitter = first.mul_f64(f64::from(uuid::Uuid::new_v4().as_bytes()[0]) / 512.0);
+                tokio::time::sleep(first * 2u32.pow(tried - 1) + jitter).await;
+            }
+            done => return done,
         }
     }
 }
@@ -2551,6 +2696,228 @@ mod write_tests {
         assert!(saved.is_err());
         assert!(!dir.join("Startup").exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// How far a download has got is told as its bytes arrive, ending at all of them.
+    #[tokio::test]
+    async fn a_download_tells_how_far_it_has_got() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data_token": { "url": format!("{}/bytes", server.uri()) }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bytes"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1u8; 300_000]))
+            .mount(&server)
+            .await;
+        let dir = tempdir();
+        let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let progress: Progress = {
+            let told = told.clone();
+            std::sync::Arc::new(move |sent, total| told.lock().unwrap().push((sent, total)))
+        };
+        download_with_progress(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            &dir.join("big.bin"),
+            Some(progress),
+            Placing::New,
+        )
+        .await
+        .unwrap();
+        let told = told.lock().unwrap();
+        assert_eq!(told.last(), Some(&(300_000, 300_000)));
+        assert!(
+            told.windows(2).all(|w| w[0].0 <= w[1].0),
+            "only ever forward"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A new download never takes the place of anything; a resumed one replaces the earlier
+    /// copy of its own file, but never a folder, and a link only as itself.
+    #[tokio::test]
+    async fn placing_new_keeps_what_is_there_and_replace_takes_its_place() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data_token": { "url": format!("{}/bytes", server.uri()) }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bytes"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"the whole file".to_vec()))
+            .mount(&server)
+            .await;
+        let get = |to: std::path::PathBuf, placing: Placing| {
+            let uri = server.uri();
+            async move {
+                download_with_progress(
+                    &reqwest::Client::new(),
+                    &uri,
+                    vec![],
+                    &file(),
+                    &to,
+                    None,
+                    placing,
+                )
+                .await
+            }
+        };
+        let dir = tempdir();
+        let there = dir.join("report.pdf");
+        std::fs::write(&there, b"someone's own").unwrap();
+        assert!(get(there.clone(), Placing::New).await.is_err());
+        assert_eq!(std::fs::read(&there).unwrap(), b"someone's own");
+
+        std::fs::write(&there, b"half").unwrap();
+        get(there.clone(), Placing::Replace).await.unwrap();
+        assert_eq!(std::fs::read(&there).unwrap(), b"the whole file");
+
+        let folder = dir.join("folder.pdf");
+        std::fs::create_dir(&folder).unwrap();
+        assert!(get(folder.clone(), Placing::Replace).await.is_err());
+        assert!(folder.is_dir());
+
+        #[cfg(unix)]
+        {
+            let elsewhere = dir.join("elsewhere.txt");
+            std::fs::write(&elsewhere, b"untouched").unwrap();
+            let link = dir.join("link.pdf");
+            std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+            get(link.clone(), Placing::Replace).await.unwrap();
+            assert_eq!(std::fs::read(&elsewhere).unwrap(), b"untouched");
+            assert!(!std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".part"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A download stopped part-way — Cancel drops it, mid-stream — takes its partial file with
+    /// it, and nothing is left under the real name.
+    #[tokio::test]
+    async fn a_download_dropped_part_way_leaves_nothing() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // A server that sends the start of a file and then nothing more, as a slow link does.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bytes_at = format!("http://{}/bytes", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\nthe first bytes")
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "data_token": { "url": bytes_at } })),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempdir();
+        let destination = dir.join("film.mov");
+        let running = {
+            let (uri, destination) = (server.uri(), destination.clone());
+            tokio::spawn(async move {
+                download_to(&reqwest::Client::new(), &uri, vec![], &file(), &destination).await
+            })
+        };
+        let partial = dir.join("film.mov.part");
+        for _ in 0..200 {
+            if std::fs::metadata(&partial).is_ok_and(|m| m.len() > 0) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(partial.exists(), "the download was under way");
+        running.abort();
+        let _ = running.await;
+        assert!(!partial.exists(), "its partial file went with it");
+        assert!(!destination.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A busy Drive or a dropped connection is asked again; anything else is said at once, and
+    /// one that stays busy is given up on.
+    #[tokio::test]
+    async fn only_what_passes_is_asked_again() {
+        let tries = std::sync::atomic::AtomicU32::new(0);
+        let short = std::time::Duration::from_millis(1);
+        let busy_twice = patiently_after(short, &mut || {
+            let n = tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(Error::Refused(BUSY.into()))
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await;
+        assert_eq!(busy_twice.unwrap(), 2);
+
+        tries.store(0, std::sync::atomic::Ordering::SeqCst);
+        let gone: Result<()> = patiently_after(short, &mut || {
+            tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err(Error::NotFound) }
+        })
+        .await;
+        assert!(matches!(gone, Err(Error::NotFound)));
+        assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        tries.store(0, std::sync::atomic::Ordering::SeqCst);
+        let always: Result<()> = patiently_after(short, &mut || {
+            tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err(Error::Refused(BUSY.into())) }
+        })
+        .await;
+        assert!(always.is_err());
+        assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), TRIES);
+        assert!(!transient(&Error::ReauthRequired));
+        assert!(!transient(&Error::Io(std::io::Error::other("disk"))));
+    }
+
+    /// A busy Drive while a download is being prepared, or its bytes fetched, reads as busy —
+    /// something to ask again — not as the file being broken.
+    #[tokio::test]
+    async fn a_busy_drive_reads_as_busy_for_downloads_and_listings() {
+        let server = MockServer::start().await;
+        Mock::given(path_regex(r".*"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let link = download_url(&reqwest::Client::new(), &server.uri(), vec![], &file()).await;
+        assert!(link.as_ref().is_err_and(transient), "{link:?}");
+        let listed = fetch_folder(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "FOLDER::x::y",
+        )
+        .await;
+        assert!(listed.as_ref().is_err_and(transient), "{listed:?}");
     }
 
     fn tempdir() -> std::path::PathBuf {
