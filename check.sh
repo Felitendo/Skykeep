@@ -15,6 +15,9 @@ step() {
 # dev` being up and healthy, which produced both a connection error and a blank window.
 step "app is standalone" bash -c '! grep -q devUrl src-tauri/tauri.conf.json'
 
+# Only what is meant to be public is tracked (.github/published-paths says what that is).
+step "nothing stray is published" bash -c '! git ls-files | grep -vxE -f <(grep -vE "^(#|$)" .github/published-paths)'
+
 step "rust format"      cargo fmt --all -- --check
 step "rust lint"        cargo clippy --workspace --all-targets -- -D warnings
 step "rust tests"       cargo test --workspace --quiet

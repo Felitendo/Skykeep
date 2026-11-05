@@ -205,6 +205,12 @@ jobs:
         with:
           fetch-depth: 1
           path: source
+      # A tag publishes only what is meant to be public (see ci.yml's `published`).
+      - name: Nothing stray is published
+        working-directory: source
+        run: |
+          stray=$(git ls-files | grep -vxE -f <(grep -vE '^(#|$)' .github/published-paths) || true)
+          if [ -n "$stray" ]; then echo "::error::Not meant to be published:"; echo "$stray"; exit 1; fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist

@@ -2,3 +2,6 @@
 7b3fa60cf2d29c017c05998f560c22251ef95d26:crates/quince-auth/testdata/srp_vectors.json:generic-api-key:10
 7b3fa60cf2d29c017c05998f560c22251ef95d26:crates/quince-auth/testdata/srp_vectors.json:generic-api-key:17
 7b3fa60cf2d29c017c05998f560c22251ef95d26:crates/quince-auth/testdata/srp_vectors.json:generic-api-key:25
+# A made-up journal key in a UI check (32 hex digits standing for a download's id) — not a secret.
+4f68cebf8026cc9a01f7cc6861b73dbcf4231b29:.uiverify/drive-download.mjs:generic-api-key:177
+39313cf5ee236cdaa6972b2a95afe5cc2818a7d7:.uiverify/drive-download.mjs:generic-api-key:177
