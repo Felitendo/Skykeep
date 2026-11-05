@@ -1494,6 +1494,24 @@
 .upload-row.is-failed .upload-state,
 .upload-row.is-failed .upload-where { color: var(--danger); }
 
+/* Downloads and uploads at once: stacked in the one corner, downloads above, never over each
+   other. The column takes no clicks of its own, so the list behind its gaps still does. */
+.trays {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+.trays > .upload-tray { position: static; pointer-events: auto; }
+.trays > .upload-tray:not(:only-child) { max-height: min(320px, 40vh); }
+.download-actions { display: flex; gap: 4px; }
+.download-show { font-size: var(--t-11); padding: 2px 8px; white-space: nowrap; }
+
 /* A screen that failed to draw, in place of the screen — the rest of the app carries on. */
 .screen-failed { max-width: 46ch; margin: 64px auto 0; text-align: center; color: var(--text-2); }
 .screen-failed p { margin: 0 0 12px; font-size: var(--t-13); }

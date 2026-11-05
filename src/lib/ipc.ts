@@ -88,6 +88,50 @@ export type UploadEvent = {
   error: string | null;
 };
 
+/** Where each downloading file's progress is announced (a folder, or a selection, into Downloads). */
+export const DOWNLOAD = "quince://download";
+
+/**
+ * One step of a download: a file as it moves (a small one says only that it landed), a folder
+ * that could not be read — or, for the batch, `found` while the tree is counted and `planned`
+ * once all of it is known.
+ */
+export type DownloadEvent = {
+  id: string;
+  batch: string;
+  name: string;
+  /** The folders it sits in inside Downloads, as saved. */
+  within: string;
+  /** Bytes so far; on `found` and `planned`, how many files. */
+  sent: number;
+  /** Bytes in all; on `found` and `planned`, the bytes of every file. */
+  total: number;
+  state: "downloading" | "done" | "failed" | "cancelled" | "found" | "planned";
+  /** A folder that could not be read or made, rather than a file. */
+  folder: boolean;
+  error: string | null;
+};
+
+/** What a download into Downloads came to. */
+export type DownloadReport = {
+  /** What it is known by: downloading the same again resumes it. */
+  key: string;
+  /** One path for each thing chosen that is there, whole or in part. */
+  saved: string[];
+  /** What did not arrive, one line each. */
+  failed: string[];
+  /** Failures past those named. */
+  moreFailed: number;
+  cancelled: boolean;
+  /** Why it stopped short on its own: the disk full or about to be, the connection lost. */
+  problem: string | null;
+  /** It can be gone on with where it was left. */
+  resumable: boolean;
+};
+
+/** A download that did not finish, from before — cancelled, stopped, or cut off by quitting. */
+export type UnfinishedDownload = { key: string; title: string; items: DriveItem[]; saved: string[] };
+
 /** Told whenever Skykeep's own update moves on; each window asks for its status again. */
 export const UPDATE = "quince://update";
 
@@ -430,6 +474,19 @@ export const api = {
   driveItem: (drivewsid: string) => invoke<DriveItem | null>("drive_item", { drivewsid }),
   /** Saves to Downloads; returns the path it landed at. */
   driveDownload: (drivewsid: string, item?: DriveItem) => invoke<string>("drive_download", { drivewsid, item: item ?? null }),
+  /**
+   * Folders, or a selection of files and folders, into Downloads as the same tree. Progress
+   * arrives as DOWNLOAD events under `batch`.
+   */
+  driveDownloadItems: (batch: string, title: string, items: DriveItem[]) =>
+    invoke<DownloadReport>("drive_download_items", { batch, title, items }),
+  /** Downloads that did not finish, oldest first: downloading one again resumes it. */
+  driveDownloadsUnfinished: () => invoke<UnfinishedDownload[]>("drive_downloads_unfinished"),
+  /** No longer offer to resume this download; what it saved stays. */
+  driveDownloadForget: (key: string) => invoke<void>("drive_download_forget", { key }),
+  /** Stop a download — a whole batch, or the batches these files are in. What arrived stays. */
+  driveDownloadCancel: (ids: string[], batch?: string) =>
+    invoke<void>("drive_download_cancel", { ids, batch: batch ?? null }),
   /** The files opened most recently, newest first. */
   driveRecents: () => invoke<RecentItem[]>("drive_recents"),
   /**

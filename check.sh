@@ -103,6 +103,7 @@ step "pending writes"    node .uiverify/pending-writes.mjs
 step "row hover"         node .uiverify/row-hover.mjs
 step "reminders switch"  node .uiverify/reminders-switch.mjs
 step "upload cancel"     node .uiverify/drive-upload-cancel.mjs
+step "folder download"   node .uiverify/drive-download.mjs
 step "notes tables"      node .uiverify/notes-table.mjs
 step "reminder menu"     node .uiverify/reminders-context.mjs
 step "notes media"       node .uiverify/notes-media.mjs
@@ -166,6 +167,7 @@ step "webkit: failing"  env ENGINE=webkit node .uiverify/boundary.mjs
 step "webkit: back"     env ENGINE=webkit node .uiverify/resume.mjs
 step "webkit: occasions" env ENGINE=webkit node .uiverify/occasions.mjs
 step "webkit: drive nav" env ENGINE=webkit node .uiverify/drive-nav.mjs
+step "webkit: download" env ENGINE=webkit node .uiverify/drive-download.mjs
 step "sign-in keyring"  node .uiverify/signin-keyring.mjs
 step "lapse reason"     node .uiverify/lapse-reason.mjs
 step "device approval"  node .uiverify/device-approval.mjs

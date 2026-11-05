@@ -25,6 +25,8 @@ import {
 } from "../lib/ipc";
 import { ActionGlyph, FileGlyph } from "../components/FileGlyph";
 import { UploadTray } from "../components/UploadTray";
+import { DownloadTray } from "../components/DownloadTray";
+import { startDownload } from "../lib/downloads";
 import { listen } from "@tauri-apps/api/event";
 import { Picker } from "../components/Picker";
 import { RowMenu } from "../components/RowMenu";
@@ -818,6 +820,21 @@ export function DriveView() {
     }
   }, [markBusy]);
 
+  /**
+   * A copy in Downloads of what is chosen: one file as before, saved with a notice; a folder,
+   * or several things, as the same tree — shown in the corner as it arrives, one line for all
+   * of it, with Show in Folder once it is there.
+   */
+  const downloadItems = useCallback((chosen: DriveItem[]) => {
+    if (chosen.length === 0) return;
+    if (chosen.length === 1 && !isContainer(chosen[0])) {
+      void download(chosen[0]);
+      return;
+    }
+    setError(null);
+    void startDownload(chosen, chosen.length === 1 ? driveName(chosen[0]) : `${chosen.length} items`);
+  }, [download]);
+
 
   const rename = useCallback(
     async (item: DriveItem, name: string) => {
@@ -1599,6 +1616,14 @@ export function DriveView() {
       e.preventDefault();
       setPeeking(false);
       void removeAll(pickedItems);
+    } else if ((k === "ContextMenu" || (k === "F10" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey)) && primary) {
+      // The menu key, or Shift-F10, as every desktop has them: the selection's own menu, under
+      // its row — everything the right-click menu offers (Download among it), by the keys alone.
+      e.preventDefault();
+      setPeeking(false);
+      const hit = listRef.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(primary.drivewsid)}"] .drive-row-hit`);
+      const r = hit?.getBoundingClientRect();
+      setMenu({ item: primary, x: r ? r.left + 24 : 24, y: r ? r.bottom : 24, alignRight: false });
     } else if (k === " " && !mod && onRows && primary) {
       e.preventDefault();
       setPeeking(true);
@@ -1911,18 +1936,13 @@ export function DriveView() {
       {menu && (() => {
         // A right-click on the selection is for all of it, as Finder's menu is.
         const many = pickedItems.length > 1 && picked.includes(menu.item.drivewsid) ? pickedItems : null;
-        const files = many?.filter((i) => !isContainer(i)) ?? [];
         return (
           <RowMenu
             at={menu}
             onClose={() => setMenu(null)}
             entries={many ? [
-              ...(files.length
-                ? [{
-                    label: files.length === 1 ? "Download a Copy" : `Download ${files.length} Copies`,
-                    run: () => void (async () => { for (const f of files) await download(f); })(),
-                  }]
-                : []),
+              // Files and folders alike, as one download into Downloads.
+              { label: `Download ${many.length} Copies`, run: () => downloadItems(many) },
               ...(many.some(copyable) ? [{ label: "Copy", run: () => void copyItems(many) }] : []),
               { label: "Move to Folder", run: () => setMoving(many) },
               null,
@@ -1941,6 +1961,8 @@ export function DriveView() {
                   ]
                 : []),
               { label: isContainer(menu.item) ? "Open" : "Download a Copy", run: () => openItem(menu.item) },
+              // A folder, whole, into Downloads.
+              ...(isContainer(menu.item) ? [{ label: "Download a Copy", run: () => downloadItems([menu.item]) }] : []),
               { label: "Get Info", run: () => setInfo(menu.item) },
               null,
               ...(isContainer(menu.item) ? [] : [{ label: "Duplicate", run: () => void duplicate(menu.item) }]),
@@ -1985,7 +2007,10 @@ export function DriveView() {
         <InfoSheet item={info} where={trail.map((c) => c.name).join(" › ")} thumb={thumbs[info.drivewsid]} onClose={() => setInfo(null)} />
       )}
 
-      <UploadTray uploads={[...uploads.values()]} onDismiss={dismissUploads} />
+      <div className="trays">
+        <DownloadTray />
+        <UploadTray uploads={[...uploads.values()]} onDismiss={dismissUploads} />
+      </div>
     </div>
   );
 }

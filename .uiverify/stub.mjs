@@ -1117,7 +1117,22 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           // A folder deleted on another device: the backend forgets it and says so.
           if (args.folderId === window.__driveGone) throw "This folder was deleted or moved on another device.";
           return driveItems.length;
-        case "drive_download": return "/home/user/Downloads/file.pdf";
+        case "drive_download": (window.__singleDownloads ??= []).push(args.drivewsid); return "/home/user/Downloads/file.pdf";
+        // A folder, or a selection, into Downloads (folder_download.rs): kept going until the
+        // test says how it ended — `window.__downloadEnd[batch](report)` — playing its progress
+        // in with __emit("quince://download", …) meanwhile. Cancel ends it as cancelled.
+        case "drive_download_items": {
+          (window.__downloadItems ??= []).push(args);
+          return await new Promise((resolve) => { (window.__downloadEnd ??= {})[args.batch] = resolve; });
+        }
+        case "drive_download_cancel": {
+          (window.__downloadCancels ??= []).push(args);
+          window.__downloadEnd?.[args.batch]?.({ key: "k", saved: [], failed: [], moreFailed: 0, cancelled: true, problem: null, resumable: true });
+          return null;
+        }
+        // Downloads left unfinished last time (`window.__unfinished`), and those let go of.
+        case "drive_downloads_unfinished": return window.__unfinished ?? [];
+        case "drive_download_forget": (window.__forgotten ??= []).push(args.key); return null;
         case "download_reveal": (window.__revealed ??= []).push(args.path); return null;
         case "drive_move": (window.__moves ??= []).push(args); await new Promise((r) => setTimeout(r, 600)); return null;
         case "drive_create_folder": case "drive_rename": {

@@ -23,7 +23,7 @@ ok((await page.locator(".info-sheet").count()) === 0, "Escape closes it");
 await page.locator(".drive-row", { hasText: "Downloads" }).click({ button: "right" });
 await page.waitForTimeout(150);
 const offered = await page.getByRole("menuitem").allInnerTexts();
-ok(JSON.stringify(offered) === JSON.stringify(["Open", "Get Info", "Rename", "Move to Folder", "Delete"]),
+ok(JSON.stringify(offered) === JSON.stringify(["Open", "Download a Copy", "Get Info", "Rename", "Move to Folder", "Delete"]),
   `a right-click on a folder offers its menu  ${JSON.stringify(offered)}`);
 await page.keyboard.press("Escape");
 await page.locator(".drive-row", { hasText: "Semester Plan" }).click({ button: "right" });
