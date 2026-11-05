@@ -259,6 +259,8 @@ struct Node {
     folder: bool,
     bytes: Vec<u8>,
     children: Vec<Node>,
+    /// When iCloud says it was last changed, in seconds.
+    changed: Option<i64>,
 }
 
 fn file(id: &str, name: &str, ext: Option<&str>, bytes: &[u8]) -> Node {
@@ -269,6 +271,7 @@ fn file(id: &str, name: &str, ext: Option<&str>, bytes: &[u8]) -> Node {
         folder: false,
         bytes: bytes.to_vec(),
         children: vec![],
+        changed: None,
     }
 }
 
@@ -280,6 +283,7 @@ fn folder(id: &str, name: &str, children: Vec<Node>) -> Node {
         folder: true,
         bytes: vec![],
         children,
+        changed: None,
     }
 }
 
@@ -296,6 +300,7 @@ fn as_json(n: &Node, parent: &str) -> Value {
         "drivewsid": wsid(n), "docwsid": n.id, "parentId": parent, "name": n.name,
         "extension": n.ext, "type": if n.folder { "FOLDER" } else { "FILE" },
         "size": if n.folder { -1 } else { n.bytes.len() as i64 }, "etag": "1",
+        "dateModified": n.changed.map(|s| s * 1000),
     })
 }
 
@@ -309,7 +314,7 @@ fn item(n: &Node) -> DriveItem {
         size: (!n.folder).then_some(n.bytes.len() as i64),
         child_count: None,
         created_at: None,
-        modified_at: None,
+        modified_at: n.changed,
         etag: None,
     }
 }
@@ -881,6 +886,71 @@ async fn resumed_a_wrong_sized_copy_is_replaced_and_leftovers_cleared() {
         ]
     );
     assert_eq!(hits.lock().unwrap().get("b"), None);
+}
+
+/// A file changed in iCloud since the first run — the same size, a typo fixed — is fetched
+/// again on resume; one that is the version iCloud has is left alone. Every downloaded file
+/// carries the date it was last changed in iCloud, which is how the two are told apart.
+#[tokio::test]
+async fn resumed_a_file_changed_in_icloud_since_is_fetched_again() {
+    const MONDAY: i64 = 1_793_000_000;
+    const TUESDAY: i64 = MONDAY + 86_400;
+    let mut edited = file("a", "a", Some("txt"), b"fixed");
+    edited.changed = Some(TUESDAY);
+    let mut same = file("b", "b", Some("txt"), b"as it was");
+    same.changed = Some(MONDAY);
+    let tree = folder("r", "R", vec![edited, same]);
+    let downloads = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let journal = Journal::new(state.path().to_path_buf());
+    let top = downloads.path().join("R");
+    std::fs::create_dir(&top).unwrap();
+    let at = |secs: i64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64);
+    for (name, bytes) in [("a.txt", &b"fixd!"[..]), ("b.txt", &b"as it was"[..])] {
+        std::fs::write(top.join(name), bytes).unwrap();
+        let f = std::fs::File::options()
+            .write(true)
+            .open(top.join(name))
+            .unwrap();
+        f.set_modified(at(MONDAY)).unwrap();
+    }
+    journal
+        .save(&Record {
+            key: Journal::key(&[item(&tree)]),
+            title: "R".into(),
+            items: vec![item(&tree)],
+            placed: vec![Placed {
+                drivewsid: wsid(&tree),
+                path: top.clone(),
+                folder: true,
+            }],
+            started_at: 1,
+        })
+        .unwrap();
+    let (_server, drive, hits) = drive_of(std::slice::from_ref(&tree), Setup::default()).await;
+    let (_heard, emit) = hearing();
+    let report = download(
+        &drive,
+        &[&tree],
+        downloads.path(),
+        Some(&journal),
+        emit,
+        &Stop::default(),
+    )
+    .await
+    .unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert_eq!(std::fs::read(top.join("a.txt")).unwrap(), b"fixed");
+    assert_eq!(
+        hits.lock().unwrap().get("b"),
+        None,
+        "the current one is kept"
+    );
+    let changed = std::fs::metadata(top.join("a.txt"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(changed, at(TUESDAY), "a download carries iCloud's date");
 }
 
 /// A journal edited to point outside Downloads is not followed: the download starts afresh.

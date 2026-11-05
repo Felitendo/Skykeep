@@ -299,6 +299,14 @@ impl Drop for Partial {
     }
 }
 
+/// When `item` was last changed in iCloud, as the time a file on disk carries; `None` when
+/// Apple didn't say (or said before 1970).
+#[must_use]
+pub fn changed_at(item: &DriveItem) -> Option<std::time::SystemTime> {
+    let seconds = u64::try_from(item.modified_at?).ok()?;
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds))
+}
+
 /// [`download_to`], telling `progress` how many bytes have arrived, of how many (the size
 /// Apple sends with the bytes, else the item's own; 0 when neither is known), and placed as
 /// `placing` says. The file is only ever moved into place whole: every byte Apple said it would
@@ -397,6 +405,14 @@ pub async fn download_with_progress(
         }
     }
     file.flush().await?;
+    // The file keeps the date it was last changed in iCloud, as a copy from any other disk
+    // does: sorted by date it sits where it belongs, and a resumed folder download tells by
+    // it which version it already has. Best effort — a disk that won't take a date keeps today's.
+    if let Some(when) = changed_at(item) {
+        let std_file = file.into_std().await;
+        let _ = std_file.set_modified(when);
+        file = tokio::fs::File::from_std(std_file);
+    }
     file.sync_all().await?;
     drop(file);
     // Fewer bytes than were promised is a connection that ended early, whatever it said: never

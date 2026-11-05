@@ -4201,7 +4201,9 @@ async fn contact_delete(guid: String, data: State<'_, Data>) -> UiResult<()> {
 fn free_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let (stem, ext) = name_parts(name);
     let mut path = dir.join(name);
-    let mut suffix = 1;
+    // "Report 2.pdf" for the second copy, as Finder and a folder download (folder_download's
+    // `Taken`) number it, so every save names a second copy the same way.
+    let mut suffix = 2;
     // Anything at all under the name counts as taken — a link too, even one that leads
     // nowhere: written through, it would put the file wherever the link points.
     while path.symlink_metadata().is_ok() {
@@ -7498,7 +7500,7 @@ mod tests {
     }
 
     /// The number a second copy takes goes before the whole extension, as a browser puts it:
-    /// "archive.tar.gz" was saved as "archive.tar 1.gz", and "v1.2 notes" as "v1 1.2 notes".
+    /// "archive.tar.gz" was saved as "archive.tar 2.gz", and "v1.2 notes" as "v1 2.2 notes".
     #[test]
     fn a_second_copy_is_numbered_before_its_extension() {
         let dir = tempfile::tempdir().unwrap();
@@ -7512,10 +7514,10 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         };
-        assert_eq!(next("archive.tar.gz"), "archive 1.tar.gz");
-        assert_eq!(next("v1.2 notes"), "v1.2 notes 1");
-        assert_eq!(next("Report.pdf"), "Report 1.pdf");
-        assert_eq!(next("Makefile"), "Makefile 1");
+        assert_eq!(next("archive.tar.gz"), "archive 2.tar.gz");
+        assert_eq!(next("v1.2 notes"), "v1.2 notes 2");
+        assert_eq!(next("Report.pdf"), "Report 2.pdf");
+        assert_eq!(next("Makefile"), "Makefile 2");
         assert_eq!(next("new.txt"), "new.txt");
     }
 

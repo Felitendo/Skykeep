@@ -1071,11 +1071,27 @@ impl Run<'_> {
     }
 }
 
-/// Whether the file at `path` is `item` whole: a plain file, at the size iCloud has it.
+/// Whether the file at `path` is `item` whole and current: a plain file, at the size iCloud has
+/// it, carrying the date it was last changed there (every download gives a file that date). By
+/// size alone, a file edited in iCloud since — a fixed typo, the same length — was kept stale.
+/// Dates are compared to within two seconds: FAT and exFAT keep no finer.
 fn whole_here(path: &Path, item: &DriveItem) -> bool {
-    size_of(item).is_some_and(|size| {
-        std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() == size)
-    })
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    let same_size = size_of(item).is_some_and(|size| meta.is_file() && meta.len() == size);
+    let same_version = match (quince_icloud::drive::changed_at(item), meta.modified()) {
+        (Some(changed), Ok(on_disk)) => {
+            let apart = changed
+                .duration_since(on_disk)
+                .unwrap_or_else(|e| e.duration());
+            apart <= std::time::Duration::from_secs(2)
+        }
+        // Apple gave no date: the size is all there is to go by.
+        (None, _) => true,
+        (Some(_), Err(_)) => false,
+    };
+    same_size && same_version
 }
 
 fn now_seconds() -> i64 {

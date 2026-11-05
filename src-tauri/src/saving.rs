@@ -117,7 +117,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::os::unix::fs::symlink("/nonexistent/target", dir.join("a.pdf")).unwrap();
         let at = save_path(&dir, "a.pdf", "Download").unwrap();
-        assert_eq!(at, dir.join("a 1.pdf"));
+        assert_eq!(at, dir.join("a 2.pdf"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
