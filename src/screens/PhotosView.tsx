@@ -970,7 +970,7 @@ export function PhotosView() {
     // Another place chosen: its first screen from its first page, which is small and comes at
     // once, painted before the whole index (a large library's takes a moment) is here.
     if (!again) {
-      api.photosPage(source, order, 0, PAGE).then(
+      api.photosPage(source, order, null, PAGE).then(
         (page) => {
           if (indexed || mine !== reads.current) return;
           setPhotos(PhotoList.of(page, store, (p) => sortKey(p, order?.by ?? "taken")));

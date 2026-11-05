@@ -858,10 +858,122 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE events ADD COLUMN floating INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 50 — a large library at the speed of a small one. A pass that stores rows unchanged
+    // rewrites nothing the search index holds (`fts_when`, run with this migration, makes each
+    // index trigger fire only on a real change); Recents, Favorites and Videos are read in
+    // order from indexes of their own, as the Library is, each ending in the photo's id so a
+    // page carries on from the last photo shown (keyset) instead of counting past the ones
+    // before it; and how many photos each view holds is kept as the rows change, so the
+    // sidebar's counts never count the library.
+    r#"
+    DROP INDEX IF EXISTS photos_by_taken;
+    CREATE INDEX photos_by_taken ON photos (deleted, hidden, taken_at DESC, id);
+    CREATE INDEX photos_by_added ON photos (deleted, hidden, COALESCE(added_at, taken_at) DESC, id);
+    CREATE INDEX photos_favorites ON photos (deleted, hidden, taken_at DESC, id) WHERE favorite = 1;
+    CREATE INDEX photos_videos ON photos (deleted, hidden, taken_at DESC, id) WHERE kind = 'video';
+    CREATE INDEX photos_months ON photos (deleted, hidden, taken_at, id, kind, favorite, burst, burst_pick);
+    CREATE TABLE photo_view_counts (
+        view TEXT PRIMARY KEY,
+        n    INTEGER NOT NULL
+    ) STRICT;
+    INSERT INTO photo_view_counts (view, n) SELECT 'library', COUNT(*) FROM photos WHERE deleted = 0 AND hidden = 0;
+    INSERT INTO photo_view_counts (view, n) SELECT 'favorites', COUNT(*) FROM photos WHERE deleted = 0 AND hidden = 0 AND favorite = 1;
+    INSERT INTO photo_view_counts (view, n) SELECT 'videos', COUNT(*) FROM photos WHERE deleted = 0 AND hidden = 0 AND kind = 'video';
+    INSERT INTO photo_view_counts (view, n) SELECT 'screenshots', COUNT(*) FROM photos WHERE deleted = 0 AND hidden = 0 AND subtype = 3;
+    INSERT INTO photo_view_counts (view, n) SELECT 'panoramas', COUNT(*) FROM photos WHERE deleted = 0 AND hidden = 0 AND subtype = 1;
+    INSERT INTO photo_view_counts (view, n) SELECT 'portrait', COUNT(*) FROM photos WHERE deleted = 0 AND hidden = 0 AND rendered = 8;
+    INSERT INTO photo_view_counts (view, n) SELECT 'hidden', COUNT(*) FROM photos WHERE deleted = 0 AND hidden = 1;
+    INSERT INTO photo_view_counts (view, n) SELECT 'rated', COUNT(*) FROM photos WHERE deleted = 0 AND hidden = 0 AND rating > 0;
+    INSERT INTO photo_view_counts (view, n) SELECT 'recentlyDeleted', COUNT(*) FROM photos WHERE deleted = 1;
+    CREATE TRIGGER photo_counts_insert AFTER INSERT ON photos BEGIN
+        UPDATE photo_view_counts SET n = n + (CASE view WHEN 'library' THEN (new.deleted = 0 AND new.hidden = 0) WHEN 'favorites' THEN (new.deleted = 0 AND new.hidden = 0 AND new.favorite = 1) WHEN 'videos' THEN (new.deleted = 0 AND new.hidden = 0 AND new.kind = 'video') WHEN 'screenshots' THEN (new.deleted = 0 AND new.hidden = 0 AND new.subtype = 3) WHEN 'panoramas' THEN (new.deleted = 0 AND new.hidden = 0 AND new.subtype = 1) WHEN 'portrait' THEN (new.deleted = 0 AND new.hidden = 0 AND new.rendered = 8) WHEN 'hidden' THEN (new.deleted = 0 AND new.hidden = 1) WHEN 'rated' THEN (new.deleted = 0 AND new.hidden = 0 AND new.rating > 0) WHEN 'recentlyDeleted' THEN (new.deleted = 1) ELSE 0 END);
+    END;
+    CREATE TRIGGER photo_counts_delete AFTER DELETE ON photos BEGIN
+        UPDATE photo_view_counts SET n = n - (CASE view WHEN 'library' THEN (old.deleted = 0 AND old.hidden = 0) WHEN 'favorites' THEN (old.deleted = 0 AND old.hidden = 0 AND old.favorite = 1) WHEN 'videos' THEN (old.deleted = 0 AND old.hidden = 0 AND old.kind = 'video') WHEN 'screenshots' THEN (old.deleted = 0 AND old.hidden = 0 AND old.subtype = 3) WHEN 'panoramas' THEN (old.deleted = 0 AND old.hidden = 0 AND old.subtype = 1) WHEN 'portrait' THEN (old.deleted = 0 AND old.hidden = 0 AND old.rendered = 8) WHEN 'hidden' THEN (old.deleted = 0 AND old.hidden = 1) WHEN 'rated' THEN (old.deleted = 0 AND old.hidden = 0 AND old.rating > 0) WHEN 'recentlyDeleted' THEN (old.deleted = 1) ELSE 0 END);
+    END;
+    CREATE TRIGGER photo_counts_update AFTER UPDATE OF deleted, hidden, favorite, kind, subtype, rendered, rating ON photos
+    WHEN (old.deleted, old.hidden, old.favorite, old.kind, old.subtype, old.rendered, old.rating)
+         IS NOT (new.deleted, new.hidden, new.favorite, new.kind, new.subtype, new.rendered, new.rating)
+    BEGIN
+        UPDATE photo_view_counts SET n = n - (CASE view WHEN 'library' THEN (old.deleted = 0 AND old.hidden = 0) WHEN 'favorites' THEN (old.deleted = 0 AND old.hidden = 0 AND old.favorite = 1) WHEN 'videos' THEN (old.deleted = 0 AND old.hidden = 0 AND old.kind = 'video') WHEN 'screenshots' THEN (old.deleted = 0 AND old.hidden = 0 AND old.subtype = 3) WHEN 'panoramas' THEN (old.deleted = 0 AND old.hidden = 0 AND old.subtype = 1) WHEN 'portrait' THEN (old.deleted = 0 AND old.hidden = 0 AND old.rendered = 8) WHEN 'hidden' THEN (old.deleted = 0 AND old.hidden = 1) WHEN 'rated' THEN (old.deleted = 0 AND old.hidden = 0 AND old.rating > 0) WHEN 'recentlyDeleted' THEN (old.deleted = 1) ELSE 0 END) + (CASE view WHEN 'library' THEN (new.deleted = 0 AND new.hidden = 0) WHEN 'favorites' THEN (new.deleted = 0 AND new.hidden = 0 AND new.favorite = 1) WHEN 'videos' THEN (new.deleted = 0 AND new.hidden = 0 AND new.kind = 'video') WHEN 'screenshots' THEN (new.deleted = 0 AND new.hidden = 0 AND new.subtype = 3) WHEN 'panoramas' THEN (new.deleted = 0 AND new.hidden = 0 AND new.subtype = 1) WHEN 'portrait' THEN (new.deleted = 0 AND new.hidden = 0 AND new.rendered = 8) WHEN 'hidden' THEN (new.deleted = 0 AND new.hidden = 1) WHEN 'rated' THEN (new.deleted = 0 AND new.hidden = 0 AND new.rating > 0) WHEN 'recentlyDeleted' THEN (new.deleted = 1) ELSE 0 END);
+    END;
+    "#,
 ];
 
 /// Migrations that need more than SQL, run in the same transaction as the one numbered.
-pub const FIXUPS: &[crate::Fixup] = &[(49, float_events)];
+pub const FIXUPS: &[crate::Fixup] = &[(49, float_events), (50, fts_when)];
+
+/// The search index's update triggers, and the columns whose change is a change to what they
+/// index. Each fires on `UPDATE OF` those columns — which SQLite counts whenever an upsert
+/// names them, changed or not: a pass storing fifty thousand notes as they were rewrote every
+/// one's words (27 s, measured).
+const FTS_UPDATES: &[(&str, &[&str])] = &[
+    (
+        "search_notes_update",
+        &["folder_guid", "title", "body", "modified_at"],
+    ),
+    (
+        "search_reminders_update",
+        &["list_guid", "title", "notes", "due_at", "completed_at"],
+    ),
+    (
+        "search_events_update",
+        &["title", "location", "notes", "starts_at"],
+    ),
+    (
+        "search_drive_items_update",
+        &["name", "extension", "modified_at"],
+    ),
+    (
+        "search_photos_update",
+        &[
+            "title", "filename", "caption", "keywords", "taken_at", "deleted", "hidden",
+        ],
+    ),
+    (
+        "search_contacts_update",
+        &[
+            "first_name",
+            "middle_name",
+            "last_name",
+            "company",
+            "sort_name",
+        ],
+    ),
+    (
+        "search_contact_methods_update",
+        &["contact_guid", "kind", "value"],
+    ),
+];
+
+/// Each search index update trigger made again exactly as it stands, with a `WHEN` that lets
+/// it fire only when a column it indexes really changed.
+fn fts_when(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
+    for (name, columns) in FTS_UPDATES {
+        let sql: String = tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+            [name],
+            |r| r.get(0),
+        )?;
+        let olds = columns
+            .iter()
+            .map(|c| format!("old.{c}"))
+            .collect::<Vec<_>>();
+        let news = columns
+            .iter()
+            .map(|c| format!("new.{c}"))
+            .collect::<Vec<_>>();
+        let when = format!(
+            " WHEN ({}) IS NOT ({}) BEGIN",
+            olds.join(", "),
+            news.join(", ")
+        );
+        let at = sql.find(" BEGIN").ok_or(rusqlite::Error::InvalidQuery)?;
+        let made = format!("{}{}{}", &sql[..at], when, &sql[at + " BEGIN".len()..]);
+        tx.execute_batch(&format!("DROP TRIGGER {name};\n{made};"))?;
+    }
+    Ok(())
+}
 
 /// The all-day and floating events already stored, from instants to wall-clock time: read in
 /// the zone they were stored in — this computer's, by name, or UTC where it had none, as the

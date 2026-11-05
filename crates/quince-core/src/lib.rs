@@ -101,11 +101,14 @@ const ACCOUNT_KEY: &str = "account";
 const MADE_ON_OPEN: &str = "key IN ('documents.writer')";
 
 /// Every table holding what an account brought: all but `app_state`, which is sorted key by key,
-/// and the search index's, which are not rows to delete one by one (`forget_account` empties it).
+/// the search index's, which are not rows to delete one by one (`forget_account` empties it),
+/// and the photo counts (migration 50), which are the photos' own triggers' to keep: one row a
+/// view, always there, counted down to nothing as the photos go.
 fn account_tables(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table'
          AND name NOT LIKE 'sqlite_%' AND name != 'app_state'
+         AND name != 'photo_view_counts'
          AND name NOT LIKE 'search\\_%' ESCAPE '\\'",
     )?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
@@ -220,6 +223,9 @@ pub struct Library {
     zone: Option<jiff::tz::TimeZone>,
     /// What a change being watched has written so far, row by row (`changing_items`).
     watch: changes::Watch,
+    /// The Years and Months views' months, as last worked out, and the version of the library
+    /// and the zone they were worked out for (see `photo_months`).
+    months: std::sync::Mutex<Option<photos::MonthsKept>>,
 }
 
 impl Library {
@@ -344,6 +350,7 @@ impl Library {
             conn,
             zone: None,
             watch: changes::Watch::default(),
+            months: std::sync::Mutex::new(None),
         })
     }
 
@@ -369,6 +376,7 @@ impl Library {
             conn,
             zone: None,
             watch: changes::Watch::default(),
+            months: std::sync::Mutex::new(None),
         };
         library.migrate()?;
         changes::register(&library.conn, &library.watch)?;

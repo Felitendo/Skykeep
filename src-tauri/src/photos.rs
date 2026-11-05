@@ -377,9 +377,10 @@ pub async fn cached(app: &AppHandle, id: &str, size: Size) -> Result<PathBuf, St
 /// Whether a photo's original is HEIC (or another HEIF).
 async fn is_heic(app: &AppHandle, id: &str) -> bool {
     let data = app.state::<Data>();
-    let library = data.0.lock().await;
-    library
-        .photo(id)
+    // Read beside a sync pass, never behind it (see `LibraryLock::read`).
+    data.0
+        .read(|l| l.photo(id))
+        .await
         .ok()
         .flatten()
         .and_then(|p| p.uti)
@@ -435,9 +436,11 @@ async fn from_apple(
     }
     let photo = {
         let data = app.state::<Data>();
-        let library = data.0.lock().await;
-        library
-            .photo(id)
+        // Beside a sync pass on a reader: a picture asked for never waits behind a pass's
+        // store, which holds the writer for seconds on a large library.
+        data.0
+            .read(|l| l.photo(id))
+            .await
             .map_err(|e| e.to_string())?
             .ok_or("That photo is no longer in the library.")?
     };
@@ -597,15 +600,18 @@ pub fn keep_ahead(app: AppHandle) {
     }
     tauri::async_runtime::spawn(async move {
         use futures_util::StreamExt;
+        // Read beside a pass, and only what is used: the newest 600 and the videos' ids. The
+        // whole library read as photos, twice, under the writer's lock, was 1.3 GB at a
+        // million and held up every pass behind it.
         let (newest, every_video) = {
             let data = app.state::<Data>();
-            let library = data.0.lock().await;
-            let videos: Vec<String> = grid_photos(&library, None)
-                .into_iter()
-                .filter(|p| p.kind == quince_core::photos::Kind::Video)
-                .map(|p| p.id)
-                .collect();
-            (library.photos(View::Library).unwrap_or_default(), videos)
+            let newest = data
+                .0
+                .read(|l| l.newest_photos(600))
+                .await
+                .unwrap_or_default();
+            let videos = data.0.read(|l| l.video_ids()).await.unwrap_or_default();
+            (newest, videos)
         };
         // Videos whose black poster was kept before posters were remade: remade now, once —
         // once per video for the life of the process. Every pass decoded every video's poster
@@ -707,23 +713,37 @@ pub struct Shown {
     pub view: Option<View>,
 }
 
-/// Every photo a grid can show, the view being looked at first: the library, Hidden and
-/// Recently Deleted, each once. Made for the library alone, Hidden's pictures were made only as
-/// it was scrolled — every tile waited on one, and showed the soft thumbnail meanwhile.
-fn grid_photos(library: &quince_core::Library, first: Option<View>) -> Vec<Photo> {
-    let mut seen = std::collections::HashSet::new();
+/// How many of the grid's photos `prepare` reads at a time.
+const GRID_PAGE: usize = 2_000;
+
+/// Of one page of the grid's photos (`stills_before` stills came in earlier pages), the
+/// pictures to make: each still's grid picture while it is thumbnail-sized (kept always), the
+/// larger grid and viewer pictures of the newest 600 stills only — previews the cache's cap
+/// lets go of, made for every photo they were let go and made again after every sync — and
+/// of those only the ones `missing`. Answers them and how many stills the page held.
+fn wanted_steps(
+    page: &[quince_core::photos::PhotoShape],
+    shown: Shown,
+    stills_before: usize,
+    missing: impl Fn(&str, u32) -> bool,
+) -> (Vec<(String, u32)>, usize) {
+    let stills: Vec<&quince_core::photos::PhotoShape> = page
+        .iter()
+        .filter(|p| p.kind != quince_core::photos::Kind::Video)
+        .collect();
     let mut out = Vec::new();
-    let views = first
-        .into_iter()
-        .chain([View::Library, View::Hidden, View::RecentlyDeleted]);
-    for view in views {
-        for p in library.photos(view).unwrap_or_default() {
-            if seen.insert(p.id.clone()) {
-                out.push(p);
-            }
+    for (i, p) in stills.iter().enumerate() {
+        let (grid, viewer) = steps_of(p.width, p.height, shown);
+        let newest = stills_before + i < 600;
+        if grid <= crate::photo_cache::THUMB_STEP || newest {
+            out.push((p.id.clone(), grid));
+        }
+        if newest {
+            out.push((p.id.clone(), viewer));
         }
     }
-    out
+    out.retain(|(id, step)| missing(id, *step));
+    (out, stills.len())
 }
 
 /// The step a picture is made at for a longer side of `long` device pixels — the window's own
@@ -737,8 +757,8 @@ fn step_for(long: f64) -> u32 {
 
 /// The steps one photo is shown at: in the grid (the whole cell when fitted, cropped to fill a
 /// square otherwise) and in the viewer (as large as the stage allows, never past 1.5×).
-fn steps_of(p: &Photo, s: Shown) -> (u32, u32) {
-    let (w, h) = (p.width.max(1) as f64, p.height.max(1) as f64);
+fn steps_of(width: i64, height: i64, s: Shown) -> (u32, u32) {
+    let (w, h) = (width.max(1) as f64, height.max(1) as f64);
     let r = w / h;
     let tile = if s.fit {
         s.cell
@@ -783,54 +803,54 @@ pub fn prepare(app: AppHandle) {
     let mine = PREPARING.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn(async move {
         use futures_util::StreamExt;
-        let photos = {
-            let data = app.state::<Data>();
-            let library = data.0.lock().await;
-            grid_photos(&library, shown.view)
-        };
         let fit_dir = crate::state_dir(&app).join("photos").join("fit");
-        // A stat per picture, off the runtime's workers (see keep_ahead).
-        let wanted: Vec<(String, u32)> = tauri::async_runtime::spawn_blocking(move || {
-            // The grid's pictures for the whole library while they are thumbnail-sized (kept
-            // always); larger ones — a close zoom on a wide screen — are previews the cache's cap
-            // lets go of, so only the newest are made ahead: made for every photo, they were let
-            // go and made again after every sync.
-            let stills = || {
-                photos
-                    .iter()
-                    .filter(|p| p.kind != quince_core::photos::Kind::Video)
+        // The grid's photos a page at a time, each read beside a pass on a reader and made
+        // before the next is read: what is held at once is one page, however large the
+        // library (the whole of it, read as photos under the writer's lock, was 665 MB and
+        // seconds of every pass's wait at a million).
+        let mut after = None;
+        let mut stills_seen = 0usize;
+        loop {
+            if PREPARING.load(std::sync::atomic::Ordering::SeqCst) != mine {
+                return;
+            }
+            let data = app.state::<Data>();
+            let from = after.clone();
+            let Ok((page, next)) = data
+                .0
+                .read(|l| l.grid_shapes(shown.view, from.as_ref(), GRID_PAGE))
+                .await
+            else {
+                return;
             };
-            stills()
-                .map(|p| (p.id.clone(), steps_of(p, shown).0))
-                .enumerate()
-                .filter(|(i, (_, step))| *step <= crate::photo_cache::THUMB_STEP || *i < 600)
-                .map(|(_, w)| w)
-                .chain(
-                    stills()
-                        .take(600)
-                        .map(|p| (p.id.clone(), steps_of(p, shown).1)),
-                )
-                .filter(|(id, step)| {
-                    !fit_dir
-                        .join(step.to_string())
-                        .join(&*cache_name(id))
-                        .exists()
+            let seen = stills_seen;
+            let dir = fit_dir.clone();
+            // A stat per picture, off the runtime's workers (see keep_ahead).
+            let (wanted, stills): (Vec<(String, u32)>, usize) =
+                tauri::async_runtime::spawn_blocking(move || {
+                    wanted_steps(&page, shown, seen, |id, step| {
+                        !dir.join(step.to_string()).join(&*cache_name(id)).exists()
+                    })
                 })
-                .collect()
-        })
-        .await
-        .unwrap_or_default();
-        futures_util::stream::iter(wanted)
-            .for_each_concurrent(4, |(id, step)| {
-                let app = app.clone();
-                async move {
-                    if PREPARING.load(std::sync::atomic::Ordering::SeqCst) != mine {
-                        return;
+                .await
+                .unwrap_or_default();
+            stills_seen += stills;
+            futures_util::stream::iter(wanted)
+                .for_each_concurrent(4, |(id, step)| {
+                    let app = app.clone();
+                    async move {
+                        if PREPARING.load(std::sync::atomic::Ordering::SeqCst) != mine {
+                            return;
+                        }
+                        let _ = crate::cpu::ahead(fitted(&app, &id, step)).await;
                     }
-                    let _ = crate::cpu::ahead(fitted(&app, &id, step)).await;
-                }
-            })
-            .await;
+                })
+                .await;
+            match next {
+                Some(n) => after = Some(n),
+                None => return,
+            }
+        }
     });
 }
 
@@ -977,9 +997,9 @@ pub async fn film(app: &AppHandle, id: &str, size: Size) -> Result<Film, String>
     }
     let photo = {
         let data = app.state::<Data>();
-        let library = data.0.lock().await;
-        library
-            .photo(id)
+        data.0
+            .read(|l| l.photo(id))
+            .await
             .map_err(|e| e.to_string())?
             .ok_or("That photo is no longer in the library.")?
     };
@@ -1187,17 +1207,17 @@ pub async fn photos_months(
         .map_err(|e| e.to_string())
 }
 
-/// `limit` photos from `offset` of a source, in its index's order.
+/// `limit` photos of a source, in its index's order: its first, or those just after `after`.
 #[tauri::command]
 pub async fn photos_page(
     source: quince_core::photos::Source,
     order: Option<quince_core::photos::Order>,
-    offset: usize,
+    after: Option<quince_core::photos::After>,
     limit: usize,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Photo>> {
     data.0
-        .read(|library| library.photo_page(&source, order, offset, limit))
+        .read(|library| library.photo_page(&source, order, after.as_ref(), limit))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1402,7 +1422,11 @@ pub async fn photos_album_delete(
     // albums inside this folder"). Apple's server does not do that itself — checked live: an
     // album inside a deleted folder stayed, its folder gone — so the ones inside are deleted
     // here, the deepest first, and the folder last.
-    let all = data.0.lock().await.albums().map_err(|e| e.to_string())?;
+    let all = data
+        .0
+        .read(|l| l.albums())
+        .await
+        .map_err(|e| e.to_string())?;
     let mut order: Vec<quince_core::photos::Album> = Vec::new();
     fn within(
         all: &[quince_core::photos::Album],
@@ -3144,8 +3168,19 @@ mod tests {
             photo("D1", 5, false, true),
         ])
         .unwrap();
-        let ids =
-            |first| -> Vec<String> { grid_photos(&lib, first).into_iter().map(|p| p.id).collect() };
+        // Read a page at a time — one photo at a time here — as `prepare` reads them.
+        let ids = |first| -> Vec<String> {
+            let mut out = Vec::new();
+            let mut after = None;
+            loop {
+                let (page, next) = lib.grid_shapes(first, after.as_ref(), 1).unwrap();
+                out.extend(page.into_iter().map(|p| p.id));
+                match next {
+                    Some(n) => after = Some(n),
+                    None => return out,
+                }
+            }
+        };
         assert_eq!(ids(None), ["L1", "H1", "H2", "D1"]);
         assert_eq!(ids(Some(View::Hidden)), ["H1", "H2", "L1", "D1"]);
         assert_eq!(ids(Some(View::Library)), ["L1", "H1", "H2", "D1"]);
@@ -3171,8 +3206,11 @@ mod tests {
         };
         // A square crop of a 4:3 photo reaches 240 along its long side; the stage draws it
         // 1066 wide (800 high × 4/3).
-        assert_eq!(steps_of(&p, shown), (256, 1536));
-        assert_eq!(steps_of(&p, Shown { fit: true, ..shown }).0, 256);
+        assert_eq!(steps_of(p.width, p.height, shown), (256, 1536));
+        assert_eq!(
+            steps_of(p.width, p.height, Shown { fit: true, ..shown }).0,
+            256
+        );
         assert_eq!(step_for(5000.0), 3840);
         assert_eq!(step_for(100.0), 128);
     }

@@ -604,6 +604,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                             ctx.account.as_deref(),
                             fetched,
                             move |library, f| {
+                                let records = f.records.len();
                                 let (_, links) = quince_icloud::photos::apply(library, f)?;
                                 // Marked, or every pass after walked the whole library again:
                                 // the daily full read is due when none was ever recorded.
@@ -611,14 +612,14 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                                     library.mark_full_sync(quince_icloud::photos::SERVICE)?;
                                 }
                                 crate::photos::remember(links);
-                                // Counted, not read: every row of the library loaded to say
-                                // how many there were held the library's lock through each pass.
-                                let n = library
-                                    .photo_counts()?
-                                    .into_iter()
-                                    .find(|(v, _)| *v == quince_core::photos::View::Library)
-                                    .map_or(0, |(_, n)| usize::try_from(n).unwrap_or(0));
-                                Ok(format!("{n} photo{}", plural(n)))
+                                // Said from what the pass brought: counting the library to
+                                // say it held the writer's lock through each of a refresh's ten
+                                // rounds (4.4 s each at a million).
+                                Ok(if records == 0 {
+                                    "Up to date".to_string()
+                                } else {
+                                    format!("{records} change{} from iCloud", plural(records))
+                                })
                             },
                         )
                         .await;

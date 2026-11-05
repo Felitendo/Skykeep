@@ -223,7 +223,20 @@ impl Library {
                                    THEN editable ELSE excluded.editable END,
                    locked = excluded.locked, pinned = excluded.pinned,
                    created_at = excluded.created_at, modified_at = excluded.modified_at,
-                   etag = excluded.etag, updated_at = excluded.updated_at",
+                   etag = excluded.etag, updated_at = excluded.updated_at
+                 -- Stored as it was: nothing written and no words indexed again. Fifty
+                 -- thousand notes stored again as they were took 27 s, rewriting the index.
+                 WHERE (notes.folder_guid, notes.title, notes.snippet, notes.locked,
+                        notes.pinned, notes.created_at, notes.modified_at, notes.etag,
+                        notes.body, notes.runs, notes.editable)
+                   IS NOT (excluded.folder_guid, excluded.title, excluded.snippet,
+                        excluded.locked, excluded.pinned, excluded.created_at,
+                        excluded.modified_at, excluded.etag,
+                        CASE WHEN excluded.locked THEN NULL ELSE COALESCE(excluded.body, notes.body) END,
+                        CASE WHEN excluded.locked THEN NULL
+                             WHEN excluded.body IS NULL THEN notes.runs ELSE excluded.runs END,
+                        CASE WHEN excluded.body IS NULL AND NOT excluded.locked AND notes.body IS NOT NULL
+                             THEN notes.editable ELSE excluded.editable END)",
             )?;
             let stamp = now();
             for n in notes {

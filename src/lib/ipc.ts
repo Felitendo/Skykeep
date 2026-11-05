@@ -245,8 +245,10 @@ export const api = {
   /** Every photo a grid shows, as it lays them out: ids, grouping dates and marks, no photos. */
   photosIndex: (source: PhotoSource, order: PhotoOrder | null) => invoke<PhotoIndex>("photos_index", { source, order }),
   /** A source's photos from `offset`, in its index's order: the first screen, before the index. */
-  photosPage: (source: PhotoSource, order: PhotoOrder | null, offset: number, limit: number) =>
-    invoke<Photo[]>("photos_page", { source, order, offset, limit }),
+  /** `limit` photos of a source: its first, or those just after `after` — the last photo
+   * shown, by its index key and id. */
+  photosPage: (source: PhotoSource, order: PhotoOrder | null, after: { key: number; id: string } | null, limit: number) =>
+    invoke<Photo[]>("photos_page", { source, order, after, limit }),
   /** Photos by id, in the order asked; any gone are left out. */
   photosGet: (ids: string[]) => invoke<Photo[]>("photos_get", { ids }),
   photosCounts: () => invoke<[PhotoView, number][]>("photos_counts"),
