@@ -1143,9 +1143,14 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return null;
         }
         case "drive_delete": {
+          // A folder changed on another device since it was shown (`__driveChanged[id]`, as
+          // drive::FolderNow): not deleted, but answered as it now stands — unless the delete
+          // names that version (`expect`), as "Delete Anyway" does.
+          const now = window.__driveChanged?.[args.drivewsid];
+          if (now && args.expect !== now.etag) { (window.__driveAsked ??= []).push(args.drivewsid); return { kind: "changed", ...now }; }
           (window.__driveDeleted ??= []).push(args.drivewsid);
           for (const [k, list] of Object.entries(window.__driveIn ?? {})) window.__driveIn[k] = list.filter((i) => i.drivewsid !== args.drivewsid);
-          return null;
+          return { kind: "done" };
         }
         case "drive_item": return null;
         case "auth_two_factor_options": return twoFactor;

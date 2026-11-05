@@ -5284,28 +5284,48 @@ async fn drive_rename(
     settle(resync_drive_folder(&http, &root, params, &data, parent).await)
 }
 
+/// Delete from the window, only what it showed (see `drive::delete_as_shown`): a file as the
+/// version shown, a folder only as the version shown or the one a question since showed
+/// (`expect`). A folder that is not comes back as it now stands, to be asked about.
 #[tauri::command]
 async fn drive_delete(
     drivewsid: String,
+    expect: Option<String>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
-) -> UiResult<()> {
-    let item = {
+) -> UiResult<quince_icloud::drive::Removed> {
+    let (item, shown) = {
         let library = data.0.lock().await;
-        library
+        let item = library
             .drive_item(&drivewsid)
             .map_err(|e| e.to_string())?
-            .ok_or("That item is no longer in the local library.")?
+            .ok_or("That item is no longer in the local library.")?;
+        let shown = if item.is_container() {
+            library
+                .drive_children(&item.drivewsid)
+                .map_err(|e| e.to_string())?
+        } else {
+            Vec::new()
+        };
+        (item, shown)
     };
     let (http, root, params) = drive_context(&auth).await?;
-    quince_icloud::drive::delete(&http, &root, params.clone(), &item)
-        .await
-        .map_err(|e| e.to_string())?;
+    let removed = quince_icloud::drive::delete_as_shown(
+        &http,
+        &root,
+        params.clone(),
+        &item,
+        &shown,
+        expect.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let parent = item
         .parent_id
         .as_deref()
         .unwrap_or(quince_core::drive::ROOT);
-    settle(resync_drive_folder(&http, &root, params, &data, parent).await)
+    settle(resync_drive_folder(&http, &root, params, &data, parent).await)?;
+    Ok(removed)
 }
 
 /// Duplicate a file into its own folder, named as Finder names a copy.

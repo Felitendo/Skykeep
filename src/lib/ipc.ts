@@ -506,7 +506,10 @@ export const api = {
     invoke<void>("drive_create_folder", { parentId, name }),
   driveRename: (drivewsid: string, name: string) =>
     invoke<void>("drive_rename", { drivewsid, name }),
-  driveDelete: (drivewsid: string) => invoke<void>("drive_delete", { drivewsid }),
+  /** Deleted only as shown: a folder that changed since comes back as it now stands, to be
+   * asked about, and goes only as the version `expect` names. */
+  driveDelete: (drivewsid: string, expect: string | null = null) =>
+    invoke<DriveRemoved>("drive_delete", { drivewsid, expect }),
   driveTrash: () => invoke<TrashItem[]>("drive_trash"),
   driveThumbnails: (folderId: string) => invoke<Record<string, string>>("drive_thumbnails", { folderId }),
   driveDuplicate: (drivewsid: string) => invoke<void>("drive_duplicate", { drivewsid }),
@@ -1033,6 +1036,11 @@ export function displayName(c: Contact): string {
   if (c.company?.trim()) return c.company;
   return c.methods[0]?.value ?? "No Name";
 }
+
+/** A folder as Apple holds it now against how it was shown (`drive::FolderNow`). */
+export type FolderNow = { items: number; added: number; changed: number; gone: number; etag: string | null };
+/** What a delete from the window did: done, or not — the folder changed since it was shown. */
+export type DriveRemoved = { kind: "done" } | ({ kind: "changed" } & FolderNow);
 
 export type DriveItem = {
   drivewsid: string;

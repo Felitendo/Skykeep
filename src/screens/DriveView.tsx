@@ -19,6 +19,7 @@ import {
   DRIVE_ROOT,
   UPLOAD,
   type DriveItem,
+  type FolderNow,
   type RecentItem,
   type TrashItem,
   type UploadEvent,
@@ -456,8 +457,28 @@ const copyable = (item: DriveItem) => (item.kind === "FILE" || item.kind === "FO
 /** What a paste onto a name already there does: both kept ("Report 2.pdf"), or the one there replaced. */
 type Clash = "keep" | "replace" | null;
 
+/** A delete the person chose not to go on with: the item stays, and nothing is said. */
+const KEPT = "kept";
+
+/** A folder changed since it was shown, said as it now stands: what is in it, and what is new. */
+export function folderNowWords(now: FolderNow): string {
+  const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
+  const since = [
+    now.added ? `${n(now.added, "item")} added` : "",
+    now.changed ? `${n(now.changed, "item")} changed` : "",
+    now.gone ? `${n(now.gone, "item")} removed` : "",
+  ].filter(Boolean);
+  const said = since.length > 1 ? `${since.slice(0, -1).join(", ")} and ${since[since.length - 1]}` : since[0];
+  const holds = `This folder now has ${n(now.items, "item")}`;
+  return said
+    ? `${holds}, with ${said} since it was shown here, on another device. It goes to Recently Deleted with everything in it.`
+    : `${holds}. It changed since it was shown here, on another device. It goes to Recently Deleted with everything in it.`;
+}
+
 export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "Drive" }]);
+  // Asked before a folder that changed since it was shown is deleted.
+  const [confirm, confirmSheet] = useConfirm();
   /**
    * Back and Forward, as Finder's: the folders opened before this one, and those gone back
    * from, by whole path. Every way of reaching a folder — a double-click, the path, a search,
@@ -897,10 +918,23 @@ export function DriveView() {
           for (const batch of new Set(into.map((u) => u.batch))) await api.driveUploadCancel([], batch).catch(() => {});
         }
         try {
-          await api.driveDelete(item.drivewsid);
+          // Only as shown: a folder changed since (a file added on another device) is asked
+          // about with what it holds now, and goes only as that.
+          let removed = await api.driveDelete(item.drivewsid);
+          while (removed.kind === "changed") {
+            const sure = await confirm({
+              title: `Delete “${driveName(item)}”?`,
+              body: folderNowWords(removed),
+              action: "Delete Anyway",
+              danger: true,
+              symbol: "trash",
+            });
+            if (!sure) throw new Error(KEPT);
+            removed = await api.driveDelete(item.drivewsid, removed.etag);
+          }
         } catch (e) {
           refused.push(item.drivewsid);
-          reason = messageOf(e);
+          if (messageOf(e) !== KEPT) reason = messageOf(e);
         }
       }
       if (refused.length) {
@@ -909,11 +943,11 @@ export function DriveView() {
           for (const id of refused) next.delete(goneKey(from, id));
           return next;
         });
-        setError(list.length === 1 ? reason : `${refused.length} of ${list.length} items could not be deleted: ${reason}`);
+        if (reason) setError(list.length === 1 ? reason : `${refused.length} of ${list.length} items could not be deleted: ${reason}`);
       }
       if (refused.length < list.length) await refresh();
     },
-    [refresh]
+    [refresh, confirm]
   );
   const remove = useCallback((item: DriveItem) => removeAll([item]), [removeAll]);
 
@@ -1055,7 +1089,9 @@ export function DriveView() {
         try {
           const old = replacing.get(item.drivewsid);
           if (old) {
-            await api.driveDelete(old.drivewsid).catch((e) => {
+            await api.driveDelete(old.drivewsid).then((removed) => {
+              if (removed.kind === "changed") throw new Error(`“${driveName(old)}” changed on another device since it was shown here, so it wasn’t replaced.`);
+            }).catch((e) => {
               // Still there: shown again, and this one not copied over it.
               setGone((g) => { const next = new Set(g); next.delete(goneKey(into, old.drivewsid)); return next; });
               throw e;
@@ -1297,7 +1333,8 @@ export function DriveView() {
       setGone((g) => new Set([...g, ...old.map((o) => goneKey(into, o.drivewsid))]));
       for (const o of old) {
         try {
-          await api.driveDelete(o.drivewsid);
+          const removed = await api.driveDelete(o.drivewsid);
+          if (removed.kind === "changed") throw new Error(`“${driveName(o)}” changed on another device since it was shown here, so it wasn’t replaced. ${folderNowWords(removed).split(".")[0]}.`);
         } catch (e) {
           // Still there: shown again, and nothing moved over it.
           setGone((g) => { const next = new Set(g); for (const x of old) next.delete(goneKey(into, x.drivewsid)); return next; });
@@ -1919,6 +1956,7 @@ export function DriveView() {
         />
       )}
 
+      {confirmSheet}
       {asking && (
         <ConfirmSheet<"keep" | "replace">
           title={asking.items.length === 1

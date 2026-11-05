@@ -87,6 +87,7 @@ step "drive sort"        node .uiverify/drive-sort.mjs
 step "drive trash"       node .uiverify/drive-trash.mjs
 step "drive info"        node .uiverify/drive-info.mjs
 step "drive delete"      node .uiverify/drive-delete.mjs
+step "drive delete changed" node .uiverify/drive-delete-changed.mjs
 step "notes folders"     node .uiverify/notes-folders.mjs
 step "list info"         node .uiverify/reminders-list-info.mjs
 step "reminder date"     node .uiverify/reminders-date.mjs

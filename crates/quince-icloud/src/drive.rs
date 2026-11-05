@@ -850,6 +850,155 @@ pub async fn delete(
     ))
 }
 
+/// A folder as Apple holds it now, against how it was shown: asked about before it is deleted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderNow {
+    /// Everything in it now.
+    pub items: usize,
+    /// Of those, the ones that were not there when it was shown.
+    pub added: usize,
+    /// Ones that were there, changed since.
+    pub changed: usize,
+    /// Ones shown that are no longer there.
+    pub gone: usize,
+    /// The version of the folder these numbers are of: deleted anyway, only that version is.
+    pub etag: Option<String>,
+}
+
+/// What a delete from the window did.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum Removed {
+    /// In Recently Deleted.
+    Done,
+    /// Not deleted: the folder is not what was shown. Asked again with this.
+    Changed(FolderNow),
+}
+
+/// How the folder's items now stand against `shown`.
+#[must_use]
+pub fn folder_now(shown: &[DriveItem], now: &[DriveItem], etag: Option<String>) -> FolderNow {
+    let was = |id: &str| shown.iter().find(|s| s.drivewsid == id);
+    FolderNow {
+        items: now.len(),
+        added: now.iter().filter(|n| was(&n.drivewsid).is_none()).count(),
+        changed: now
+            .iter()
+            .filter(|n| was(&n.drivewsid).is_some_and(|s| s.etag != n.etag))
+            .count(),
+        gone: shown
+            .iter()
+            .filter(|s| !now.iter().any(|n| n.drivewsid == s.drivewsid))
+            .count(),
+        etag,
+    }
+}
+
+/// Delete from the window, only what was shown.
+///
+/// A file goes against the version shown (its stored etag): changed since — on another
+/// device — Apple refuses it, and that is said rather than the newer file deleted. A folder
+/// goes only if it is the version shown (`expect`, the version a question already showed, or
+/// else its stored etag — every file landing in it moves its etag on): otherwise nothing is
+/// deleted and its contents as they now stand come back, to be asked about. Taken from the
+/// folder it is in, the latest etag deleted whatever had been added to it on another device.
+///
+/// `shown` is the folder's items as the window last held them.
+pub async fn delete_as_shown(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    shown: &[DriveItem],
+    expect: Option<&str>,
+) -> Result<Removed> {
+    let parent = parent_of(item);
+    let listed = folder_listing(http, root, &params, parent).await?;
+    let Some(current) = listed.iter().find(|i| i.drivewsid == item.drivewsid) else {
+        // Gone already: deleted elsewhere, or by an earlier try of this one.
+        return Ok(Removed::Done);
+    };
+    let changed_words = || {
+        Error::Refused(format!(
+            "“{}” changed on another device since it was shown here, so it wasn’t deleted. Take a look, then delete it again.",
+            item.display_name()
+        ))
+    };
+    let etag = if item.is_container() {
+        let seen = expect.map(str::to_string).or_else(|| item.etag.clone());
+        let unchanged = match (&seen, &current.etag) {
+            (Some(seen), Some(now)) => seen == now,
+            // No version to hold it to: its contents are compared instead.
+            _ => {
+                let now = folder_listing(http, root, &params, &item.drivewsid).await?;
+                let n = folder_now(shown, &now, current.etag.clone());
+                n.added == 0 && n.changed == 0 && n.gone == 0
+            }
+        };
+        if !unchanged {
+            let now = folder_listing(http, root, &params, &item.drivewsid).await?;
+            return Ok(Removed::Changed(folder_now(
+                shown,
+                &now,
+                current.etag.clone(),
+            )));
+        }
+        current.etag.clone()
+    } else {
+        item.etag.clone().or_else(|| current.etag.clone())
+    };
+
+    let url = format!("{}/moveItemsToTrash", root.trim_end_matches('/'));
+    let body = json!({
+        "items": [{ "drivewsid": item.drivewsid, "etag": etag, "clientId": item.drivewsid }],
+    });
+    let reply = post_json(http, &url, &params, &body).await?;
+    let status = reply
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|i| {
+                i.get("drivewsid").and_then(Value::as_str) == Some(item.drivewsid.as_str())
+            })
+        })
+        .and_then(|a| a.get("status"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    match status.as_deref() {
+        Some("OK") | None => {}
+        // Moved on between the look and the delete: a folder is asked about again as it
+        // now stands; a file is not deleted.
+        Some("ETAG_CONFLICT") if item.is_container() => {
+            let listed = folder_listing(http, root, &params, parent).await?;
+            let etag = listed
+                .iter()
+                .find(|i| i.drivewsid == item.drivewsid)
+                .and_then(|i| i.etag.clone());
+            let now = folder_listing(http, root, &params, &item.drivewsid).await?;
+            return Ok(Removed::Changed(folder_now(shown, &now, etag)));
+        }
+        Some("ETAG_CONFLICT") => return Err(changed_words()),
+        Some(other) => {
+            return Err(Error::Refused(format!(
+                "iCloud Drive did not let that be deleted ({other})."
+            )))
+        }
+    }
+    for wait in [0u64, 800, 1500, 2500] {
+        if wait > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        }
+        let after = folder_listing(http, root, &params, parent).await?;
+        if !after.iter().any(|i| i.drivewsid == item.drivewsid) {
+            return Ok(Removed::Done);
+        }
+    }
+    Err(Error::Refused(
+        "iCloud answered, but the item is still in the folder — try again in a moment.".into(),
+    ))
+}
+
 /// Duplicate a file as icloud.com does: `POST {docws}/v1/item/copy/{item_id}` with
 /// `{info_to_update:{}}`. Apple names the copy as Finder would — "Plan 2.pdf" — in the same
 /// folder. `item_id` is not the drivewsid's tail (that answers 404): it is a field of the
@@ -4468,5 +4617,253 @@ mod copy_tests {
         let keynote = drive.item("APPLIBRARY::com.apple.Keynote");
         assert!(paste(&server, &keynote, WORK).await.is_err());
         assert!(drive.writes().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod delete_as_shown_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    const ROOT_ID: &str = "FOLDER::com.apple.CloudDocs::root";
+    const WORK: &str = "FOLDER::com.apple.CloudDocs::work";
+
+    /// Drive as Apple keeps it: every item with its etag, a folder's etag moving on whenever
+    /// something lands in it, and a delete refused (ETAG_CONFLICT) unless it names the etag
+    /// the item has now.
+    #[derive(Clone, Default)]
+    struct Apple(Arc<Mutex<Vec<Held>>>);
+
+    /// An item as Apple keeps it: its id, its folder, its kind, its etag.
+    type Held = (String, String, &'static str, String);
+
+    impl Apple {
+        fn new() -> Self {
+            let a = Apple::default();
+            a.put(WORK, ROOT_ID, "FOLDER", "w1");
+            a.put("FILE::com.apple.CloudDocs::a", WORK, "FILE", "a1");
+            a.put("FILE::com.apple.CloudDocs::b", WORK, "FILE", "b1");
+            a.put("FILE::com.apple.CloudDocs::plan", ROOT_ID, "FILE", "p1");
+            a
+        }
+        fn put(&self, id: &str, parent: &str, kind: &'static str, etag: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((id.into(), parent.into(), kind, etag.into()));
+        }
+        /// A file added on another device: it lands, and its folder's etag moves on.
+        fn added_elsewhere(&self, id: &str) {
+            self.put(id, WORK, "FILE", "n1");
+            self.bump(WORK);
+        }
+        fn bump(&self, id: &str) {
+            for i in self.0.lock().unwrap().iter_mut().filter(|i| i.0 == id) {
+                i.3.push('+');
+            }
+        }
+        fn has(&self, id: &str) -> bool {
+            self.0.lock().unwrap().iter().any(|i| i.0 == id)
+        }
+        fn item(&self, id: &str) -> DriveItem {
+            let all = self.0.lock().unwrap();
+            let i = all.iter().find(|i| i.0 == id).unwrap();
+            DriveItem {
+                drivewsid: i.0.clone(),
+                parent_id: Some(i.1.clone()),
+                name: i.0.rsplit("::").next().unwrap().into(),
+                extension: None,
+                kind: i.2.into(),
+                size: None,
+                child_count: None,
+                created_at: None,
+                modified_at: None,
+                etag: Some(i.3.clone()),
+            }
+        }
+        fn children(&self, folder: &str) -> Vec<DriveItem> {
+            let ids: Vec<String> = self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|i| i.1 == folder)
+                .map(|i| i.0.clone())
+                .collect();
+            ids.iter().map(|id| self.item(id)).collect()
+        }
+    }
+
+    impl Respond for Apple {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+            if req.url.path().ends_with("/retrieveItemDetailsInFolders") {
+                let folder = body[0]["drivewsid"].as_str().unwrap_or_default();
+                let items: Vec<Value> = self
+                    .children(folder)
+                    .iter()
+                    .map(|i| {
+                        json!({ "drivewsid": i.drivewsid, "parentId": folder, "name": i.name,
+                                     "type": i.kind, "etag": i.etag })
+                    })
+                    .collect();
+                return ResponseTemplate::new(200)
+                    .set_body_json(json!([{ "drivewsid": folder, "items": items }]));
+            }
+            if req.url.path().ends_with("/moveItemsToTrash") {
+                let id = body["items"][0]["drivewsid"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let sent = body["items"][0]["etag"].as_str().map(str::to_string);
+                let now = self.has(&id).then(|| self.item(&id).etag).flatten();
+                if sent != now {
+                    return ResponseTemplate::new(200).set_body_json(
+                        json!({ "items": [{ "drivewsid": id, "status": "ETAG_CONFLICT", "etag": now }] }),
+                    );
+                }
+                let mut all = self.0.lock().unwrap();
+                all.retain(|i| i.0 != id && i.1 != id);
+                return ResponseTemplate::new(200)
+                    .set_body_json(json!({ "items": [{ "drivewsid": id, "status": "OK" }] }));
+            }
+            ResponseTemplate::new(404)
+        }
+    }
+
+    async fn serve(apple: &Apple) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(apple.clone())
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Nothing changed since it was shown: deleted at once, no question.
+    #[tokio::test]
+    async fn an_unchanged_folder_is_deleted_at_once() {
+        let apple = Apple::new();
+        let (work, shown) = (apple.item(WORK), apple.children(WORK));
+        let server = serve(&apple).await;
+        let done = delete_as_shown(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &work,
+            &shown,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(done, Removed::Done);
+        assert!(!apple.has(WORK));
+    }
+
+    /// A file added on another device since the folder was shown: nothing is deleted, and the
+    /// folder as it now stands comes back to ask about. Asked and answered for that version,
+    /// it goes; but if it moved on again meanwhile, it is asked about again.
+    #[tokio::test]
+    async fn a_folder_with_a_file_added_elsewhere_is_asked_about() {
+        let apple = Apple::new();
+        let (work, shown) = (apple.item(WORK), apple.children(WORK));
+        apple.added_elsewhere("FILE::com.apple.CloudDocs::new");
+        let server = serve(&apple).await;
+        let http = reqwest::Client::new();
+        let asked = delete_as_shown(&http, &server.uri(), vec![], &work, &shown, None)
+            .await
+            .unwrap();
+        let Removed::Changed(now) = asked else {
+            panic!("deleted a folder holding a file never shown: {asked:?}")
+        };
+        assert_eq!((now.items, now.added, now.changed, now.gone), (3, 1, 0, 0));
+        assert!(apple.has(WORK) && apple.has("FILE::com.apple.CloudDocs::new"));
+
+        // Another lands before the answer: asked again, still nothing deleted.
+        apple.added_elsewhere("FILE::com.apple.CloudDocs::newer");
+        let again = delete_as_shown(
+            &http,
+            &server.uri(),
+            vec![],
+            &work,
+            &shown,
+            now.etag.as_deref(),
+        )
+        .await
+        .unwrap();
+        let Removed::Changed(now) = again else {
+            panic!("deleted past a second change: {again:?}")
+        };
+        assert_eq!((now.items, now.added), (4, 2));
+        assert!(apple.has(WORK));
+
+        // "Delete anyway", for the version just shown: gone.
+        let done = delete_as_shown(
+            &http,
+            &server.uri(),
+            vec![],
+            &work,
+            &shown,
+            now.etag.as_deref(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(done, Removed::Done);
+        assert!(!apple.has(WORK));
+    }
+
+    /// A file changed on another device since it was shown: Apple refuses the delete against
+    /// the version shown, and that is said — the newer file stays.
+    #[tokio::test]
+    async fn a_file_changed_elsewhere_is_not_deleted() {
+        let apple = Apple::new();
+        let plan = apple.item("FILE::com.apple.CloudDocs::plan");
+        apple.bump("FILE::com.apple.CloudDocs::plan");
+        let server = serve(&apple).await;
+        let refused = delete_as_shown(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &plan,
+            &[],
+            None,
+        )
+        .await;
+        match refused {
+            Err(Error::Refused(words)) => {
+                assert!(words.contains("changed on another device"), "{words}")
+            }
+            other => panic!("deleted a newer file: {other:?}"),
+        }
+        assert!(apple.has("FILE::com.apple.CloudDocs::plan"));
+        // As shown, it goes.
+        let now = apple.item("FILE::com.apple.CloudDocs::plan");
+        let done = delete_as_shown(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &now,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(done, Removed::Done);
+    }
+
+    #[test]
+    fn a_folders_changes_are_counted_against_what_was_shown() {
+        let apple = Apple::new();
+        let shown = apple.children(WORK);
+        apple.bump("FILE::com.apple.CloudDocs::a");
+        apple.added_elsewhere("FILE::com.apple.CloudDocs::c");
+        apple
+            .0
+            .lock()
+            .unwrap()
+            .retain(|i| i.0 != "FILE::com.apple.CloudDocs::b");
+        let now = folder_now(&shown, &apple.children(WORK), None);
+        assert_eq!((now.items, now.added, now.changed, now.gone), (2, 1, 1, 1));
     }
 }
