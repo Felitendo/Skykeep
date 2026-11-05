@@ -1458,27 +1458,63 @@ async fn claim_library(app: &tauri::AppHandle, client: &Client) -> Result<(), St
     let tag = account_tag(dsid);
     let data = app.state::<Data>();
     let mut library = data.0.lock().await;
+    let dir = state_dir(app);
+    claim_as(&mut library, &dir, &tag, &AppHandover(&data.0)).await
+}
+
+/// What goes on around a library changing hands, beyond its files: the folders the last
+/// account's session served, the screens' readers of the file, the links to its pictures.
+trait Handover {
+    /// The Drive and Photos folders let go of.
+    async fn release_folders(&self) -> Result<(), String>;
+    /// The screens' read-only connections to the library file closed.
+    fn forget_readers(&self);
+    /// The window's links to the last library's pictures forgotten.
+    fn forget_links(&self);
+}
+
+/// The running app's [`Handover`].
+struct AppHandover<'a>(&'a library_lock::LibraryLock);
+
+impl Handover for AppHandover<'_> {
+    async fn release_folders(&self) -> Result<(), String> {
+        tauri::async_runtime::spawn_blocking(|| mount::release_within(Duration::from_secs(3)))
+            .await
+            .map_err(|e| e.to_string())
+    }
+    fn forget_readers(&self) {
+        self.0.forget_readers();
+    }
+    fn forget_links(&self) {
+        photos::forget_links();
+    }
+}
+
+/// [`claim_library`] for account `tag`, the library at `dir`.
+async fn claim_as(
+    library: &mut Library,
+    dir: &std::path::Path,
+    tag: &str,
+    around: &impl Handover,
+) -> Result<(), String> {
     let known = library.state(ACCOUNT_KEY).map_err(|e| e.to_string())?;
-    if known.as_deref() == Some(tag.as_str()) {
+    if known.as_deref() == Some(tag) {
         return Ok(());
     }
-    let dir = state_dir(app);
-    let home = dir.join(SET_ASIDE).join(&tag);
-    if must_set_aside(&library, known.as_deref(), home.exists())? {
+    let home = dir.join(SET_ASIDE).join(tag);
+    if must_set_aside(library, known.as_deref(), home.exists())? {
         let now = jiff::Timestamp::now().as_second();
         let away = known.unwrap_or_else(|| format!("unclaimed-{now}"));
         // The folders the last account's session served go before its library does: left
         // mounted, they went on answering from the next account's library and session.
-        tauri::async_runtime::spawn_blocking(|| mount::release_within(Duration::from_secs(3)))
-            .await
-            .map_err(|e| e.to_string())?;
+        around.release_folders().await?;
         // The screens' readers let go of the file before it moves.
-        data.0.forget_readers();
-        switch_library(&mut library, &dir, &away, &home)?;
-        photos::forget_links();
+        around.forget_readers();
+        switch_library(library, dir, &away, &home)?;
+        around.forget_links();
     }
     library
-        .set_state(ACCOUNT_KEY, &tag)
+        .set_state(ACCOUNT_KEY, tag)
         .map_err(|e| e.to_string())
 }
 
@@ -7654,6 +7690,92 @@ mod tests {
         let (id, _) = super::note_part("/note/..%2F..%2Fcookies.json/file").unwrap();
         let safe = super::media_file_id(&id);
         assert_eq!(safe, "______cookies_json");
+    }
+
+    /// A stand-in for the folders and screens around a switch: what was done, in order, and
+    /// whether the last account's library was still in place when its folders were let go of.
+    struct Recorded {
+        dir: std::path::PathBuf,
+        away: &'static str,
+        done: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Handover for Recorded {
+        async fn release_folders(&self) -> Result<(), String> {
+            let set_aside = self.dir.join(SET_ASIDE).join(self.away).exists();
+            let held = self.dir.join("library.db").exists();
+            self.done.lock().unwrap().push(format!(
+                "folders released (library in place: {}, set aside yet: {set_aside})",
+                held && !set_aside
+            ));
+            Ok(())
+        }
+        fn forget_readers(&self) {
+            self.done.lock().unwrap().push("readers forgotten".into());
+        }
+        fn forget_links(&self) {
+            self.done.lock().unwrap().push("links forgotten".into());
+        }
+    }
+
+    /// Another Apple ID signing in: the Drive and Photos folders the last account's session
+    /// served are let go of first — while its library is still the one in place — then the
+    /// screens' readers, then the library moves; the same account again moves nothing and
+    /// releases nothing.
+    #[test]
+    fn a_switch_releases_the_folders_before_the_library_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let mut lib = Library::open(dir).unwrap();
+        lib.set_state(ACCOUNT_KEY, "a").unwrap();
+        lib.set_state("contacts.me", "A's card").unwrap();
+        let around = Recorded {
+            dir: dir.to_path_buf(),
+            away: "a",
+            done: std::sync::Mutex::new(Vec::new()),
+        };
+        tauri::async_runtime::block_on(claim_as(&mut lib, dir, "b", &around)).unwrap();
+        assert_eq!(
+            *around.done.lock().unwrap(),
+            [
+                "folders released (library in place: true, set aside yet: false)",
+                "readers forgotten",
+                "links forgotten"
+            ]
+        );
+        assert!(dir.join(SET_ASIDE).join("a").join("library.db").exists());
+        assert_eq!(lib.state(ACCOUNT_KEY).unwrap().as_deref(), Some("b"));
+        assert_eq!(lib.state("contacts.me").unwrap(), None);
+
+        // B again: nothing changes hands, nothing is let go of.
+        around.done.lock().unwrap().clear();
+        tauri::async_runtime::block_on(claim_as(&mut lib, dir, "b", &around)).unwrap();
+        assert!(around.done.lock().unwrap().is_empty());
+    }
+
+    /// A folder that would not let go stops the switch: the library stays the last
+    /// account's, in place, rather than moving out from under a folder still serving it.
+    #[test]
+    fn a_switch_stops_when_the_folders_cannot_be_released() {
+        struct Stuck;
+        impl Handover for Stuck {
+            async fn release_folders(&self) -> Result<(), String> {
+                Err("stuck".into())
+            }
+            fn forget_readers(&self) {
+                panic!("readers forgotten after a failed release");
+            }
+            fn forget_links(&self) {
+                panic!("links forgotten after a failed release");
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let mut lib = Library::open(dir).unwrap();
+        lib.set_state(ACCOUNT_KEY, "a").unwrap();
+        assert!(tauri::async_runtime::block_on(claim_as(&mut lib, dir, "b", &Stuck)).is_err());
+        assert_eq!(lib.state(ACCOUNT_KEY).unwrap().as_deref(), Some("a"));
+        assert!(!dir.join(SET_ASIDE).join("a").exists());
     }
 
     /// Two Apple IDs on one computer: each one's library and caches set aside whole while the
