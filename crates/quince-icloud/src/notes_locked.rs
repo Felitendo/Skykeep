@@ -183,14 +183,18 @@ pub fn decrypt(sealed: &Sealed, password: &str) -> Result<Vec<u8>> {
 pub fn unlock(record: &Value, password: &str) -> Result<Unlocked> {
     let plain = decrypt(&sealed(record)?, password)?;
     let encoded = B64.encode(&plain);
-    let body = crate::ckdocument::stored_text_from_base64(&encoded)
-        .or_else(|| crate::ckdocument::text_from_bytes(&plain))
+    // Its lines as the phone draws them, the runs moved with them.
+    let body = crate::ckdocument::shown_text_from_base64(&encoded)
+        .or_else(|| {
+            crate::ckdocument::text_from_bytes(&plain)
+                .map(|t| crate::ckdocument::apple_line_breaks(&t).into_owned())
+        })
         .ok_or_else(|| {
             Error::Protocol("the note opened, but its text is in a shape this can’t read".into())
         })?;
     Ok(Unlocked {
         body,
-        runs: crate::ckdocument::runs_from_base64(&encoded),
+        runs: crate::ckdocument::shown_runs_from_base64(&encoded),
     })
 }
 

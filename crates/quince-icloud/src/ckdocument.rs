@@ -2120,6 +2120,87 @@ pub fn runs_from_base64(value: &str) -> Vec<Run> {
         .collect()
 }
 
+/* ---- line breaks ------------------------------------------------------------------------- */
+
+/// `text` with its line breaks as Notes on iPhone draws them: a line ends at `\n`.
+///
+/// Text pasted from Windows (on icloud.com, or by another app) can reach a note with `\r\n`
+/// or a bare `\r` between its lines. The phone joins lines at a bare `\r`, and so did this
+/// window, so each becomes `\n` — a carriage return before a newline goes, one before
+/// anything else becomes the newline.
+#[must_use]
+pub fn apple_line_breaks(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\r') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+}
+
+/// `runs` over `text`, moved onto [`apple_line_breaks`]`(text)`: the run that held a
+/// carriage return dropped before a newline is one UTF-16 unit shorter (a run left with
+/// nothing goes); one that became the newline keeps its length, as the character keeps its
+/// place. Runs that do not describe `text` come back as they are.
+#[must_use]
+pub fn runs_with_apple_line_breaks(text: &str, runs: Vec<Run>) -> Vec<Run> {
+    if !text.contains("\r\n") {
+        return runs;
+    }
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if runs.iter().map(|r| r.length).sum::<u64>() != units.len() as u64 {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len());
+    let mut at = 0usize;
+    for mut run in runs {
+        // The lengths add up to the text's, so each is a length within it.
+        let end = at + usize::try_from(run.length).unwrap_or(0);
+        let dropped = (at..end)
+            .filter(|&i| {
+                units[i] == u16::from(b'\r') && units.get(i + 1) == Some(&u16::from(b'\n'))
+            })
+            .count();
+        run.length -= dropped as u64;
+        at = end;
+        if run.length > 0 {
+            out.push(run);
+        }
+    }
+    out
+}
+
+/// A note document's text as this app shows it: [`stored_text_from_base64`] with
+/// [`apple_line_breaks`].
+#[must_use]
+pub fn shown_text_from_base64(value: &str) -> Option<String> {
+    stored_text_from_base64(value).map(|t| apple_line_breaks(&t).into_owned())
+}
+
+/// A note document's runs over [`shown_text_from_base64`].
+#[must_use]
+pub fn shown_runs_from_base64(value: &str) -> Vec<Run> {
+    let runs = runs_from_base64(value);
+    match stored_text_from_base64(value) {
+        Some(text) => runs_with_apple_line_breaks(&text, runs),
+        None => runs,
+    }
+}
+
+/// The document with its line breaks as [`apple_line_breaks`] has them, rewritten as an edit
+/// to its text so its merge history and every other run stay sound — or the document as it is,
+/// where it has none to change or cannot be rewritten (the write that follows refuses then,
+/// as it would have). A write starts here, so the places it is given (a line, a character)
+/// are places in the text this app showed.
+#[must_use]
+pub fn with_apple_line_breaks_in_base64(value: &str) -> std::borrow::Cow<'_, str> {
+    let Some(text) = stored_text_from_base64(value).filter(|t| t.contains('\r')) else {
+        return std::borrow::Cow::Borrowed(value);
+    };
+    match replace_text_in_base64(value, &apple_line_breaks(&text)) {
+        Some(fixed) => std::borrow::Cow::Owned(fixed),
+        None => std::borrow::Cow::Borrowed(value),
+    }
+}
+
 fn parse_run(bytes: &[u8]) -> Option<Run> {
     let mut run = Run::default();
     let mut reader = Reader::new(bytes);

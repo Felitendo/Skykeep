@@ -266,6 +266,11 @@ pub fn place_in_document(
                 .into(),
         )
     };
+    // `at` and `base` are the text as shown, its lines as the phone draws them.
+    let current = crate::ckdocument::with_apple_line_breaks_in_base64(current);
+    let current = current.as_ref();
+    let base = base.map(crate::ckdocument::apple_line_breaks);
+    let base = base.as_deref();
     let theirs = crate::ckdocument::stored_text_from_base64(current).ok_or_else(|| {
         Error::Refused("Skykeep couldn't read this note's text as Apple holds it.".into())
     })?;

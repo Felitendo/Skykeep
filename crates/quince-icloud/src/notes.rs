@@ -69,7 +69,9 @@ fn can_rewrite(record: &Value) -> bool {
 fn note_from_record(record: &Value) -> Option<Note> {
     let guid = field::record_name(record)?;
     let title = field::document_text(record, "TitleEncrypted");
-    let body = field::document_text(record, "TextDataEncrypted");
+    // Its lines as the phone draws them; the runs below move with them.
+    let body = field::document_text(record, "TextDataEncrypted")
+        .map(|b| crate::ckdocument::apple_line_breaks(&b).into_owned());
     // A note kept as a file is read from the file, but writing one back means sending a file,
     // which this does not do yet — so it is shown and not offered for editing.
     let from_asset = record.pointer(&format!("/fields/{FROM_ASSET}")).is_some();
@@ -105,7 +107,7 @@ fn note_from_record(record: &Value) -> Option<Note> {
         runs: record
             .pointer("/fields/TextDataEncrypted/value")
             .and_then(Value::as_str)
-            .map(crate::ckdocument::runs_from_base64)
+            .map(crate::ckdocument::shown_runs_from_base64)
             .filter(|r| !r.is_empty())
             .and_then(|r| serde_json::to_string(&r).ok()),
         // Set from the PasswordProtectedNote records below. Inferring it from a body that
@@ -608,6 +610,9 @@ pub async fn edit_rich_cloudkit_from(
             .ok_or_else(|| {
                 Error::Refused("That note has no body Apple will let us read.".into())
             })?;
+        // Its lines as this window showed them: the edit was made to that text.
+        let encoded = crate::ckdocument::with_apple_line_breaks_in_base64(encoded);
+        let encoded = encoded.as_ref();
         // Apple's text exactly as stored. Read through the display decoder, a note holding a
         // character that decoder declines read as empty — "everything deleted on the phone"
         // — and the merge kept only what was typed here.
@@ -688,6 +693,15 @@ fn rewrite_for_save(
     runs: Option<&[crate::ckdocument::Run]>,
     base_runs: Option<&[crate::ckdocument::Run]>,
 ) -> Result<Option<(String, String)>> {
+    // What is written has its lines as the phone draws them, its runs moved with them.
+    let breaks = crate::ckdocument::apple_line_breaks;
+    let moved = |text: &str, runs: Option<&[crate::ckdocument::Run]>| {
+        runs.map(|r| crate::ckdocument::runs_with_apple_line_breaks(text, r.to_vec()))
+    };
+    let (runs, base_runs) = (moved(body, runs), base.and_then(|b| moved(b, base_runs)));
+    let (runs, base_runs) = (runs.as_deref(), base_runs.as_deref());
+    let (body, base) = (breaks(body), base.map(breaks));
+    let (body, base) = (body.as_ref(), base.as_deref());
     let target = match base {
         Some(base) if base != theirs => merge_edits(base, body, theirs).ok_or_else(|| {
             Error::Refused(
@@ -1055,7 +1069,9 @@ pub async fn set_paragraph_cloudkit(
                 *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Error::Refused("That note has no body Apple will let us read.".into()));
                 return None;
             };
-            let Some(rewritten) = crate::ckdocument::set_paragraph_in_base64(encoded, start, change, Some(expect)) else {
+            // `start` is a place in the text as shown, its lines as the phone draws them.
+            let shown = crate::ckdocument::with_apple_line_breaks_in_base64(encoded);
+            let Some(rewritten) = crate::ckdocument::set_paragraph_in_base64(&shown, start, change, Some(expect)) else {
                 *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Error::Refused("That line has changed since it was shown, so nothing was changed. Try again in a moment.".into()));
                 return None;
             };
@@ -1141,6 +1157,9 @@ pub async fn create_cloudkit_named(
     if body.trim().is_empty() {
         return Err(Error::Protocol("a note needs something in it".into()));
     }
+    // A new note's lines as the phone draws them.
+    let body = crate::ckdocument::apple_line_breaks(body);
+    let body = body.as_ref();
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let held = client.lookup_record(ZONE, record_name).await?;
     if held.is_some_and(|r| r.get("recordName").and_then(Value::as_str) == Some(record_name)) {
@@ -1724,6 +1743,161 @@ mod tests {
                 || (0..before.len()).filter(|&i| before[i] != old[i]).count() > 1,
             "the old path rewrote only the edited run; this test would not catch the bug"
         );
+    }
+
+    /// A note with text pasted from Windows in it, as Apple holds one: a phone's document with
+    /// its merge records, `\r\n` and a bare `\r` between lines, a checklist and a picture.
+    fn windows_pasted() -> String {
+        let text = "Shopping\r\nmilk\r\neggs\rbread\n\u{1F95A} done\r\n";
+        let doc =
+            crate::ckdocument::add_merge_records_for_test(&crate::ckdocument::text_to_base64(text));
+        let units = |s: &str| s.encode_utf16().count() as u64;
+        // A title; "milk\r\neggs\rbread\n" a checklist; the rest body.
+        let runs = vec![
+            Run {
+                length: units("Shopping\r\n"),
+                style: Some(0),
+                ..Run::default()
+            },
+            Run {
+                length: units("milk\r\neggs\rbread\n"),
+                style: Some(103),
+                checked: Some(false),
+                ..Run::default()
+            },
+            plain(units("\u{1F95A} done\r\n")),
+        ];
+        let doc = crate::ckdocument::replace_rich_in_base64(&doc, text, &runs).expect("styled");
+        crate::ckdocument::insert_attachment_in_base64(
+            &doc,
+            units("Shopping\r\nmilk\r\neggs\rbread\n"),
+            "00000000-0000-4000-8000-000000000001",
+            "public.jpeg",
+            7,
+        )
+        .expect("placed")
+        .0
+    }
+
+    fn rewritable(doc: &str) -> String {
+        use base64::Engine;
+        crate::ckdocument::debug_rewritable(
+            &base64::engine::general_purpose::STANDARD
+                .decode(doc)
+                .unwrap(),
+        )
+    }
+
+    /// Read: every `\r\n` and bare `\r` is a line, as on the phone, and the runs still describe
+    /// the text in UTF-16 units — each line keeps its own setting.
+    #[test]
+    fn windows_line_breaks_read_as_lines_with_their_runs() {
+        let doc = windows_pasted();
+        assert_eq!(rewritable(&doc), "ok");
+        let note = note_from_record(&json!({
+            "recordName": "N", "recordType": "Note",
+            "fields": { "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": doc } },
+        }))
+        .unwrap();
+        let body = note.body.unwrap();
+        assert_eq!(
+            body,
+            "Shopping\nmilk\neggs\nbread\n\u{FFFC}\n\u{1F95A} done\n"
+        );
+        let runs: Vec<Run> = serde_json::from_str(&note.runs.unwrap()).unwrap();
+        assert_eq!(
+            runs.iter().map(|r| r.length).sum::<u64>(),
+            body.encode_utf16().count() as u64
+        );
+        // Line by line: the title, three checklist items, the picture, the body.
+        let canon = canonical_runs(&body, &runs).expect("the runs describe the text");
+        let lines: Vec<(Option<u64>, u64)> = canon.iter().map(|r| (r.style, r.length)).collect();
+        assert_eq!(lines[0], (Some(0), 9), "{lines:?}");
+        assert_eq!(lines[1], (Some(103), 16), "{lines:?}");
+        assert!(canon.iter().any(|r| r.attachment.is_some()));
+        // A note with no carriage return is read exactly as before.
+        let plain_doc = fixture();
+        assert_eq!(
+            crate::ckdocument::shown_runs_from_base64(&plain_doc),
+            crate::ckdocument::runs_from_base64(&plain_doc)
+        );
+    }
+
+    /// Write: a one-word edit to such a note sends its lines as the phone draws them, its
+    /// merge records still describing the text unit for unit, the picture still in one place,
+    /// and every line still set as it was.
+    #[test]
+    fn an_edit_writes_windows_line_breaks_as_apples() {
+        let doc = windows_pasted();
+        let encoded = crate::ckdocument::with_apple_line_breaks_in_base64(&doc);
+        assert_eq!(rewritable(&encoded), "ok");
+        let theirs = crate::ckdocument::stored_text_from_base64(&encoded).unwrap();
+        assert!(!theirs.contains('\r'));
+        // The rewrite and the reading agree on where every run falls.
+        assert!(same_formatting(
+            &theirs,
+            &crate::ckdocument::runs_from_base64(&encoded),
+            &crate::ckdocument::shown_runs_from_base64(&doc),
+        ));
+        assert!(crate::ckdocument::attachments_sound_in_base64(
+            &doc, &encoded
+        ));
+
+        let shown = crate::ckdocument::shown_text_from_base64(&doc).unwrap();
+        assert_eq!(shown, theirs);
+        let runs = crate::ckdocument::shown_runs_from_base64(&doc);
+        // One word typed, and a line pasted with a Windows line break.
+        let typed = shown
+            .replace("milk", "oat milk")
+            .replace("done", "done\r\nnext");
+        let mine = crate::ckdocument::carry_runs(&shown, &runs, &shown.replace("milk", "oat milk"));
+        let mine = crate::ckdocument::carry_runs(
+            &shown.replace("milk", "oat milk"),
+            &mine,
+            &typed.replace("\r\n", "\r\r"),
+        );
+        let (kept, written) = rewrite_for_save(
+            &encoded,
+            &theirs,
+            Some(&shown),
+            &typed.replace("\r\n", "\r\r"),
+            Some(&mine),
+            Some(&runs),
+        )
+        .unwrap()
+        .expect("an edit is written");
+        assert_eq!(
+            kept,
+            "Shopping\noat milk\neggs\nbread\n\u{FFFC}\n\u{1F95A} done\n\nnext\n"
+        );
+        assert_eq!(
+            crate::ckdocument::stored_text_from_base64(&written).as_deref(),
+            Some(kept.as_str())
+        );
+        assert_eq!(rewritable(&written), "ok");
+        assert!(crate::ckdocument::attachments_sound_in_base64(
+            &doc, &written
+        ));
+        let read = crate::ckdocument::runs_from_base64(&written);
+        assert_eq!(
+            read.iter().map(|r| r.length).sum::<u64>(),
+            kept.encode_utf16().count() as u64
+        );
+        assert_eq!(read[0].style, Some(0));
+        assert!(read
+            .iter()
+            .any(|r| r.style == Some(103) && r.checked == Some(false)));
+
+        // A CRLF typed or pasted is one line break, its runs one unit shorter.
+        let crlf = format!("{shown}x\r\ny");
+        let mut runs_crlf = runs.clone();
+        runs_crlf.push(plain(4));
+        let (kept, written) =
+            rewrite_for_save(&encoded, &theirs, None, &crlf, Some(&runs_crlf), None)
+                .unwrap()
+                .expect("written");
+        assert_eq!(kept, format!("{shown}x\ny"));
+        assert_eq!(rewritable(&written), "ok");
     }
 
     /// A restyle is written — and the lines it did not touch still read as Apple set them.
