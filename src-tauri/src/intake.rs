@@ -20,6 +20,7 @@ use jiff::civil::{Date, DateTime, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 use quince_icloud::calendar::EventRepeat;
+use quince_icloud::zones;
 
 /// Told to a window when something has arrived for it: it asks `intake_pending` for it.
 const ARRIVED: &str = "quince://intake";
@@ -562,8 +563,9 @@ enum When {
     Floating(DateTime),
     /// `…Z`.
     Utc(Timestamp),
-    /// `TZID=…`: a clock time in that zone, and the zone's own name.
-    Zoned(DateTime, TimeZone, String),
+    /// `TZID=…`: a clock time in that zone, and the zone's IANA name — none for a zone only
+    /// the file's own `VTIMEZONE` defines.
+    Zoned(DateTime, TimeZone, Option<String>),
 }
 
 impl When {
@@ -617,81 +619,8 @@ fn parse_datetime(s: &str) -> Option<(DateTime, bool)> {
     Some((date.to_datetime(time), utc))
 }
 
-/// A `TZID` this computer knows: an IANA name as it stands; one carried inside a longer id
-/// (`/mozilla.org/20050126_1/Europe/Berlin`); or one of the Windows names Outlook writes.
-fn zone_named(tzid: &str) -> Option<(TimeZone, String)> {
-    let tzid = tzid.trim().trim_matches('"').trim_start_matches('/');
-    let found = |name: &str| {
-        TimeZone::get(name)
-            .ok()
-            .map(|tz| (tz.clone(), tz.iana_name().unwrap_or(name).to_string()))
-    };
-    if let Some(z) = found(tzid) {
-        return Some(z);
-    }
-    let segments: Vec<&str> = tzid.split('/').collect();
-    for start in 1..segments.len() {
-        if let Some(z) = found(&segments[start..].join("/")) {
-            return Some(z);
-        }
-    }
-    WINDOWS_ZONES
-        .iter()
-        .find(|(w, _)| w.eq_ignore_ascii_case(tzid))
-        .and_then(|(_, iana)| found(iana))
-}
-
-/// Windows' zone names, as Outlook and Exchange write them in a `TZID`, and the IANA zone
-/// each is (CLDR's windowsZones, the territory "001" row).
-const WINDOWS_ZONES: &[(&str, &str)] = &[
-    ("UTC", "UTC"),
-    ("GMT Standard Time", "Europe/London"),
-    ("Greenwich Standard Time", "Atlantic/Reykjavik"),
-    ("W. Europe Standard Time", "Europe/Berlin"),
-    ("Romance Standard Time", "Europe/Paris"),
-    ("Central Europe Standard Time", "Europe/Budapest"),
-    ("Central European Standard Time", "Europe/Warsaw"),
-    ("E. Europe Standard Time", "Europe/Chisinau"),
-    ("FLE Standard Time", "Europe/Kiev"),
-    ("GTB Standard Time", "Europe/Bucharest"),
-    ("Russian Standard Time", "Europe/Moscow"),
-    ("Turkey Standard Time", "Europe/Istanbul"),
-    ("Israel Standard Time", "Asia/Jerusalem"),
-    ("South Africa Standard Time", "Africa/Johannesburg"),
-    ("Egypt Standard Time", "Africa/Cairo"),
-    ("Arabian Standard Time", "Asia/Dubai"),
-    ("Arab Standard Time", "Asia/Riyadh"),
-    ("Pakistan Standard Time", "Asia/Karachi"),
-    ("India Standard Time", "Asia/Kolkata"),
-    ("Sri Lanka Standard Time", "Asia/Colombo"),
-    ("Nepal Standard Time", "Asia/Kathmandu"),
-    ("Bangladesh Standard Time", "Asia/Dhaka"),
-    ("SE Asia Standard Time", "Asia/Bangkok"),
-    ("Singapore Standard Time", "Asia/Singapore"),
-    ("China Standard Time", "Asia/Shanghai"),
-    ("Taipei Standard Time", "Asia/Taipei"),
-    ("Tokyo Standard Time", "Asia/Tokyo"),
-    ("Korea Standard Time", "Asia/Seoul"),
-    ("AUS Eastern Standard Time", "Australia/Sydney"),
-    ("E. Australia Standard Time", "Australia/Brisbane"),
-    ("W. Australia Standard Time", "Australia/Perth"),
-    ("New Zealand Standard Time", "Pacific/Auckland"),
-    ("Hawaiian Standard Time", "Pacific/Honolulu"),
-    ("Alaskan Standard Time", "America/Anchorage"),
-    ("Pacific Standard Time", "America/Los_Angeles"),
-    ("Mountain Standard Time", "America/Denver"),
-    ("US Mountain Standard Time", "America/Phoenix"),
-    ("Central Standard Time", "America/Chicago"),
-    ("Eastern Standard Time", "America/New_York"),
-    ("Atlantic Standard Time", "America/Halifax"),
-    ("Newfoundland Standard Time", "America/St_Johns"),
-    ("E. South America Standard Time", "America/Sao_Paulo"),
-    ("Argentina Standard Time", "America/Buenos_Aires"),
-    ("Mexico Standard Time", "America/Mexico_City"),
-    ("Central Standard Time (Mexico)", "America/Mexico_City"),
-];
-
-fn when(p: &Property) -> Result<When, String> {
+/// A date or time property, its `TZID` read as this file defines it (see [`zones::Defined`]).
+fn when(p: &Property, zones: &zones::Defined) -> Result<When, String> {
     let date_only = p
         .param("VALUE")
         .is_some_and(|v| v.eq_ignore_ascii_case("DATE"))
@@ -711,8 +640,8 @@ fn when(p: &Property) -> Result<When, String> {
     }
     match p.param("TZID") {
         None => Ok(When::Floating(dt)),
-        Some(tzid) => match zone_named(tzid) {
-            Some((tz, name)) => Ok(When::Zoned(dt, tz, name)),
+        Some(tzid) => match zones.zone(tzid) {
+            Some(zone) => Ok(When::Zoned(dt, zone.tz, zone.name)),
             None => Err(format!(
                 "It uses a time zone this computer doesn’t know ({tzid})."
             )),
@@ -769,6 +698,7 @@ pub fn parse_calendar(
         .get("METHOD")
         .is_some_and(|m| m.value.trim().eq_ignore_ascii_case("CANCEL"));
     let here_name = here.iana_name().map(ToString::to_string);
+    let zones = zones::Defined::read(text);
     let mut events = Vec::new();
     let mut refused = Vec::new();
     for c in &calendar.children {
@@ -799,7 +729,7 @@ pub fn parse_calendar(
             });
             continue;
         }
-        match event_of(c, here, here_name.as_deref()) {
+        match event_of(c, here, here_name.as_deref(), &zones) {
             Ok(event) => events.push(event),
             Err(reason) => refused.push(Refused {
                 title: shown(),
@@ -814,6 +744,7 @@ fn event_of(
     c: &Component,
     here: &TimeZone,
     here_name: Option<&str>,
+    zones: &zones::Defined,
 ) -> Result<ImportEvent, String> {
     if c.get("STATUS")
         .is_some_and(|s| s.value.trim().eq_ignore_ascii_case("CANCELLED"))
@@ -826,7 +757,7 @@ fn event_of(
                 .into(),
         );
     }
-    let start = when(c.get("DTSTART").ok_or("It has no start date.")?)?;
+    let start = when(c.get("DTSTART").ok_or("It has no start date.")?, zones)?;
     let all_day = matches!(start, When::Day(_));
     let starts_at = start.instant(here).ok_or("Its date can’t be read.")?;
 
@@ -835,7 +766,7 @@ fn event_of(
             unreachable!()
         };
         let last = match (c.get("DTEND"), c.get("DURATION")) {
-            (Some(end), _) => match when(end)? {
+            (Some(end), _) => match when(end, zones)? {
                 When::Day(d) => d,
                 other => other.civil(here).date(),
             },
@@ -859,7 +790,9 @@ fn event_of(
             .ok_or("Its date can’t be read.")?
     } else {
         match (c.get("DTEND"), c.get("DURATION")) {
-            (Some(end), _) => when(end)?.instant(here).ok_or("Its end can’t be read.")?,
+            (Some(end), _) => when(end, zones)?
+                .instant(here)
+                .ok_or("Its end can’t be read.")?,
             (None, Some(d)) => {
                 let secs = duration(&d.value).ok_or("Its length can’t be read.")?;
                 starts_at
@@ -876,7 +809,9 @@ fn event_of(
     let repeat = repeat_of(c, &start, here)?;
     let alerts = alerts_of(c, starts_at);
     let timezone = match &start {
-        When::Zoned(_, _, name) => Some(name.clone()),
+        // A zone only the file defines has no name Apple would know: the instants are its,
+        // and the event is kept on this computer's clock.
+        When::Zoned(_, _, Some(name)) => Some(name.clone()),
         _ => here_name.map(ToString::to_string),
     };
     Ok(ImportEvent {
@@ -1213,6 +1148,26 @@ mod tests {
         assert_eq!(events[1].alerts, Some(vec![0, 1440]));
         assert_eq!(refused.len(), 1);
         assert!(refused[0].reason.contains("Mars/Olympus_Mons"));
+    }
+
+    /// An Exchange invitation as it arrives by mail: a Windows zone with its VTIMEZONE, and
+    /// Outlook's "Customized Time Zone" that only the file defines. The second was refused as
+    /// a zone this computer doesn't know.
+    #[test]
+    fn an_exchange_invite_and_a_zone_only_the_file_defines() {
+        let (events, refused) = parse_calendar(&sample("exchange.ics"), &kolkata()).unwrap();
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(events.len(), 2);
+        // 10:00 in Berlin in July is 08:00 UTC; kept in Berlin by its IANA name.
+        assert_eq!(events[0].title, "Budget review");
+        assert_eq!(events[0].starts_at, at("2026-07-15T08:00:00Z"));
+        assert_eq!(events[0].ends_at, at("2026-07-15T09:30:00Z"));
+        assert_eq!(events[0].timezone.as_deref(), Some("Europe/Berlin"));
+        assert_eq!(events[0].alerts, Some(vec![15]));
+        // 09:00 at +05:45 is 03:15 UTC; a zone with no name is kept on this computer's clock.
+        assert_eq!(events[1].starts_at, at("2026-12-01T03:15:00Z"));
+        assert_eq!(events[1].ends_at, at("2026-12-01T03:45:00Z"));
+        assert_eq!(events[1].timezone.as_deref(), Some("Asia/Kolkata"));
     }
 
     #[test]

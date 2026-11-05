@@ -36,6 +36,7 @@ pub mod shared_albums;
 pub mod sync;
 pub mod table;
 pub mod topotext;
+pub mod zones;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

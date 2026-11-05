@@ -3,7 +3,7 @@
 //! `/ca/startup` returns the collections plus the events in a window; `/ca/events` returns
 //! events alone. Both are shaped for the icloud.com web client rather than for us.
 
-use crate::{Error, Result};
+use crate::{zones, Error, Result};
 use jiff::{civil, tz::TimeZone};
 use quince_core::calendar::{Calendar, Event};
 use serde_json::Value;
@@ -147,12 +147,24 @@ fn dates_zone(all_day: bool, timezone: Option<&str>) -> Option<String> {
 /// This computer's own zone, where it has no name to give.
 pub(crate) const SYSTEM_ZONE: &str = "<system>";
 
-/// The zone a name names: [`SYSTEM_ZONE`] this computer's, an unknown one UTC.
+/// The zone a name names: [`SYSTEM_ZONE`] this computer's; an IANA name, a Windows one (an
+/// event Outlook or Exchange made) or an id ending in an IANA name, that zone; one no zone
+/// database knows, UTC.
 fn zone_named(name: Option<&str>) -> TimeZone {
     match name {
         Some(SYSTEM_ZONE) => TimeZone::system(),
-        Some(name) => TimeZone::get(name).unwrap_or(TimeZone::UTC),
+        Some(name) => zones::named(name).map_or(TimeZone::UTC, |z| z.tz),
         None => TimeZone::UTC,
+    }
+}
+
+/// An event's zone by its IANA name. Apple passes on the `TZID` the event was made with, and
+/// one made in Outlook says "W. Europe Standard Time": the window draws in a zone by its IANA
+/// name, and an edit then tells Apple the same zone by that name.
+fn iana_named(name: String) -> String {
+    match zones::named(&name).and_then(|z| z.name) {
+        Some(iana) => iana,
+        None => name,
     }
 }
 
@@ -177,7 +189,7 @@ fn event_from(v: &Value) -> Result<Option<Event>> {
     let (Some(guid), Some(calendar_guid)) = (string(v, "guid"), string(v, "pGuid")) else {
         return Ok(None);
     };
-    let timezone = string(v, "tz");
+    let timezone = string(v, "tz").map(iana_named);
     let Some(start_raw) = v.get("startDate") else {
         return Ok(None);
     };
@@ -1704,6 +1716,39 @@ mod tests {
         let seconds = parse_apple_date(&raw, Some("Asia/Kolkata")).unwrap();
         let utc = jiff::Timestamp::from_second(seconds).unwrap();
         assert_eq!(utc.to_string(), "2026-09-12T09:00:00Z");
+    }
+
+    /// A meeting an Exchange organiser sent: Apple passes on the zone it was made in by its
+    /// Windows name. Read as UTC it was drawn two hours late; it is Berlin, and kept by
+    /// Berlin's IANA name for the window and for an edit sent back.
+    #[test]
+    fn an_event_in_a_windows_zone_is_read_in_that_zone() {
+        let event = event_from(&json!({
+            "guid": "EX", "pGuid": "work", "title": "Review",
+            "tz": "W. Europe Standard Time", "allDay": false,
+            "startDate": [20260715, 2026, 7, 15, 10, 0, 600],
+            "endDate": [20260715, 2026, 7, 15, 11, 0, 660],
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(event.timezone.as_deref(), Some("Europe/Berlin"));
+        let start = jiff::Timestamp::from_second(event.starts_at).unwrap();
+        assert_eq!(start.to_string(), "2026-07-15T08:00:00Z");
+        assert_eq!(event.ends_at - event.starts_at, 3600);
+        // And the date read back in that zone is the one Apple sent.
+        let raw = json!([20260715, 2026, 7, 15, 10, 0, 600]);
+        assert_eq!(
+            format_apple_date(event.starts_at, Some("W. Europe Standard Time")),
+            raw
+        );
+        // A name no zone database knows stays as Apple sent it.
+        let odd = event_from(&json!({
+            "guid": "O", "pGuid": "work", "tz": "Nowhere Time",
+            "startDate": [20260715, 2026, 7, 15, 10, 0, 600],
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(odd.timezone.as_deref(), Some("Nowhere Time"));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! Nothing here is Apple's. The file is fetched with a client that can reach the hosts the
 //! person subscribed to and nothing else (`quince_auth::listed_only`), and only once they have.
 
-use crate::{Error, Result};
+use crate::{zones, Error, Result};
 use jiff::civil::{Date, DateTime, Time, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp, ToSpan};
@@ -283,79 +283,19 @@ fn parse_datetime(s: &str) -> Option<(DateTime, bool)> {
     Some((date.to_datetime(time), utc))
 }
 
-/// A `TZID` this computer knows: an IANA name, one inside a longer id
-/// (`/mozilla.org/20050126_1/Europe/Berlin`), or one of the Windows names Outlook writes.
-fn zone_named(tzid: &str) -> Option<TimeZone> {
-    let tzid = tzid.trim().trim_matches('"').trim_start_matches('/');
-    if let Ok(tz) = TimeZone::get(tzid) {
-        return Some(tz);
-    }
-    let segments: Vec<&str> = tzid.split('/').collect();
-    for start in 1..segments.len() {
-        if let Ok(tz) = TimeZone::get(&segments[start..].join("/")) {
-            return Some(tz);
-        }
-    }
-    WINDOWS_ZONES
-        .iter()
-        .find(|(w, _)| w.eq_ignore_ascii_case(tzid))
-        .and_then(|(_, iana)| TimeZone::get(iana).ok())
+/// What a file's times are read against: this computer's clock for a floating time, and the
+/// zones the file itself defines in its `VTIMEZONE`s.
+struct Clock<'a> {
+    here: &'a TimeZone,
+    zones: &'a zones::Defined,
 }
 
-/// Windows' zone names, as Outlook and Exchange publish them (CLDR's windowsZones, "001").
-const WINDOWS_ZONES: &[(&str, &str)] = &[
-    ("UTC", "UTC"),
-    ("GMT Standard Time", "Europe/London"),
-    ("Greenwich Standard Time", "Atlantic/Reykjavik"),
-    ("W. Europe Standard Time", "Europe/Berlin"),
-    ("Romance Standard Time", "Europe/Paris"),
-    ("Central Europe Standard Time", "Europe/Budapest"),
-    ("Central European Standard Time", "Europe/Warsaw"),
-    ("E. Europe Standard Time", "Europe/Chisinau"),
-    ("FLE Standard Time", "Europe/Kiev"),
-    ("GTB Standard Time", "Europe/Bucharest"),
-    ("Russian Standard Time", "Europe/Moscow"),
-    ("Turkey Standard Time", "Europe/Istanbul"),
-    ("Israel Standard Time", "Asia/Jerusalem"),
-    ("South Africa Standard Time", "Africa/Johannesburg"),
-    ("Egypt Standard Time", "Africa/Cairo"),
-    ("Arabian Standard Time", "Asia/Dubai"),
-    ("Arab Standard Time", "Asia/Riyadh"),
-    ("Pakistan Standard Time", "Asia/Karachi"),
-    ("India Standard Time", "Asia/Kolkata"),
-    ("Sri Lanka Standard Time", "Asia/Colombo"),
-    ("Nepal Standard Time", "Asia/Kathmandu"),
-    ("Bangladesh Standard Time", "Asia/Dhaka"),
-    ("SE Asia Standard Time", "Asia/Bangkok"),
-    ("Singapore Standard Time", "Asia/Singapore"),
-    ("China Standard Time", "Asia/Shanghai"),
-    ("Taipei Standard Time", "Asia/Taipei"),
-    ("Tokyo Standard Time", "Asia/Tokyo"),
-    ("Korea Standard Time", "Asia/Seoul"),
-    ("AUS Eastern Standard Time", "Australia/Sydney"),
-    ("E. Australia Standard Time", "Australia/Brisbane"),
-    ("W. Australia Standard Time", "Australia/Perth"),
-    ("New Zealand Standard Time", "Pacific/Auckland"),
-    ("Hawaiian Standard Time", "Pacific/Honolulu"),
-    ("Alaskan Standard Time", "America/Anchorage"),
-    ("Pacific Standard Time", "America/Los_Angeles"),
-    ("Mountain Standard Time", "America/Denver"),
-    ("US Mountain Standard Time", "America/Phoenix"),
-    ("Central Standard Time", "America/Chicago"),
-    ("Eastern Standard Time", "America/New_York"),
-    ("Atlantic Standard Time", "America/Halifax"),
-    ("Newfoundland Standard Time", "America/St_Johns"),
-    ("E. South America Standard Time", "America/Sao_Paulo"),
-    ("Argentina Standard Time", "America/Buenos_Aires"),
-    ("Mexico Standard Time", "America/Mexico_City"),
-];
-
 /// A date or date-time property, read in `here` when it floats (no zone given).
-fn when_of(p: &Property, here: &TimeZone) -> Option<When> {
+fn when_of(p: &Property, here: &Clock) -> Option<When> {
     when_value(&p.value, p, here)
 }
 
-fn when_value(value: &str, p: &Property, here: &TimeZone) -> Option<When> {
+fn when_value(value: &str, p: &Property, here: &Clock) -> Option<When> {
     let date_only = p
         .param("VALUE")
         .is_some_and(|v| v.eq_ignore_ascii_case("DATE"))
@@ -368,8 +308,8 @@ fn when_value(value: &str, p: &Property, here: &TimeZone) -> Option<When> {
         TimeZone::UTC
     } else {
         p.param("TZID")
-            .and_then(zone_named)
-            .unwrap_or_else(|| here.clone())
+            .and_then(|tzid| here.zones.zone(tzid))
+            .map_or_else(|| here.here.clone(), |z| z.tz)
     };
     Some(When::At(dt, zone))
 }
@@ -447,7 +387,7 @@ fn weekday_of(code: &str) -> Option<Weekday> {
     })
 }
 
-fn rule_of(p: &Property, here: &TimeZone) -> Option<Rule> {
+fn rule_of(p: &Property, here: &Clock) -> Option<Rule> {
     let mut rule = Rule {
         freq: Freq::Daily,
         interval: 1,
@@ -564,6 +504,11 @@ pub fn parse(text: &str, here: &TimeZone) -> Result<Feed> {
     if !text.contains("BEGIN:VCALENDAR") {
         return Err(Error::Refused("That isn’t a calendar file.".into()));
     }
+    let zones = zones::Defined::read(text);
+    let here = &Clock {
+        here,
+        zones: &zones,
+    };
     let mut feed = Feed::default();
     // Nesting: VCALENDAR > VEVENT > VALARM. Only a VEVENT's own lines are its own.
     let mut stack: Vec<String> = Vec::new();
@@ -621,7 +566,7 @@ pub fn parse(text: &str, here: &TimeZone) -> Result<Feed> {
     Ok(feed)
 }
 
-fn item_of(props: &[Property], here: &TimeZone) -> Option<Item> {
+fn item_of(props: &[Property], here: &Clock) -> Option<Item> {
     let get = |name: &str| props.iter().find(|p| p.name == name);
     let text = |name: &str| {
         get(name)
@@ -1227,6 +1172,46 @@ mod tests {
         assert_eq!(got[0].location.as_deref(), Some("Main hall"));
         assert_eq!(got[0].url.as_deref(), Some("https://school.example/meet"));
         assert_eq!(got[0].starts_at, at("Asia/Kolkata", "20261015T160000"));
+    }
+
+    /// An Outlook-published calendar (Outlook on the web's "Publish calendar"): a zone Outlook
+    /// named itself, defined only by the file's VTIMEZONE, and a Windows name the file defines
+    /// too. Read on this computer's clock (UTC here) both were hours off.
+    #[test]
+    fn an_outlook_feeds_own_zones_are_read_by_their_rules() {
+        let text = concat!(
+            "BEGIN:VCALENDAR\r\nMETHOD:PUBLISH\r\nPRODID:Microsoft Exchange Server 2010\r\nVERSION:2.0\r\nX-WR-CALNAME:Team\r\n",
+            "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone\r\n",
+            "BEGIN:STANDARD\r\nDTSTART:16010101T030000\r\nTZOFFSETFROM:+1030\r\nTZOFFSETTO:+0930\r\n",
+            "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=4\r\nEND:STANDARD\r\n",
+            "BEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:+0930\r\nTZOFFSETTO:+1030\r\n",
+            "RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=10\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\n",
+            "BEGIN:VTIMEZONE\r\nTZID:Jordan Standard Time\r\n",
+            "BEGIN:STANDARD\r\nDTSTART:16010101T000000\r\nTZOFFSETFROM:+0300\r\nTZOFFSETTO:+0300\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n",
+            "BEGIN:VEVENT\r\nUID:weekly\r\nSUMMARY:Sync\r\n",
+            "DTSTART;TZID=Customized Time Zone:20260329T090000\r\nDTEND;TZID=Customized Time Zone:20260329T093000\r\n",
+            "RRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n",
+            "BEGIN:VEVENT\r\nUID:amman\r\nSUMMARY:Amman\r\n",
+            "DTSTART;TZID=Jordan Standard Time:20260715T100000\r\nDTEND;TZID=Jordan Standard Time:20260715T110000\r\nEND:VEVENT\r\n",
+            "END:VCALENDAR\r\n",
+        );
+        let feed = parse(text, &TimeZone::UTC).unwrap();
+        let (from, to) = year(2026);
+        let mut got = events(&feed, "c", from, to);
+        got.sort_by_key(|e| e.starts_at);
+        assert_eq!(got.len(), 3);
+        // Adelaide's rules: 09:00 at +10:30 on 29 March, at +09:30 a week on (5 April).
+        assert_eq!(
+            got[0].starts_at,
+            at("Australia/Adelaide", "20260329T090000")
+        );
+        assert_eq!(got[0].ends_at - got[0].starts_at, 1800);
+        assert_eq!(
+            got[1].starts_at,
+            at("Australia/Adelaide", "20260405T090000")
+        );
+        // Amman, as the file defines it.
+        assert_eq!(got[2].starts_at, at("Asia/Amman", "20260715T100000"));
     }
 
     #[test]
