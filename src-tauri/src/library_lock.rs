@@ -642,8 +642,15 @@ mod hold_tests {
     fn marks_made_at_the_same_instant_let_only_one_run() {
         const STARTING: u32 = 12;
         for round in 0..30 {
+            // A mark left behind is taken over only where whose it is can be asked (Linux's
+            // /proc); elsewhere `mark` refuses and asks the person (see `mark_as`), so those
+            // rounds hold on Linux only. Starting together over no mark holds everywhere.
+            let left_behind = round % 2 == 1;
+            if left_behind && !cfg!(target_os = "linux") {
+                continue;
+            }
             let dir = tempfile::tempdir().unwrap();
-            if round % 2 == 1 {
+            if left_behind {
                 std::fs::write(dir.path().join("skykeep.pid"), "4194999").unwrap();
             }
             let all = std::sync::Arc::new(std::sync::Barrier::new(STARTING as usize));
