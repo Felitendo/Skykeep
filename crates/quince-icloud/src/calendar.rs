@@ -2841,4 +2841,55 @@ mod odd_event_tests {
             assert_eq!(body["title"], "Standup", "{odd} still produces the event");
         }
     }
+
+    /// A title edited here, on an event made on a Mac with everything this app does not show:
+    /// its alerts, guests, attachments, the repeat and its exceptions, a private comment, an
+    /// organiser, and fields Apple adds that nobody here knows. Every one goes back to Apple
+    /// exactly as Apple sent it; only the title — and the fields this app writes, with the
+    /// same values — differ.
+    #[test]
+    fn an_edit_keeps_everything_this_app_does_not_show() {
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, "http://127.0.0.1:1", vec![]);
+        let existing = serde_json::json!({
+            "guid": "E1", "pGuid": "C1", "title": "Planning", "location": "Room 4",
+            "description": "Agenda", "url": null, "tz": "Europe/Berlin", "allDay": false,
+            "startDate": [20261105, 2026, 11, 5, 10, 0, 600],
+            "endDate": [20261105, 2026, 11, 5, 11, 0, 660],
+            "localStartDate": [20261105, 2026, 11, 5, 10, 0, 600],
+            "localEndDate": [20261105, 2026, 11, 5, 11, 0, 660],
+            "duration": 60, "etag": "C=9@U=x",
+            "alarms": ["E1:A1", "E1:A2"],
+            "invitees": ["E1:organiser@example.com", "E1:guest@example.com"],
+            "organizer": "organiser@example.com",
+            "hasAttachments": true, "attachments": ["E1:ATT1"],
+            "recurrence": "E1*MME-RID",
+            "recurrenceMaster": true,
+            "recurrenceException": ["20261112T090000Z"],
+            "privateComments": "bring the numbers",
+            "changeRecurring": null,
+            "birthdayIsYearlessBday": false,
+            "X-APPLE-TRAVEL-ADVISORY-BEHAVIOR": "AUTOMATIC",
+            "someFieldAppleAddsLater": { "nested": [1, 2, 3] },
+        });
+        let event = event_from(&existing).unwrap().unwrap();
+        let mut renamed = event.clone();
+        renamed.title = "Planning, round 2".into();
+        let body = client.event_body(&renamed, Some(&existing));
+        let (Some(body), Some(was)) = (body.as_object(), existing.as_object()) else {
+            panic!("an event is an object");
+        };
+        for (key, value) in was {
+            if key == "title" {
+                continue;
+            }
+            assert_eq!(body.get(key), Some(value), "{key} changed or went missing");
+        }
+        assert_eq!(body["title"], "Planning, round 2");
+        assert_eq!(
+            body.len(),
+            was.len(),
+            "nothing added beyond what Apple holds"
+        );
+    }
 }

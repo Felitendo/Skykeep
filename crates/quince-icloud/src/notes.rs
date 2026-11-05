@@ -1900,6 +1900,224 @@ mod tests {
         assert_eq!(rewritable(&written), "ok");
     }
 
+    /// A note as a phone keeps one, with everything Notes can hold: a drawing, a scanned
+    /// document, a picture, a PDF, a contact card, an audio recording, a table, a #tag and an
+    /// @mention, a link, a checklist ticked and not, a title and a heading — and in every run
+    /// a field this app does not know (a collapsed section, or whatever a newer phone adds),
+    /// in a document with its merge records. One word typed here: that run alone changes, and
+    /// only in its length; every other run, every attachment's reference and every unknown
+    /// field goes back byte for byte; the merge records still describe the text; and the
+    /// attachments stay sound for the phone.
+    #[test]
+    fn a_one_word_edit_keeps_everything_else_byte_for_byte() {
+        let text = "Trip\nPacking\nTickets booked\nPassport\nSee the guide\n";
+        let units = |s: &str| s.encode_utf16().count() as u64;
+        let mut doc =
+            crate::ckdocument::add_merge_records_for_test(&crate::ckdocument::text_to_base64(text));
+        let styled = vec![
+            Run {
+                length: units("Trip\n"),
+                style: Some(0),
+                ..Run::default()
+            },
+            Run {
+                length: units("Packing\n"),
+                style: Some(1),
+                ..Run::default()
+            },
+            Run {
+                length: units("Tickets booked\n"),
+                style: Some(103),
+                checked: Some(true),
+                ..Run::default()
+            },
+            Run {
+                length: units("Passport\n"),
+                style: Some(103),
+                checked: Some(false),
+                ..Run::default()
+            },
+            plain(units("See the ")),
+            Run {
+                length: units("guide"),
+                link: Some("https://example.com/guide".into()),
+                ..Run::default()
+            },
+            plain(units("\n")),
+        ];
+        doc = crate::ckdocument::replace_rich_in_base64(&doc, text, &styled).expect("styled");
+        // Every kind of attachment, each on a line of its own, as a phone places them.
+        for (i, uti) in [
+            "com.apple.paper",
+            "com.apple.notes.gallery",
+            "public.jpeg",
+            "com.adobe.pdf",
+            "public.vcard",
+            "com.apple.m4a-audio",
+            "com.apple.notes.table",
+            "com.apple.notes.inlinetextattachment.hashtag",
+            "com.apple.notes.inlinetextattachment.mention",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let shown = crate::ckdocument::stored_text_from_base64(&doc).unwrap();
+            let at = units(&shown);
+            doc = crate::ckdocument::insert_attachment_in_base64(
+                &doc,
+                at,
+                &format!("00000000-0000-4000-8000-00000000001{i}"),
+                uti,
+                100 + i as u64,
+            )
+            .expect("placed")
+            .0;
+        }
+        // A field this app does not model in every run (field 30, a varint), as a newer phone
+        // may write one.
+        let raw = |d: &str| {
+            use base64::Engine;
+            crate::ckdocument::debug_attribute_runs(
+                &base64::engine::general_purpose::STANDARD.decode(d).unwrap(),
+            )
+        };
+        let unknown = [0xF0_u8, 0x01, 0x07];
+        let marked: Vec<Vec<u8>> = raw(&doc)
+            .into_iter()
+            .map(|mut r| {
+                r.extend_from_slice(&unknown);
+                r
+            })
+            .collect();
+        let doc = crate::ckdocument::with_raw_runs_for_test(&doc, &marked);
+        assert_eq!(rewritable(&doc), "ok", "a sound document to begin with");
+
+        // One word typed, through the save the window makes.
+        let theirs = crate::ckdocument::stored_text_from_base64(&doc).unwrap();
+        let apple = crate::ckdocument::runs_from_base64(&doc);
+        let editor = canonical_runs(&theirs, &apple).unwrap();
+        let at = theirs.find("booked").unwrap();
+        let typed = format!("{}all {}", &theirs[..at], &theirs[at..]);
+        let mine = crate::ckdocument::carry_runs(&theirs, &editor, &typed);
+        let (kept, written) = rewrite_for_save(
+            &doc,
+            &theirs,
+            Some(&theirs),
+            &typed,
+            Some(&mine),
+            Some(&apple),
+        )
+        .unwrap()
+        .expect("an edit is written");
+        assert_eq!(kept, typed);
+
+        let (before, after) = (raw(&doc), raw(&written));
+        assert_eq!(before.len(), after.len(), "no run re-cut, added or lost");
+        let changed: Vec<usize> = (0..before.len())
+            .filter(|&i| before[i] != after[i])
+            .collect();
+        assert_eq!(changed.len(), 1, "only the run typed into: {changed:?}");
+        let i = changed[0];
+        assert_eq!(
+            crate::ckdocument::debug_run_length(&after[i]),
+            crate::ckdocument::debug_run_length(&before[i]) + units("all ")
+        );
+        assert!(
+            after.iter().all(|r| r.ends_with(&unknown)),
+            "every unknown field kept"
+        );
+        // Every attachment where it was, by the same reference.
+        let ids = |d: &str| -> Vec<String> {
+            crate::ckdocument::runs_from_base64(d)
+                .into_iter()
+                .filter_map(|r| r.attachment)
+                .collect()
+        };
+        assert_eq!(ids(&written), ids(&doc));
+        assert_eq!(ids(&doc).len(), 9);
+        assert!(crate::ckdocument::attachments_sound_in_base64(
+            &doc, &written
+        ));
+        assert_eq!(
+            rewritable(&written),
+            "ok",
+            "merge records still describe the text"
+        );
+        // Read back: the same note, one word longer, set as it was.
+        let read = crate::ckdocument::runs_from_base64(&written);
+        assert!(same_formatting(&typed, &read, &mine));
+
+        // A tick here (the other write a note takes): the passport line ticked, every unknown
+        // field and attachment still there.
+        let line = typed.find("Passport").unwrap();
+        let start = typed[..line].encode_utf16().count() as u64;
+        let ticked = crate::ckdocument::set_paragraph_in_base64(
+            &written,
+            start,
+            crate::ckdocument::ParagraphChange::Checked(true),
+            Some("Passport"),
+        )
+        .expect("ticked");
+        assert!(
+            raw(&ticked).iter().all(|r| r.ends_with(&unknown)),
+            "unknown fields kept by a tick"
+        );
+        assert_eq!(ids(&ticked), ids(&doc));
+        assert!(crate::ckdocument::attachments_sound_in_base64(
+            &written, &ticked
+        ));
+        assert_eq!(rewritable(&ticked), "ok");
+
+        // A restyle from the editor (the heading made body text): the runs are written from
+        // the editor's, and every one still carries what this app does not know.
+        let shown = crate::ckdocument::stored_text_from_base64(&ticked).unwrap();
+        let theirs_runs = crate::ckdocument::runs_from_base64(&ticked);
+        let mut restyled = canonical_runs(&shown, &theirs_runs).unwrap();
+        for r in &mut restyled {
+            if r.style == Some(1) {
+                r.style = None;
+            }
+        }
+        let (_, rewritten) = rewrite_for_save(
+            &ticked,
+            &shown,
+            Some(&shown),
+            &shown,
+            Some(&restyled),
+            Some(&theirs_runs),
+        )
+        .unwrap()
+        .expect("a restyle is written");
+        let holds = |r: &Vec<u8>| r.windows(unknown.len()).any(|w| w == unknown);
+        assert!(
+            raw(&rewritten).iter().all(holds),
+            "unknown fields kept by a restyle"
+        );
+        assert_eq!(ids(&rewritten), ids(&doc));
+        assert!(crate::ckdocument::attachments_sound_in_base64(
+            &ticked, &rewritten
+        ));
+        assert_eq!(rewritable(&rewritten), "ok");
+    }
+
+    /// A locked note is never offered for editing: its text is sealed, and nothing here
+    /// could write it back as the phone keeps it.
+    #[test]
+    fn a_locked_note_is_never_editable() {
+        let sealed = json!({
+            "recordName": "L", "recordType": "Note",
+            "fields": {
+                "TitleEncrypted": { "type": "ENCRYPTED_BYTES", "value": bare("Bank") },
+                "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": "AAECAwQFBgcICQ==" },
+                "CryptoInitializationVector": { "type": "BYTES", "value": "AAAAAAAAAAAAAAAA" },
+                "CryptoTag": { "type": "BYTES", "value": "AAAAAAAAAAAAAAAAAAAAAA==" },
+            }
+        });
+        let note = note_from_record(&sealed).unwrap();
+        assert!(!note.editable);
+        assert!(note.body.is_none());
+    }
+
     /// A restyle is written — and the lines it did not touch still read as Apple set them.
     #[test]
     fn a_restyle_is_written() {

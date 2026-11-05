@@ -2993,6 +2993,108 @@ mod edit_tests {
             .count()
     }
 
+    /// A reminder an iPhone made with everything on it: a location alarm and an early one, a
+    /// picture, a link, subtasks, a section, a flag, a repeat, hashtags, and the token map its
+    /// devices merge by. Its title edited here sends the title alone (CloudKit's `update`
+    /// changes only the fields named): no other field is sent, the title's merge records are
+    /// rewritten in place, and every other field's merge token goes back as it was.
+    #[tokio::test]
+    async fn a_title_edit_sends_the_title_alone() {
+        let tokens = json!({ "map": {
+            "titleDocument": { "counter": 3, "modificationTime": 7.5e8, "replicaID": "PHONE" },
+            "alarmIDs": { "counter": 2, "modificationTime": 7.4e8, "replicaID": "PHONE" },
+            "flagged": { "counter": 1, "modificationTime": 7.3e8, "replicaID": "MAC" },
+        } })
+        .to_string();
+        let title = crate::ckdocument::add_merge_records_for_test(
+            &crate::ckdocument::text_to_base64("Pick up the frame"),
+        );
+        let record = json!({
+            "recordName": "Reminder/1", "recordType": "Reminder", "recordChangeTag": "fresh",
+            "fields": {
+                "TitleDocument": { "type": "ENCRYPTED_BYTES", "value": title },
+                "NotesDocument": { "type": "ENCRYPTED_BYTES", "value": crate::ckdocument::text_to_base64("At the shop on Main St") },
+                "AlarmIDs": { "type": "STRING_LIST", "value": ["Alarm/LOC-1", "Alarm/EARLY-2"] },
+                "AttachmentIDs": { "type": "STRING_LIST", "value": ["Attachment/IMG-1", "Attachment/URL-1"] },
+                "HashtagIDs": { "type": "STRING_LIST", "value": ["Hashtag/errands"] },
+                "RecurrenceRuleIDs": { "type": "STRING_LIST", "value": ["RecurrenceRule/W1"] },
+                "ParentReminder": { "type": "REFERENCE", "value": { "recordName": "Reminder/0", "action": "VALIDATE" } },
+                "List": { "type": "REFERENCE", "value": { "recordName": "List/a", "action": "VALIDATE" } },
+                "Flagged": { "type": "NUMBER_INT64", "value": 1 },
+                "Priority": { "type": "NUMBER_INT64", "value": 5 },
+                "DueDate": { "type": "TIMESTAMP", "value": 1_789_000_000_000_i64 },
+                "ResolutionTokenMap": { "type": "STRING", "value": tokens },
+            }
+        });
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [record.clone()] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Reminder/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                title: Some("Pick up the big frame".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/modify"))
+            .unwrap();
+        let body: Value = serde_json::from_slice(&modify.body).unwrap();
+        assert_eq!(
+            body["operations"][0]["operationType"], "update",
+            "field by field"
+        );
+        let fields = body["operations"][0]["record"]["fields"]
+            .as_object()
+            .unwrap();
+        let mut sent: Vec<&str> = fields.keys().map(String::as_str).collect();
+        sent.sort_unstable();
+        assert_eq!(
+            sent,
+            ["LastModifiedDate", "ResolutionTokenMap", "TitleDocument"]
+        );
+        // The title's document rewritten in place: its merge records still describe it.
+        let written = fields["TitleDocument"]["value"].as_str().unwrap();
+        assert_eq!(
+            crate::ckdocument::stored_text_from_base64(written).as_deref(),
+            Some("Pick up the big frame")
+        );
+        let raw =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, written).unwrap();
+        assert_eq!(crate::ckdocument::debug_rewritable(&raw), "ok");
+        // Every other field's merge token as Apple had it.
+        let map: Value =
+            serde_json::from_str(fields["ResolutionTokenMap"]["value"].as_str().unwrap()).unwrap();
+        let was: Value = serde_json::from_str(&tokens).unwrap();
+        assert_eq!(map["map"]["alarmIDs"], was["map"]["alarmIDs"]);
+        assert_eq!(map["map"]["flagged"], was["map"]["flagged"]);
+        assert_eq!(
+            map["map"]["titleDocument"]["counter"], 4,
+            "the title's raised"
+        );
+    }
+
     #[tokio::test]
     async fn a_new_title_is_written_so_it_reads_back() {
         let server = accepting().await;

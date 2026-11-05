@@ -932,14 +932,21 @@ fn restyle(run: &[u8], change: ParagraphChange) -> Option<Vec<u8>> {
         ParagraphChange::Checked(done) => {
             let item = bytes_field(&paragraph, 5)?; // only a checklist item has a tick
             let item = set_varint_field(&item, 2, u64::from(done))?;
-            let mut p = without_field(&paragraph, 5)?;
-            p.extend(length_delimited(5, &item));
-            p
+            // In its place: every other field of the paragraph as it was, where it was.
+            rewrite(&paragraph, &[5], &item)?
         }
     };
-    let mut out = without_field(run, 2)?;
-    out.extend(length_delimited(2, &next));
-    Some(out)
+    // In its place too, so whatever else the run holds — fields this app does not know, a
+    // newer phone's — stays as it was, in the order it was written; appended only where the
+    // run had no paragraph yet.
+    match rewrite(run, &[2], &next) {
+        Some(out) => Some(out),
+        None => {
+            let mut out = run.to_vec();
+            out.extend(length_delimited(2, &next));
+            Some(out)
+        }
+    }
 }
 
 /// Set a note's formatting from `runs` — what an editor shows — over a document whose text
@@ -1711,6 +1718,19 @@ pub fn repair_runs(original: &[u8]) -> Option<Vec<u8>> {
 pub fn repair_runs_in_base64(original: &str) -> Option<String> {
     let raw = B64.decode(original.trim()).ok()?;
     Some(B64.encode(gzip(&repair_runs(&raw)?)))
+}
+
+/// A document's note message with its runs set to `runs`, raw: for a test to put in fields
+/// this app does not model, as a newer phone writes them.
+#[cfg(test)]
+pub(crate) fn with_raw_runs_for_test(original: &str, runs: &[Vec<u8>]) -> String {
+    let raw = B64.decode(original.trim()).unwrap_or_default();
+    let plain = inflate(&raw).unwrap_or_default();
+    let note = field_at(&plain, &TEXT_PATH[..2]).unwrap_or_default();
+    let rebuilt = with_runs(note, runs).unwrap_or_default();
+    B64.encode(gzip(
+        &rewrite(&plain, &TEXT_PATH[..2], &rebuilt).unwrap_or_default(),
+    ))
 }
 
 /// A document as a phone would have written it: its records replaced by ones from a writer

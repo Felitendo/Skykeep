@@ -2719,6 +2719,66 @@ mod write_tests {
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
+    /// A card as an iPhone keeps it, full of what this app does not show: instant messaging
+    /// (IMPP), social profiles, related names, custom labels, dates, a picture with its crop,
+    /// and fields of Apple's own. A first name changed here, and only that, goes back; every
+    /// other field is Apple's, byte for byte — the whole card too, through `card_written`.
+    #[test]
+    fn an_edit_keeps_every_field_this_app_does_not_show() {
+        let existing = json!({
+            "contactId": "C1", "etag": "e7", "isCompany": false,
+            "firstName": "Ada", "lastName": "Lovelace", "companyName": "Analytical",
+            "jobTitle": "Mathematician", "nickName": "Countess",
+            "phones": [
+                { "label": "MOBILE", "field": "+44 20 7946 0000" },
+                { "label": "_$!<Pager>!$_", "field": "555-0100" },
+                { "label": "Lab bench", "field": "555-0199" }
+            ],
+            "emailAddresses": [{ "label": "WORK", "field": "ada@example.com" }],
+            "IMs": [{ "label": "SKYPE", "field": { "userName": "ada.l", "IMService": "Skype" } }],
+            "profiles": [{ "label": "TWITTER", "field": "https://x.com/ada", "user": "ada" }],
+            "relatedNames": [{ "label": "_$!<Mother>!$_", "field": "Anne Isabella Milbanke" }],
+            "dates": [{ "label": "_$!<Anniversary>!$_", "field": "1835-07-08" }],
+            "urls": [{ "label": "HOMEPAGE", "field": "https://example.com/ada" }],
+            "streetAddresses": [{ "label": "HOME", "field": { "street": "12 St James's Sq", "city": "London" } }],
+            "photo": { "url": "https://p.example/ada.jpg", "crop": { "x": 1, "y": 2, "width": 300, "height": 300 }, "signature": "sig" },
+            "X-ABShowAs": "PERSON",
+            "X-SOCIALPROFILE": "x-apple:ada",
+            "someFieldAppleAddsLater": { "nested": true }
+        });
+        let base = contact_from(&existing).expect("a person");
+        let mut mine = base.clone();
+        mine.first_name = Some("Augusta Ada".into());
+        for written in [card_merged(&mine, Some(&existing), Some(&base)), {
+            let card = parse_cards(&json!({ "contacts": [existing.clone()] }))
+                .pop()
+                .unwrap();
+            card_written(
+                &mine,
+                Some(&card.details),
+                Some(&existing),
+                Some(&base),
+                Some(&card.details),
+            )
+        }] {
+            let (Some(written), Some(was)) = (written.as_object(), existing.as_object()) else {
+                panic!("a card is an object");
+            };
+            for (key, value) in was {
+                if key == "firstName" {
+                    continue;
+                }
+                assert_eq!(
+                    written.get(key),
+                    Some(value),
+                    "{key} changed or went missing"
+                );
+            }
+            assert_eq!(written["firstName"], "Augusta Ada");
+            assert_eq!(written.len(), was.len(), "nothing added: {written:?}");
+        }
+    }
+
     fn person() -> Contact {
         Contact {
             guid: "C1".into(),
