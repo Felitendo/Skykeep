@@ -1373,8 +1373,48 @@ fn resident_kb() -> Option<u64> {
 /// The largest folders people keep: a hundred thousand files, in a thousand folders. Every one
 /// arrives; the reading's lead stays bounded, the window hears about one event a file, and the
 /// download's memory does not grow with the files it has fetched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_hundred_thousand_files_in_bounded_memory() {
+///
+/// Memory is the process's own, so the measuring runs in a process of its own: this test runs
+/// itself again alone (the same test binary, filtered to this one test), and other tests
+/// running alongside in this process can't add to the number.
+#[test]
+fn a_hundred_thousand_files_in_bounded_memory() {
+    const ALONE: &str = "SKYKEEP_SCALE_TEST_ALONE";
+    if std::env::var_os(ALONE).is_some() {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(hundred_thousand_files());
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "folder_download::tests::a_hundred_thousand_files_in_bounded_memory",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(ALONE, "1")
+        .output()
+        .expect("run the scale test alone");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "the scale test, run alone, failed:\n{said}"
+    );
+    assert!(
+        said.contains("1 passed"),
+        "the scale test didn't run alone:\n{said}"
+    );
+}
+
+async fn hundred_thousand_files() {
     const FOLDERS: usize = 1000;
     const EACH: usize = 100;
     let uri = synthetic_drive(FOLDERS, EACH).await;
