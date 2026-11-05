@@ -659,9 +659,9 @@ let failures = 0;
   for (const [label, twoFactor, wants] of [
     ["nowhere to send", { trustedDeviceCount: 0, phones: [], tooManyCodesSent: false },
       { resend: false, text: false, says: /account\.apple\.com/ }],
-    ["no device, but a number", { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+91 •••318" }], tooManyCodesSent: false },
+    ["no device, but a number", { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+1 •••42" }], tooManyCodesSent: false },
       { resend: false, text: true, says: /texted/i }],
-    ["devices and a number", { trustedDeviceCount: 2, phones: [{ id: 1, maskedNumber: "+91 •••318" }], tooManyCodesSent: false },
+    ["devices and a number", { trustedDeviceCount: 2, phones: [{ id: 1, maskedNumber: "+1 •••42" }], tooManyCodesSent: false },
       { resend: true, text: true, says: /2 of your devices/ }],
     // A number Apple calls rather than texts (timlaing/pyicloud#210): offered as a call.
     ["no device, a number Apple calls", { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+44 •••• ••12", mode: "voice" }], tooManyCodesSent: false },

@@ -15,7 +15,7 @@ import AxeBuilder from "@axe-core/playwright";
 
 const BASE = process.env.BASE ?? "http://localhost:4173";
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY, "i") : null;
-const TWO_FACTOR = { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+91 ••••• ••318" }], tooManyCodesSent: false };
+const TWO_FACTOR = { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+1 ••• ••• ••42" }], tooManyCodesSent: false };
 const FIXTURES = { calendarFixture: true, notesFixture: true, contactsFixture: true, driveFixture: true, remindersFixture: true };
 
 const settle = (p, ms = 300) => p.waitForTimeout(ms);

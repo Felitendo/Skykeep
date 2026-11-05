@@ -16,3 +16,9 @@ packaging/arch/*.log
 
 # Local agent workspaces, never part of the project.
 .claude/
+
+# docs/ is local working notes (handoffs, research, launch plans), never published. Only the
+# README's images are. An ignore rule, not a note in the folder: a broad `git add` once swept
+# every note into the public repo (0.1.6).
+/docs/*
+!/docs/media/
