@@ -150,6 +150,27 @@ impl Library {
             .collect()
     }
 
+    /// Every shared album's photos as the grid lays them out (for their pictures to be made
+    /// ahead), newest first.
+    pub fn shared_photo_shapes(&self) -> Result<Vec<crate::photos::PhotoShape>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT photo FROM shared_album_photos ORDER BY taken_at DESC, id")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for json in rows {
+            let p: Photo = serde_json::from_str(&json?).map_err(json_error)?;
+            out.push(crate::photos::PhotoShape {
+                id: p.id,
+                width: p.width,
+                height: p.height,
+                kind: p.kind,
+                taken_at: p.taken_at,
+            });
+        }
+        Ok(out)
+    }
+
     /// A photo to look at, copy or save: the library's own, or one in a shared album.
     pub fn photo_to_view(&self, id: &str) -> Result<Option<Photo>> {
         if let Some(p) = self.photo(id)? {

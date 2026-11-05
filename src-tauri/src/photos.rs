@@ -930,6 +930,37 @@ pub fn prepare(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         use futures_util::StreamExt;
         let fit_dir = crate::state_dir(&app).join("photos").join("fit");
+        // Shared albums' photos first: Apple keeps no screen-sized picture of one (only a small
+        // thumbnail and the original), so made as each tile came on screen, every tile fetched
+        // its original while the album was open and flickered in one by one. They are few
+        // (Apple caps an album at a few thousand): all of them, before the library's.
+        let shared = app
+            .state::<Data>()
+            .0
+            .read(quince_core::Library::shared_photo_shapes)
+            .await
+            .unwrap_or_default();
+        if !shared.is_empty() {
+            let dir = fit_dir.clone();
+            let (wanted, _) = tauri::async_runtime::spawn_blocking(move || {
+                wanted_steps(&shared, shown, 0, |id, step| {
+                    !dir.join(step.to_string()).join(&*cache_name(id)).exists()
+                })
+            })
+            .await
+            .unwrap_or_default();
+            futures_util::stream::iter(wanted)
+                .for_each_concurrent(4, |(id, step)| {
+                    let app = app.clone();
+                    async move {
+                        if PREPARING.load(std::sync::atomic::Ordering::SeqCst) != mine {
+                            return;
+                        }
+                        let _ = crate::cpu::ahead(fitted(&app, &id, step)).await;
+                    }
+                })
+                .await;
+        }
         // The grid's photos a page at a time, each read beside a pass on a reader and made
         // before the next is read: what is held at once is one page, however large the
         // library (the whole of it, read as photos under the writer's lock, was 665 MB and

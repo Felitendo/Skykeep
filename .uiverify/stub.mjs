@@ -555,9 +555,15 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           (window.__noteDeletes ??= []).push(args.guid);
           if (window.__slowDelete) await new Promise((r) => setTimeout(r, window.__slowDelete));
           return null;
-        case "note_move":
+        // A move, kept as the library keeps it: in its new folder once it has gone through
+        // (after `__slowMove` ms, Apple slow to answer). Left where it was, every read after a
+        // slow move found the note back in its old folder — which the window then drew.
+        case "note_move": {
           if (window.__slowMove) await new Promise((r) => setTimeout(r, window.__slowMove));
+          const n = noteList.find((x) => x.guid === args?.guid);
+          if (n) n.folderGuid = args.folderGuid ?? null;
           return null;
+        }
         case "note_pin": {
           const n = noteList.find((x) => x.guid === args?.guid);
           if (n) n.pinned = args.pinned;
@@ -607,7 +613,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__lockedNote && !noteList.some((n) => n.guid === "nK"))
             noteList.unshift({ guid: "nK", folderGuid: "f1", title: "Bank", snippet: null, body: null,
               locked: true, editable: false, pinned: false, createdAt: null, modifiedAt: 1789400000, etag: null });
-          return !notesFixture ? [] : noteList.map((n) => ({ ...n }));
+          // A folder's own notes, as the library answers (Library::notes_in); every note for none.
+          return !notesFixture ? [] : noteList.filter((n) => args?.folderGuid == null || n.folderGuid === args.folderGuid).map((n) => ({ ...n }));
         case "note_attachment_info":
           if (/^A\d$/.test(String(args.id))) {
             (window.__infoAsks ??= []).push(args.id);
