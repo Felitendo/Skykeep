@@ -23,6 +23,7 @@ mod data_access;
 mod diagnostics;
 mod drive_watch;
 mod export;
+mod folder_download;
 mod grants;
 mod intake;
 mod library_lock;
@@ -4484,6 +4485,181 @@ async fn drive_download(
     Ok(destination.to_string_lossy().into_owned())
 }
 
+/// Downloads that can still be stopped, by batch.
+fn downloads_running(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, folder_download::Stop>> {
+    static RUNNING: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, folder_download::Stop>>,
+    > = std::sync::OnceLock::new();
+    RUNNING.get_or_init(Default::default)
+}
+
+/// The downloads running now, by what they are known by (`Journal::key`): the same one twice
+/// at once would write into the one folder from two sides.
+fn downloads_by_key() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    RUNNING.get_or_init(Default::default)
+}
+
+/// Where unfinished folder downloads are remembered, so downloading the same again resumes.
+fn download_journal(app: &tauri::AppHandle) -> folder_download::Journal {
+    folder_download::Journal::new(state_dir(app).join("downloads"))
+}
+
+/// An unfinished download from before, for the window to offer to go on with.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnfinishedDownload {
+    key: String,
+    title: String,
+    items: Vec<quince_core::drive::DriveItem>,
+    /// What of it is in Downloads now.
+    saved: Vec<String>,
+}
+
+/// Downloads into Downloads that did not finish — cancelled, stopped short, or cut off by
+/// quitting — oldest first.
+#[tauri::command]
+fn drive_downloads_unfinished(app: tauri::AppHandle) -> Vec<UnfinishedDownload> {
+    let running = downloads_by_key()
+        .lock()
+        .map(|k| k.clone())
+        .unwrap_or_default();
+    download_journal(&app)
+        .unfinished()
+        .into_iter()
+        .filter(|r| !running.contains(&r.key))
+        .map(|r| UnfinishedDownload {
+            saved: r
+                .placed
+                .iter()
+                .filter(|p| std::fs::symlink_metadata(&p.path).is_ok())
+                .map(|p| p.path.to_string_lossy().into_owned())
+                .collect(),
+            key: r.key,
+            title: r.title,
+            items: r.items,
+        })
+        .collect()
+}
+
+/// Let an unfinished download go: it is no longer offered, and downloading the same again
+/// starts afresh. What it saved stays where it is.
+#[tauri::command]
+fn drive_download_forget(app: tauri::AppHandle, key: String) {
+    download_journal(&app).forget(&key);
+}
+
+/// Save folders — and a selection of files and folders — from Drive into Downloads, as the
+/// same tree (see `folder_download`), or go on with the same download where it was left.
+/// Progress arrives as `quince://download` events; the answer is what was saved, where, what
+/// was not, and whether it can be gone on with.
+///
+/// The items come from the window only to be found: the library's own copy of each wins when
+/// it has one, as a single download's does, and nothing the window says is ever a path here —
+/// every name is made a plain one, in a folder made for it in Downloads.
+#[tauri::command]
+async fn drive_download_items(
+    app: tauri::AppHandle,
+    batch: String,
+    title: String,
+    items: Vec<quince_core::drive::DriveItem>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<folder_download::DownloadReport> {
+    if items.is_empty() {
+        return Err("Nothing was chosen to download.".into());
+    }
+    let chosen = {
+        let library = data.0.lock().await;
+        let mut chosen = Vec::with_capacity(items.len());
+        for item in items {
+            let stored = library
+                .drive_item(&item.drivewsid)
+                .map_err(|e| e.to_string())?;
+            chosen.push(stored.unwrap_or(item));
+        }
+        chosen
+    };
+    let (http, drivews, params) = drive_context(&auth).await?;
+    let docws = {
+        let client = auth.client.lock().await;
+        client
+            .session()
+            .service_url("docws")
+            .ok_or("Apple hasn't offered downloads for this account.")?
+    };
+    let downloads = app
+        .path()
+        .download_dir()
+        .map_err(|_| "Couldn't find your Downloads folder.".to_string())?;
+    tokio::fs::create_dir_all(&downloads)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let key = folder_download::Journal::key(&chosen);
+    let fresh = downloads_by_key()
+        .lock()
+        .is_ok_and(|mut k| k.insert(key.clone()));
+    if !fresh {
+        return Err("That is downloading already.".into());
+    }
+    let stop = folder_download::Stop::default();
+    downloads_running()
+        .lock()
+        .map(|mut m| m.insert(batch.clone(), stop.clone()))
+        .ok();
+    let drive = folder_download::Drive {
+        http,
+        drivews,
+        docws,
+        params,
+        retry_after: std::time::Duration::from_secs(1),
+        free_space: folder_download::free_space,
+        room_every: folder_download::ROOM_EVERY,
+    };
+    let emit: folder_download::Emit = {
+        let app = app.clone();
+        std::sync::Arc::new(move |event| {
+            app.emit(folder_download::DOWNLOAD, &event).ok();
+        })
+    };
+    let journal = download_journal(&app);
+    let request = folder_download::Request {
+        batch: &batch,
+        title: &title,
+        items: chosen,
+        into: &downloads,
+        journal: Some(&journal),
+    };
+    let report = folder_download::run(&drive, request, emit, &stop).await;
+    downloads_running()
+        .lock()
+        .map(|mut m| m.remove(&batch))
+        .ok();
+    downloads_by_key().lock().map(|mut k| k.remove(&key)).ok();
+    report
+}
+
+/// Stop downloads: a whole batch, or the batches these files are in. What has arrived stays;
+/// what is arriving is dropped with its partial file, and nothing more begins.
+#[tauri::command]
+fn drive_download_cancel(ids: Vec<String>, batch: Option<String>) {
+    let mut batches: Vec<String> = ids
+        .iter()
+        .filter_map(|id| id.split_once(':').map(|(b, _)| b.to_string()))
+        .collect();
+    batches.extend(batch);
+    if let Ok(running) = downloads_running().lock() {
+        for b in batches {
+            if let Some(stop) = running.get(&b) {
+                stop.stop();
+            }
+        }
+    }
+}
+
 /// Where an upload's progress is announced, one event per file as it moves.
 const UPLOAD: &str = "quince://upload";
 
@@ -7156,6 +7332,10 @@ fn main() {
             drive_sync_folder,
             drive_children,
             drive_download,
+            drive_download_items,
+            drive_download_cancel,
+            drive_downloads_unfinished,
+            drive_download_forget,
             drive_upload,
             drive_create_folder,
             drive_rename,

@@ -4035,6 +4035,7 @@ dependencies = [
  "glib 0.18.5",
  "gstreamer",
  "gtk",
+ "icu_normalizer",
  "image",
  "jiff",
  "ksni",

@@ -117,6 +117,18 @@ never handed to the account signing in.
   save for one write only, and every command that reads or writes a file (uploads, imports,
   attachments, exports) refuses a path that is not one of them, compared with `..` and links
   resolved. So even script running in the window could not name a file of yours on its own.
+- **Download a Copy** in iCloud Drive — a file, a folder, or several at once — saves into your
+  Downloads folder only: the window says what to download, never where. Every name in it, a
+  shared folder's included, is made one plain name first (no `..`, folder separator, drive,
+  stream or Windows device name), a folder arrives as a new folder there ("Photos 2" beside a
+  "Photos"), nothing that was in Downloads before is written over or into, and no link found
+  on the way is followed. Each file is written under a name of its own and moved into place
+  only once it is whole; on Windows it is marked as come from the internet, so SmartScreen and
+  Office's Protected View still look at it. A download that does not finish is remembered in
+  Skykeep's own data folder (what was chosen, and where it went) until it does; downloading
+  the same again goes on inside the folder it made — only if that is still a folder in
+  Downloads — keeping each file already there at iCloud's size and replacing any other copy of
+  its own.
 - **A note's attachment** you open is saved under a cleaned-up name (never a path, a hidden
   file, or a name that reverses itself to hide its type) in your private data folder, not
   executable, and handed to the app this computer uses for it. A program, script, launcher or

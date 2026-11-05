@@ -23,7 +23,9 @@ quince-icloud = { path = "../crates/quince-icloud" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["signal"] }
+# "sync": a folder download hands files from the reading to the fetching through a bounded
+# queue (folder_download.rs).
+tokio = { workspace = true, features = ["signal", "sync"] }
 anyhow.workspace = true
 jiff = "0.2.37"
 uuid.workspace = true
@@ -46,6 +48,9 @@ semver = "1"
 # A merged card's picture made small enough for Apple (contacts_merge.rs): the same build of
 # the crate quince-media already uses, so nothing new is compiled.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Names from a Mac saved composed (NFC), and compared so, in a folder download (folder_download.rs):
+# the build reqwest's URL parsing already compiles, through idna, so nothing new is built.
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -60,6 +65,7 @@ windows = { version = "0.62", features = [
     "ApplicationModel",
     "Win32_Foundation",
     "Win32_Storage_EnhancedStorage",
+    "Win32_Storage_FileSystem",
     "Win32_Storage_Packaging_Appx",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
