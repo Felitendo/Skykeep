@@ -103,6 +103,11 @@
     <color type="primary" scheme_preference="dark">#0B2A4A</color>
   </branding>
   <releases>
+    <release version="0.1.5" date="2026-11-05">
+      <description>
+        <p>Skykeep stays signed in and never sends a code to your iPhone on its own, works with Advanced Data Protection, downloads whole iCloud Drive folders, keeps both edits when an event changes on two devices, and stays fast with very large photo libraries.</p>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-11-04">
       <description>
         <p>Skykeep starts on every Windows PC with nothing else to install, says why when it can't pick up your session or Apple asks you to wait, saves your sign-in reliably while Windows Defender checks the file, and leaves updates to Scoop when Scoop installed it.</p>
