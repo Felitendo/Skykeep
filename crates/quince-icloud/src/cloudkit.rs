@@ -2038,6 +2038,8 @@ mod trouble_tests {
                 .expect("refused");
             assert!(matches!(err, Error::ReauthRequired), "{code}: {err:?}");
         }
+    }
+
     /// Issue #4: an account with Advanced Data Protection, before its session is approved on
     /// a device. Said as that — typed, so the approval can be asked for and the zone read again
     /// once it is given — never as "iCloud sent back something unexpected" and Apple's JSON.
