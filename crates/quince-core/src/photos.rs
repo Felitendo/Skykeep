@@ -1229,12 +1229,22 @@ impl Library {
         let mut stmt = self
             .conn
             .prepare_cached(&format!("SELECT {COLUMNS} FROM photos WHERE id = ?1"))?;
+        let mut elsewhere = Vec::new();
         for id in ids {
-            if let Some(p) = stmt.query_row(params![id], row_to_photo).optional()? {
+            match stmt.query_row(params![id], row_to_photo).optional()? {
+                Some(p) => out.push(p),
+                None => elsewhere.push(id),
+            }
+        }
+        let mut out = self.with_bursts(out)?;
+        // A shared album's photo, which the library itself doesn't hold: found where it is, or
+        // a grid on a shared album asked for its photos, got none, and asked again every frame.
+        for id in elsewhere {
+            if let Some((p, _)) = self.shared_photo(id)? {
                 out.push(p);
             }
         }
-        self.with_bursts(out)
+        Ok(out)
     }
 
     /// The library's months, newest first, each with how many it holds and the photos that stand

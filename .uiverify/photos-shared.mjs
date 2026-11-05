@@ -40,6 +40,15 @@ ok((await page.getByRole("button", { name: "New Shared Album" }).count()) === 0,
 await page.locator(".px-albums-page .px-card", { hasText: "Wallpapers" }).click();
 await page.waitForTimeout(350);
 ok((await page.locator(".px-bar h1").innerText()) === "Wallpapers" && (await page.locator(".px-tile").count()) === 2, "a card opens the album: its photos, under its name");
+// Left open, the album asks for nothing more: a shared photo the backend couldn't find by id
+// had the grid ask for it again every frame, and its tiles flickered.
+const gets = () => page.evaluate(() => (window.__gets ?? []).length);
+await page.evaluate(() => window.__emit?.("quince://synced", { services: [{ service: "photos", label: "Photos", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) }], asOf: Math.floor(Date.now() / 1000), tookMs: 10, changed: ["photos"] }));
+await page.waitForTimeout(600);
+const settled = await gets();
+await page.mouse.wheel(0, 200);
+await page.waitForTimeout(1000);
+ok((await gets()) === settled, `an open shared album stops asking for its photos after a sync  (${settled} → ${await gets()})`);
 const albumAfterSync = async () => { await page.evaluate(() => window.__emit?.("quince://synced", { services: [{ service: "photos", label: "Photos", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) }], asOf: Math.floor(Date.now() / 1000), tookMs: 10, changed: ["photos"] })); await page.waitForTimeout(300); };
 await albumAfterSync();
 ok((await page.locator(".px-bar h1").innerText()) === "Wallpapers", "and stays open when a sync lands (it is in no album list of yours)");

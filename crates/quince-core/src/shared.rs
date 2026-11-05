@@ -313,6 +313,28 @@ mod tests {
         assert_eq!((shapes[0].width, shapes[0].height), (1200, 2600));
     }
 
+    /// The grid asks for photos by id as it scrolls: a shared album's are found too (left
+    /// unfound, the grid asked for them again every frame and its tiles flickered).
+    #[test]
+    fn photos_by_id_finds_shared_ones_too() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_photos(&[photo("own", 5)]).unwrap();
+        lib.put_shared_album(
+            &album("SC-a", "A"),
+            &[photo("s1", 10), photo("s2", 9)],
+            None,
+        )
+        .unwrap();
+        let ids: Vec<String> = ["own", "s2", "nope", "s1"].map(String::from).to_vec();
+        let found: Vec<String> = lib
+            .photos_by_ids(&ids)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(found, ["own", "s2", "s1"]);
+    }
+
     /// An album gone on Apple's side (deleted, left, expired) leaves with every photo in it.
     #[test]
     fn an_album_let_go_of_takes_its_photos() {
