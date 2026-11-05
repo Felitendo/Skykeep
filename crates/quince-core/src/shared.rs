@@ -294,6 +294,25 @@ mod tests {
         );
     }
 
+    /// Every shared photo, from every album, newest first, laid out as the grid lays it out:
+    /// what their pictures are made ahead from.
+    #[test]
+    fn every_shared_photo_is_laid_out_for_its_pictures() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_shared_album(&album("SC-a", "A"), &[photo("a1", 10)], None)
+            .unwrap();
+        lib.put_shared_album(
+            &album("SC-b", "B"),
+            &[photo("b1", 30), photo("b2", 20)],
+            None,
+        )
+        .unwrap();
+        let shapes = lib.shared_photo_shapes().unwrap();
+        let ids: Vec<&str> = shapes.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["b1", "b2", "a1"]);
+        assert_eq!((shapes[0].width, shapes[0].height), (1200, 2600));
+    }
+
     /// An album gone on Apple's side (deleted, left, expired) leaves with every photo in it.
     #[test]
     fn an_album_let_go_of_takes_its_photos() {
