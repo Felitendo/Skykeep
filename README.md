@@ -145,9 +145,9 @@ Run them in your Downloads folder (right-click an empty spot, **Open in Terminal
 </details>
 
 <details>
-<summary><b>The Windows installer says "Windows protected your PC"</b></summary>
+<summary><b>About the "Windows protected your PC" message</b></summary>
 
-The installer isn't code-signed with a certificate yet, so SmartScreen asks you to confirm: **More info**, then **Run anyway**. The [Microsoft Store](https://apps.microsoft.com/detail/9P6B042JNK54) copy is checked by Microsoft and installs without asking.
+The [Microsoft Store](https://apps.microsoft.com/detail/9P6B042JNK54) copy is checked by Microsoft and installs straight away. The installer on this page is new to SmartScreen, so Windows asks you to confirm once: **More info**, then **Run anyway**.
 </details>
 
 <details>
@@ -167,7 +167,7 @@ sudo zypper refresh && sudo zypper install --allow-vendor-change --from packman 
 </details>
 
 <details>
-<summary><b>The AppImage doesn't open on Ubuntu</b></summary>
+<summary><b>Opening the AppImage on Ubuntu</b></summary>
 
 Start it with `./Skykeep-linux-x86_64.AppImage --appimage-extract-and-run`, or install the library it needs once: `sudo apt install libfuse2t64` (`libfuse2` on Ubuntu 22.04).
 </details>
@@ -227,7 +227,7 @@ Your library is in your own data folder, readable only by you. Turn on your syst
 </details>
 
 <details>
-<summary><b>Something fails only on my account. How do I send a log?</b></summary>
+<summary><b>How do I send a diagnostics log?</b></summary>
 
 Quit Skykeep, then start it with `SKYKEEP_LOG=1 skykeep` (Windows PowerShell: `$env:SKYKEEP_LOG=1`, then `skykeep.exe`). It writes `diagnostics.log` in its data folder with the addresses it asked and Apple's answer codes, never passwords, tokens, your name or anything from your library. Attach it to an [issue](https://github.com/YashwanthKamireddi/Skykeep/issues).
 </details>
