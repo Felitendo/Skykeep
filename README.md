@@ -6,7 +6,7 @@
 
 ### Your iPhone's iCloud, on Windows and Linux.
 
-Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as real desktop apps.<br>Kept on your computer, so they open instantly and work offline. In sync with your iPhone.
+Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as real desktop apps.<br>Kept on your computer, so they open instantly and work offline. In sync with your iPhone, iPad and Mac.
 
 <p><a href="https://apps.microsoft.com/detail/9P6B042JNK54"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" height="52"></a>&nbsp;&nbsp;<a href="https://snapcraft.io/skykeep"><img src="https://snapcraft.io/static/images/badges/en/snap-store-black.svg" alt="Get it from the Snap Store" height="52"></a></p>
 
@@ -89,7 +89,7 @@ Skykeep asks for your Apple Account, so it's built to deserve it.
 </table>
 
 - **Instant.** Your library lives on your computer, so every app opens right away and your edits show the moment you make them.
-- **Live.** A note or reminder from your iPhone usually arrives in about a second, over Apple's push channel.
+- **Live.** A note or reminder from your iPhone, iPad or Mac usually arrives in about a second, over Apple's push channel.
 - **Offline.** Keep writing with no Wi-Fi. Your changes sync when you're back online.
 - **At home on your desktop.** Each app has its own launcher or Start-menu entry, with alerts, a tray icon and quick capture. On Linux, iCloud Drive and Photos are real folders in your file manager.
 
@@ -266,7 +266,7 @@ cd Skykeep && npm ci && ./run.sh
 
 Found a security problem? Please report it privately, as [SECURITY.md](SECURITY.md) explains.
 
-If Skykeep saves you a trip to the browser, a ⭐ helps other iPhone owners find it.
+If Skykeep saves you a trip to the browser, a ⭐ helps other iPhone, iPad and Mac owners find it.
 
 ## License
 
