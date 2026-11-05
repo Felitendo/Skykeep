@@ -44,9 +44,19 @@ pub(crate) const ZONE_IDENTIFIER: &str = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=
 pub(crate) fn mark_from_internet(path: &Path) {
     #[cfg(windows)]
     {
+        // Writing the stream counts as writing the file: Windows moved its last-modified date to
+        // now, and a file downloaded with its iCloud date (drive::download_with_progress) lost
+        // it. The date is read first and put back after, so marking a file changes nothing else.
+        let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let mut stream = path.as_os_str().to_owned();
         stream.push(":Zone.Identifier");
         let _ = std::fs::write(PathBuf::from(stream), ZONE_IDENTIFIER);
+        if let Some(when) = modified {
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(path)
+                .and_then(|f| f.set_modified(when));
+        }
     }
     #[cfg(not(windows))]
     let _ = path;
