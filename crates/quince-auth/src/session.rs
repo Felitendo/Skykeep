@@ -104,11 +104,11 @@ pub struct Session {
     pub account_name: Option<String>,
     #[serde(default)]
     pub account_email: Option<String>,
-    /// Whether iCloud's data may be reached from the web at all (`dsInfo.isWebAccessAllowed`).
-    /// Off on an account with Advanced Data Protection until the person turns on "Access
-    /// iCloud Data on the Web" — and then nothing here can be read, whatever else is right.
-    #[serde(default)]
-    pub web_access_allowed: Option<bool>,
+    /// What Apple has said holds the account's data back from this session: "Access iCloud
+    /// Data on the Web" off, new iCloud terms, or the account to finish at icloud.com (issue
+    /// #5; rclone#9658). Kept under the names those facts have always had.
+    #[serde(flatten)]
+    pub gate: crate::state::Gate,
     /// Advanced Data Protection, which Apple calls iCloud Data Protection (`iCDPEnabled`).
     #[serde(default)]
     pub data_protection: Option<bool>,
@@ -122,15 +122,6 @@ pub struct Session {
     /// sign-in's flags say. `None` until Apple has shown either.
     #[serde(default)]
     pub data_protection_seen: Option<bool>,
-    /// Apple has new iCloud terms the person has not agreed to (`termsUpdateNeeded`). Until
-    /// they do, `accountLogin` opens only part of a web session — no `X-APPLE-WEBAUTH-TOKEN`
-    /// — and every service, Calendar and Contacts too, answers "Missing X-APPLE-WEBAUTH-TOKEN
-    /// cookie" or "no auth method found" (issue #5; rclone#9658).
-    #[serde(default)]
-    pub terms_update_needed: bool,
-    /// Apple wants the account finished at icloud.com first (`isRepairNeeded`).
-    #[serde(default)]
-    pub repair_needed: bool,
 
     /// Failed sign-ins in a row. Drives the local backoff.
     #[serde(default)]

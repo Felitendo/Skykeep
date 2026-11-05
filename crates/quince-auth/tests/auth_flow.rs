@@ -1285,7 +1285,10 @@ async fn new_terms_to_accept_are_said_and_cost_no_wait() {
             .await
             .unwrap_or_else(|e| panic!("attempt {attempt}: {e:?}"));
         assert_eq!(outcome, SignInOutcome::Complete, "attempt {attempt}");
-        assert!(client.session().terms_update_needed, "attempt {attempt}");
+        assert!(
+            client.session().gate.terms_update_needed(),
+            "attempt {attempt}"
+        );
         assert!(client.waits_on_icloud_com());
         assert_eq!(client.session().consecutive_failures, 0, "no wait");
         assert!(client.session().retry_after.is_none(), "no wait");
@@ -1314,7 +1317,7 @@ async fn new_terms_on_a_kept_session_keep_it() {
         .await;
     let mut client = client_for(&server, dir.path());
     assert!(client.resume().await.unwrap(), "the session holds");
-    assert!(client.session().terms_update_needed);
+    assert!(client.session().gate.terms_update_needed());
     assert!(client.waits_on_icloud_com());
     assert!(
         client.session().session_token.is_some(),

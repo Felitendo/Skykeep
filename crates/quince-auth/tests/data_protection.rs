@@ -318,7 +318,7 @@ async fn web_access_turned_off_since_is_read_from_apple() {
         client.data_access(true).await.unwrap(),
         DataAccess::WebAccessOff
     );
-    assert_eq!(client.session().web_access_allowed, Some(false));
+    assert_eq!(client.session().gate.web_access_allowed(), Some(false));
     assert_eq!(asked(&server, CONSENT).await, 0);
 }
 

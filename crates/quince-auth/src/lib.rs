@@ -27,6 +27,7 @@ pub mod releases;
 mod sealed;
 pub mod session;
 pub mod srp;
+pub mod state;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -489,13 +490,9 @@ pub struct Client {
     store: Store,
     session: Session,
     endpoints: Endpoints,
-    /// An Apple ID and password being signed in with, kept only once the sign-in completes.
-    pending: Option<(String, String)>,
-    /// A lapsed session tried to sign itself back in and Apple wants a code first.
-    awaiting_code: bool,
-    /// Apple has been asked to send this sign-in's code — to the devices, or by text — so the
-    /// code screen opening does not ask for another.
-    code_sent: bool,
+    /// A sign-in in flight: its password, kept only once the sign-in completes, and the code
+    /// Apple wants for it (see [`state::SignIn`]).
+    sign: state::SignIn,
     /// The keyring would not answer when this started — locked, or not up yet. Not the same
     /// as nothing stored: it is asked again before anything else happens.
     keyring_error: Option<String>,
@@ -673,9 +670,7 @@ impl Client {
             store,
             session,
             endpoints,
-            pending: None,
-            awaiting_code: false,
-            code_sent: false,
+            sign: state::SignIn::Idle,
             keyring_error,
             unsaved: None,
             persisted: std::sync::Mutex::new(Persisted::default()),
@@ -720,7 +715,7 @@ impl Client {
     /// trust this computer again. The code screen is the next thing to show.
     #[must_use]
     pub fn awaiting_code(&self) -> bool {
-        self.awaiting_code
+        self.sign.awaiting_code()
     }
 
     pub fn session(&self) -> &Session {
@@ -977,7 +972,7 @@ impl Client {
                     return Err(e);
                 }
                 Ok(SignInOutcome::NeedsTwoFactor) => {
-                    self.awaiting_code = true;
+                    self.sign.wants_code(true);
                     return Ok(false);
                 }
                 // The password was changed elsewhere: the kept one is worthless now.
@@ -1058,11 +1053,10 @@ impl Client {
         self.session.retry_after = owed.retry_after;
 
         // Kept only once Apple has accepted it all the way: see `absorb`.
-        self.pending = Some((apple_id.trim().to_string(), password.to_string()));
-        self.awaiting_code = false;
+        self.sign.start(apple_id, password);
         let outcome = self.sign_in_inner(apple_id, password, code).await;
         if outcome.is_err() {
-            self.pending = None;
+            self.sign.fail();
         }
         match &outcome {
             // Reaching the two-factor step means the password was accepted: not a failure.
@@ -1123,7 +1117,6 @@ impl Client {
         self.clear_challenge_state();
         // A new web session: its encrypted services' keys are its own to ask for.
         self.data_access_forget();
-        self.code_sent = false;
 
         let client = srp::Client::new(apple_id);
 
@@ -1221,6 +1214,7 @@ impl Client {
                 //
                 // A sign-in nobody is watching (a lapse mended in the background) asks for
                 // nothing: the code screen asks once the person opens it ([`Self::request_code`]).
+                self.sign.wants_code(false);
                 if code == Code::Send {
                     if let Err(e) = self.resend_to_devices().await {
                         quiet!("asking Apple to send the code: {e}");
@@ -1303,7 +1297,7 @@ impl Client {
     /// this sign-in (the person typed their password a moment ago, or had it texted). A lapse
     /// mended in the background left it unasked on purpose — see [`Self::resume`].
     pub async fn request_code(&mut self) -> Result<()> {
-        if self.code_sent {
+        if self.sign.code_sent() {
             return Ok(());
         }
         self.resend_to_devices().await
@@ -1328,7 +1322,7 @@ impl Client {
             let body = r.text().await.unwrap_or_default();
             return Err(apple_error("sending the code again", status, &body));
         }
-        self.code_sent = true;
+        self.sign.sent();
         Ok(())
     }
 
@@ -1352,7 +1346,7 @@ impl Client {
             let body = r.text().await.unwrap_or_default();
             return Err(apple_error("texting the code", status, &body));
         }
-        self.code_sent = true;
+        self.sign.sent();
         Ok(())
     }
 
@@ -1548,9 +1542,9 @@ impl Client {
 
     /// The password for the escrow step after a code: the one just typed, or the one kept.
     fn password_for_escrow(&self) -> Option<String> {
-        self.pending
-            .as_ref()
-            .map(|(_, p)| p.clone())
+        self.sign
+            .password()
+            .map(str::to_string)
             .or_else(|| self.session.password.clone())
     }
 
@@ -1621,10 +1615,9 @@ impl Client {
     fn absorb(&mut self, data: &Value) {
         // A completed sign-in — with or without a code — is when a password has proved
         // itself, so that is when it is kept.
-        if let Some((apple_id, password)) = self.pending.take() {
+        if let Some((apple_id, password)) = self.sign.finish() {
             self.session.apple_id = Some(apple_id);
             self.session.password = Some(password);
-            self.awaiting_code = false;
         }
         if let Some(ws) = data.get("webservices") {
             self.session.webservices = Some(ws.clone());
@@ -1651,12 +1644,6 @@ impl Client {
         if let Some(email) = text("/dsInfo/primaryEmail").or_else(|| text("/dsInfo/appleId")) {
             self.session.account_email = Some(email);
         }
-        if let Some(allowed) = data
-            .pointer("/dsInfo/isWebAccessAllowed")
-            .and_then(Value::as_bool)
-        {
-            self.session.web_access_allowed = Some(allowed);
-        }
         if let Some(on) = data
             .get("iCDPEnabled")
             .or_else(|| data.pointer("/dsInfo/iCDPEnabled"))
@@ -1664,16 +1651,12 @@ impl Client {
         {
             self.session.data_protection = Some(on);
         }
-        // Read from every answer that carries them, so agreeing at icloud.com clears them at
-        // the next `accountLogin` — the heartbeat's, or Try Again's.
-        if let Some(needed) = data.get("termsUpdateNeeded").and_then(Value::as_bool) {
-            if needed {
-                quiet!("quince: Apple has iCloud terms waiting to be agreed to");
-            }
-            self.session.terms_update_needed = needed;
-        }
-        if let Some(needed) = data.get("isRepairNeeded").and_then(Value::as_bool) {
-            self.session.repair_needed = needed;
+        // Web access, new terms and the account to finish, from every answer that carries
+        // them, so agreeing at icloud.com clears them at the next `accountLogin` — the
+        // heartbeat's, or Try Again's.
+        self.session.gate.absorb(data);
+        if self.session.gate.standing() == state::Standing::Terms {
+            quiet!("quince: Apple has iCloud terms waiting to be agreed to");
         }
     }
 
@@ -1691,7 +1674,13 @@ impl Client {
     /// meanwhile, so nothing else is asked.
     #[must_use]
     pub fn waits_on_icloud_com(&self) -> bool {
-        self.session.terms_update_needed || self.session.repair_needed
+        self.standing().at_icloud_com()
+    }
+
+    /// What, if anything, Apple has said holds the account's data back from this session.
+    #[must_use]
+    pub fn standing(&self) -> state::Standing {
+        self.session.gate.standing()
     }
 
     /// Query parameters every iCloud service endpoint expects alongside the session cookies.

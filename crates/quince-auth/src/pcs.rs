@@ -193,7 +193,7 @@ impl Client {
     pub fn data_access_missing(&self) -> Vec<&'static str> {
         // Web access off, or terms waiting at icloud.com: no key is released either way (Apple
         // answers requestPCS "Missing X-APPLE-WEBAUTH-TOKEN cookie"), so none is asked for.
-        if self.session.web_access_allowed == Some(false) || self.waits_on_icloud_com() {
+        if self.session.gate.web_access_allowed() == Some(false) || self.waits_on_icloud_com() {
             return Vec::new();
         }
         self.protected_here()
@@ -309,7 +309,7 @@ impl Client {
     /// pass goes by — only the person's own action asks Apple ([`Self::data_access`]).
     #[must_use]
     pub fn data_access_standing(&self) -> DataAccess {
-        if self.session.web_access_allowed == Some(false) {
+        if self.session.gate.web_access_allowed() == Some(false) {
             return DataAccess::WebAccessOff;
         }
         if self.data_access_missing().is_empty() {
@@ -355,7 +355,7 @@ impl Client {
     /// `ask` lets this put the approval itself on their devices when none is given; following
     /// one already asked for, it is `false`.
     pub async fn data_access(&mut self, ask: bool) -> Result<DataAccess> {
-        if self.session.web_access_allowed == Some(false) {
+        if self.session.gate.web_access_allowed() == Some(false) {
             return Ok(DataAccess::WebAccessOff);
         }
         let missing: Vec<&'static Protected> = self
@@ -374,7 +374,7 @@ impl Client {
             )));
         }
         if state.flag("isWebAccessAllowed") == Some(false) {
-            self.session.web_access_allowed = Some(false);
+            self.session.gate.web_access_off();
             self.keep();
             return Ok(DataAccess::WebAccessOff);
         }
@@ -417,7 +417,7 @@ impl Client {
             }
             let sent = self.setup_post("enableDeviceConsentForPCS", None).await?;
             if sent.flag("isWebAccessAllowed") == Some(false) {
-                self.session.web_access_allowed = Some(false);
+                self.session.gate.web_access_off();
                 self.keep();
                 return Ok(DataAccess::WebAccessOff);
             }
@@ -447,7 +447,7 @@ impl Client {
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if answer.flag("isWebAccessAllowed") == Some(false) {
-                self.session.web_access_allowed = Some(false);
+                self.session.gate.web_access_off();
                 self.keep();
                 return Ok(DataAccess::WebAccessOff);
             }

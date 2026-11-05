@@ -129,10 +129,10 @@ impl SessionFacts {
                 .unwrap_or_default(),
             name: s.account_name.clone(),
             email: s.account_email.clone().or_else(|| s.apple_id.clone()),
-            web_access_allowed: s.web_access_allowed,
+            web_access_allowed: s.gate.web_access_allowed(),
             data_protection: s.data_protection,
-            terms_update_needed: s.terms_update_needed,
-            repair_needed: s.repair_needed,
+            terms_update_needed: s.gate.terms_update_needed(),
+            repair_needed: s.gate.repair_needed(),
             unsaved: client.unsaved().is_some(),
         }
     }
@@ -1380,7 +1380,7 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
                 // The window shows its own page for it; the desktop is told once, for someone
                 // with only the tray running. Never "Apple signed you out": it did not.
                 if !TOLD_ICLOUD.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    let (title, body) = if guard.session().terms_update_needed {
+                    let (title, body) = if guard.standing() == quince_auth::state::Standing::Terms {
                         (
                             "Agree to Apple's new iCloud terms",
                             "Sign in at icloud.com and agree to them. Your copy on this computer is still here.",

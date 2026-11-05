@@ -103,7 +103,10 @@ async fn new_terms_are_said_waited_on_and_cleared_once_agreed() {
         .sign_in("someone@example.invalid", "hunter2")
         .await
         .unwrap();
-    assert!(client.session().terms_update_needed, "Apple's flag is kept");
+    assert!(
+        client.session().gate.terms_update_needed(),
+        "Apple's flag is kept"
+    );
     assert!(client.waits_on_icloud_com());
     // Advanced Data Protection's keys are not asked for meanwhile: Apple would refuse them.
     assert!(client.data_access_missing().is_empty());
@@ -119,7 +122,7 @@ async fn new_terms_are_said_waited_on_and_cleared_once_agreed() {
     // Agreed at icloud.com, then Try Again.
     client.refresh_account().await.unwrap();
     assert!(
-        !client.session().terms_update_needed,
+        !client.session().gate.terms_update_needed(),
         "cleared by the next accountLogin"
     );
     assert!(!client.waits_on_icloud_com());
@@ -129,11 +132,10 @@ async fn new_terms_are_said_waited_on_and_cleared_once_agreed() {
     );
     // And remembered across a restart either way.
     drop(client);
-    assert!(
-        !client_for(&server, dir.path())
-            .session()
-            .terms_update_needed
-    );
+    assert!(!client_for(&server, dir.path())
+        .session()
+        .gate
+        .terms_update_needed());
 
     // Diagnostics: places, statuses, flags and cookie names — no value, token, name or address.
     let lines = LINES.lock().unwrap().join("\n");
