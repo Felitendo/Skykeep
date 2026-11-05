@@ -25,6 +25,29 @@ pub struct ZoneClient<'a> {
     base: String,
     container: String,
     params: Vec<(String, String)>,
+    /// Which of the container's databases: the account's own, or what others share with it.
+    database: Database,
+    /// Whose zone it is, for a zone another account owns (one shared with this one): CloudKit
+    /// finds a shared zone only by its name and its owner together.
+    owner: Option<String>,
+}
+
+/// A CloudKit container's databases this client reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Database {
+    /// The account's own records.
+    Private,
+    /// Zones other accounts have shared with this one (an album someone invited you to).
+    Shared,
+}
+
+impl Database {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Private => "private",
+            Self::Shared => "shared",
+        }
+    }
 }
 
 /// One page of zone changes.
@@ -128,7 +151,43 @@ impl<'a> ZoneClient<'a> {
             base: ckdatabasews_root.trim_end_matches('/').to_string(),
             container: container.to_string(),
             params,
+            database: Database::Private,
+            owner: None,
         }
+    }
+
+    /// The same client, reading `database`.
+    #[must_use]
+    pub fn in_database(mut self, database: Database) -> Self {
+        self.database = database;
+        self
+    }
+
+    /// The same client, for zones `owner` owns (a zone shared with this account).
+    #[must_use]
+    pub fn owned_by(mut self, owner: Option<String>) -> Self {
+        self.owner = owner;
+        self
+    }
+
+    /// A zone as CloudKit names it in a request: its name, and its owner where it is someone
+    /// else's.
+    fn zone_id(&self, zone: &str) -> Value {
+        let mut id = json!({ "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" });
+        if let Some(owner) = &self.owner {
+            id["ownerRecordName"] = json!(owner);
+        }
+        id
+    }
+
+    /// The address of one of the database's operations (`records/lookup`, `zones/list` …).
+    fn url(&self, operation: &str) -> String {
+        format!(
+            "{}/database/1/{}/production/{}/{operation}",
+            self.base,
+            self.container,
+            self.database.path()
+        )
     }
 
     fn query(&self) -> Vec<(String, String)> {
@@ -198,7 +257,7 @@ impl<'a> ZoneClient<'a> {
 
     pub async fn changes(&self, zone: &str, sync_token: Option<&str>) -> Result<Page> {
         let mut zone_body = json!({
-            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+            "zoneID": self.zone_id(zone),
             "maxChanges": PAGE_SIZE,
         });
         // An empty string is not a cursor — Apple answers one with a 500. Absent means
@@ -208,10 +267,7 @@ impl<'a> ZoneClient<'a> {
         }
         // Note: no `desiredKeys`. Sending an empty list asks Apple for no fields at all.
 
-        let url = format!(
-            "{}/database/1/{}/production/private/changes/zone",
-            self.base, self.container
-        );
+        let url = self.url("changes/zone");
         let mut tries = 0;
         loop {
             tries += 1;
@@ -548,6 +604,32 @@ mod token_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// A zone another account owns is asked for in the shared database, by its name and its
+    /// owner together; the account's own zones, in the private one, by name alone.
+    #[test]
+    fn a_shared_zone_is_named_with_its_owner_in_the_shared_database() {
+        let http = reqwest::Client::new();
+        let own = ZoneClient::new(&http, "https://ck.example/", "c", vec![]);
+        assert_eq!(
+            own.url("zones/list"),
+            "https://ck.example/database/1/c/production/private/zones/list"
+        );
+        assert!(own.zone_id("Z").get("ownerRecordName").is_none());
+        let theirs = ZoneClient::new(&http, "https://ck.example/", "c", vec![])
+            .in_database(Database::Shared)
+            .owned_by(Some("_owner".into()));
+        assert_eq!(
+            theirs.url("records/lookup"),
+            "https://ck.example/database/1/c/production/shared/records/lookup"
+        );
+        assert_eq!(theirs.zone_id("Z")["ownerRecordName"], "_owner");
+        assert_ne!(
+            own.scope(),
+            theirs.scope(),
+            "what is learnt of one is never taken for the other"
+        );
+    }
     use super::*;
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -945,12 +1027,9 @@ impl ZoneClient<'_> {
     pub async fn records_query(&self, zone: &str, query: Value) -> Result<Vec<Value>> {
         let body = json!({
             "query": query,
-            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+            "zoneID": self.zone_id(zone),
         });
-        let url = format!(
-            "{}/database/1/{}/production/private/records/query",
-            self.base, self.container
-        );
+        let url = self.url("records/query");
         let (status, text) = self.post_json(&url, &body).await?;
         if status.as_u16() == 450 {
             return Err(Error::ReauthRequired);
@@ -992,13 +1071,10 @@ impl ZoneClient<'_> {
     async fn modify_once(&self, zone: &str, operation: &Value) -> Result<Value> {
         let body = json!({
             "operations": [operation],
-            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+            "zoneID": self.zone_id(zone),
         });
 
-        let url = format!(
-            "{}/database/1/{}/production/private/records/modify",
-            self.base, self.container
-        );
+        let url = self.url("records/modify");
         let (status, text) = self.post_json(&url, &body).await?;
 
         if status.as_u16() == 450 {
@@ -1319,13 +1395,10 @@ impl ZoneClient<'_> {
             .collect();
         let body = json!({
             "operations": operations,
-            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+            "zoneID": self.zone_id(zone),
             "atomic": false,
         });
-        let url = format!(
-            "{}/database/1/{}/production/private/records/modify",
-            self.base, self.container
-        );
+        let url = self.url("records/modify");
         let (status, text) = self.post_json(&url, &body).await?;
         if status.as_u16() == 450 {
             return Err(Error::ReauthRequired);
@@ -1383,13 +1456,10 @@ impl ZoneClient<'_> {
         zone: &str,
         names: &[&str],
     ) -> Result<std::collections::HashMap<String, String>> {
-        let url = format!(
-            "{}/database/1/{}/production/private/records/lookup",
-            self.base, self.container
-        );
+        let url = self.url("records/lookup");
         let body = json!({
             "records": names.iter().map(|n| json!({ "recordName": n })).collect::<Vec<_>>(),
-            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+            "zoneID": self.zone_id(zone),
         });
         let (status, text) = self.post_json(&url, &body).await?;
         if status.as_u16() == 450 {
@@ -1418,10 +1488,7 @@ impl ZoneClient<'_> {
     /// The names of the container's private zones Apple could read (`zones/list`). An entry it
     /// could not fetch still names its zone but carries `serverErrorCode`, and is left out.
     pub async fn zone_names(&self) -> Result<Vec<String>> {
-        let url = format!(
-            "{}/database/1/{}/production/private/zones/list",
-            self.base, self.container
-        );
+        let url = self.url("zones/list");
         let (status, text) = self.post_json(&url, &json!({})).await?;
         if status.as_u16() == 450 || status.as_u16() == 401 {
             return Err(Error::ReauthRequired);
@@ -1443,6 +1510,40 @@ impl ZoneClient<'_> {
             .collect())
     }
 
+    /// Every zone in the database Apple could read (`zones/list`), as its name and — in the
+    /// shared database, where zones belong to other accounts — its owner.
+    pub async fn zone_ids(&self) -> Result<Vec<(String, Option<String>)>> {
+        let (status, text) = self.post_json(&self.url("zones/list"), &json!({})).await?;
+        if status.as_u16() == 450 || status.as_u16() == 401 {
+            return Err(Error::ReauthRequired);
+        }
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "CloudKit couldn't list its zones ({status})"
+            )));
+        }
+        let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let shared = self.database == Database::Shared;
+        Ok(parsed
+            .get("zones")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|z| {
+                z.get("serverErrorCode").is_none() && z.get("deleted") != Some(&json!(true))
+            })
+            .filter_map(|z| {
+                let name = z.pointer("/zoneID/zoneName")?.as_str()?.to_string();
+                let owner = z
+                    .pointer("/zoneID/ownerRecordName")
+                    .and_then(Value::as_str)
+                    .filter(|_| shared)
+                    .map(str::to_string);
+                Some((name, owner))
+            })
+            .collect())
+    }
+
     /// Who this client reads for: the database, the container and the account (`dsid`), so
     /// something learnt of one account is never taken for another's.
     #[must_use]
@@ -1452,17 +1553,20 @@ impl ZoneClient<'_> {
             .iter()
             .find(|(k, _)| k == "dsid")
             .map_or("", |(_, v)| v.as_str());
-        format!("{}|{}|{dsid}", self.base, self.container)
+        format!(
+            "{}|{}|{}|{}|{dsid}",
+            self.base,
+            self.container,
+            self.database.path(),
+            self.owner.as_deref().unwrap_or("")
+        )
     }
 
     pub async fn lookup_record(&self, zone: &str, record_name: &str) -> Result<Option<Value>> {
-        let url = format!(
-            "{}/database/1/{}/production/private/records/lookup",
-            self.base, self.container
-        );
+        let url = self.url("records/lookup");
         let body = json!({
             "records": [{ "recordName": record_name }],
-            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+            "zoneID": self.zone_id(zone),
         });
         let (status, text) = self.post_json(&url, &body).await?;
         if status.as_u16() == 450 {
@@ -1496,7 +1600,7 @@ impl ZoneClient<'_> {
             "value": {
                 "action": "VALIDATE",
                 "recordName": record_name,
-                "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+                "zoneID": self.zone_id(zone),
             }
         })
     }
