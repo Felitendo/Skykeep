@@ -421,51 +421,142 @@ pub fn hold_or_mark(dir: &Path) -> Result<Option<Hold>, String> {
 /// letting go — its process gone, or another program's now — is taken over; one a running
 /// Skykeep made answers `None`.
 pub fn mark(dir: &Path) -> std::io::Result<Option<Hold>> {
-    use std::io::Write;
+    mark_as(dir, std::process::id(), is_skykeep)
+}
+
+/// How many times [`mark_as`] looks again before it gives up: each look waits a little longer,
+/// a few seconds in all — long past the moment another Skykeep takes to write its mark.
+const MARK_TRIES: u32 = 40;
+
+/// A mark with nothing readable in it is one being made at this instant (created, its id not
+/// written yet), never one left behind, until it is this old.
+const MARK_MAKING: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a mark just made stands before it is counted as held (see [`mark_as`]).
+const MARK_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// [`mark`] as process `me`, a process taken as a running Skykeep where `running` says so.
+///
+/// Two Skykeeps starting at the same instant must not both run. So a mark only ever appears
+/// whole: written to a file of this process's own and linked into place, which the system
+/// does at once or refuses because one is there (where the disk has no links, created only
+/// if absent and written — and one found empty is waited for, not cleared). A mark left
+/// behind is cleared by renaming it aside under a name of this process's own, which only one
+/// of two can do, and only if it is still the one judged left behind; then the mark is made
+/// again, as any other. Whoever made the mark that stands is the one that runs.
+fn mark_as(dir: &Path, me: u32, running: impl Fn(u32) -> bool) -> std::io::Result<Option<Hold>> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("skykeep.pid");
-    let me = std::process::id();
-    for _ in 0..3 {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                file.write_all(me.to_string().as_bytes())?;
-                file.sync_all()?;
-                drop(file);
-                // Two starting at once over a mark left behind may both have cleared it; the
-                // one whose id is in it now is the one that runs.
-                return Ok(match marked_by(&path) {
-                    Some(pid) if pid == me => Some(Hold::Marked(path)),
-                    _ => None,
-                });
+    for attempt in 0..MARK_TRIES {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(
+                5 * u64::from(attempt.min(20)),
+            ));
+        }
+        if place_mark(dir, &path, me)? {
+            // Ours once it has stood a moment: another clearing a mark left behind at this
+            // same instant may have renamed ours aside, and puts it back or finds another in
+            // its place — so the one still there after the moment is the one that runs.
+            std::thread::sleep(MARK_SETTLE);
+            if marked_by(&path) == Some(me) {
+                return Ok(Some(Hold::Marked(path)));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let by = marked_by(&path).filter(|pid| *pid != me);
-                if by.is_some_and(is_skykeep) {
-                    return Ok(None);
-                }
-                // Where whose it is cannot be asked, it is the person's to say.
-                if by.is_some() && !cfg!(target_os = "linux") {
-                    return Err(std::io::Error::other(format!(
-                        "{} is there. If no other Skykeep is running, remove it and open \
-                         Skykeep again",
-                        path.display()
-                    )));
-                }
-                // Left behind: let go of, and made again as this one's.
-                match std::fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e),
+            continue;
+        }
+        // One is there: whose, as it stands now.
+        let Ok(found) = std::fs::read(&path) else {
+            continue; // gone since: look again
+        };
+        let by = std::str::from_utf8(&found)
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok());
+        match by {
+            Some(pid) if pid == me => return Ok(Some(Hold::Marked(path))),
+            Some(pid) if running(pid) => return Ok(None),
+            // Where whose it is cannot be asked, it is the person's to say.
+            Some(_) if !cfg!(target_os = "linux") => {
+                return Err(std::io::Error::other(format!(
+                    "{} is there. If no other Skykeep is running, remove it and open \
+                     Skykeep again",
+                    path.display()
+                )))
+            }
+            Some(_) => clear_left_behind(dir, &path, me, &found)?,
+            // Being made: wait for it, unless it has stood empty far longer than that takes.
+            None => {
+                let age = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok());
+                if age.is_some_and(|a| a > MARK_MAKING) {
+                    clear_left_behind(dir, &path, me, &found)?;
                 }
             }
-            Err(e) => return Err(e),
         }
     }
-    Err(std::io::Error::other("skykeep.pid kept coming back"))
+    Err(std::io::Error::other(
+        "skykeep.pid kept changing while Skykeep looked at it",
+    ))
+}
+
+/// Put this process's mark in place if none is there: `true` if it is now ours.
+fn place_mark(dir: &Path, path: &Path, me: u32) -> std::io::Result<bool> {
+    use std::io::Write;
+    let own = dir.join(format!("skykeep.pid.{me}"));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&own)?;
+        file.write_all(me.to_string().as_bytes())?;
+        file.sync_all()
+    })();
+    let linked = written.and_then(|()| std::fs::hard_link(&own, path));
+    let _ = std::fs::remove_file(&own);
+    match linked {
+        Ok(()) => return Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        // No links on this disk: made only if absent, and written.
+        Err(_) => {}
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(me.to_string().as_bytes())?;
+            file.sync_all()?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Clear a mark judged left behind — holding `judged` — by renaming it aside: of two doing
+/// this at once, one renames it and the other finds it gone. Renamed aside but holding
+/// something else (made new by another Skykeep in between), it is put back.
+fn clear_left_behind(dir: &Path, path: &Path, me: u32, judged: &[u8]) -> std::io::Result<()> {
+    let aside = dir.join(format!("skykeep.pid.{me}.left"));
+    match std::fs::rename(path, &aside) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    if std::fs::read(&aside).ok().as_deref() != Some(judged) {
+        // Someone's new mark: back where it was, unless yet another stands there now.
+        let _ = std::fs::hard_link(&aside, path).or_else(|_| {
+            if path.exists() {
+                Ok(())
+            } else {
+                std::fs::rename(&aside, path)
+            }
+        });
+    }
+    let _ = std::fs::remove_file(&aside);
+    Ok(())
 }
 
 fn marked_by(path: &Path) -> Option<u32> {
@@ -541,6 +632,73 @@ mod hold_tests {
         );
         std::fs::write(&pid, "4194999").unwrap();
         assert!(mark(dir.path()).unwrap().is_some(), "a process long gone");
+    }
+
+    /// Many Skykeeps starting at the same instant on a disk without locks — over no mark, and
+    /// over one left behind that each of them would clear — and exactly one runs, the one
+    /// whose id the mark holds. Before, two clearing the same mark, or one finding another's
+    /// mark not yet written, could both run.
+    #[test]
+    fn marks_made_at_the_same_instant_let_only_one_run() {
+        const STARTING: u32 = 12;
+        for round in 0..30 {
+            let dir = tempfile::tempdir().unwrap();
+            if round % 2 == 1 {
+                std::fs::write(dir.path().join("skykeep.pid"), "4194999").unwrap();
+            }
+            let all = std::sync::Arc::new(std::sync::Barrier::new(STARTING as usize));
+            let held: Vec<(u32, bool)> = std::thread::scope(|s| {
+                let starts: Vec<_> = (0..STARTING)
+                    .map(|i| {
+                        let (all, dir) = (all.clone(), dir.path());
+                        s.spawn(move || {
+                            let me = 1000 + i;
+                            all.wait();
+                            let hold =
+                                mark_as(dir, me, |pid| (1000..1000 + STARTING).contains(&pid))
+                                    .unwrap();
+                            let ours = hold.is_some();
+                            // Held until every start has looked.
+                            std::mem::forget(hold);
+                            (me, ours)
+                        })
+                    })
+                    .collect();
+                starts.into_iter().map(|t| t.join().unwrap()).collect()
+            });
+            let running: Vec<u32> = held.iter().filter(|(_, h)| *h).map(|(me, _)| *me).collect();
+            assert_eq!(running.len(), 1, "round {round}: {running:?} all run");
+            assert_eq!(
+                marked_by(&dir.path().join("skykeep.pid")),
+                Some(running[0]),
+                "round {round}: the one that runs is the one marked"
+            );
+            let left: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(left.len(), 1, "round {round}: nothing else left: {left:?}");
+        }
+    }
+
+    /// A mark with nothing in it yet is another Skykeep's, made a moment ago and about to say
+    /// whose: it is waited for, never cleared as one left behind.
+    #[test]
+    fn a_mark_being_made_is_waited_for_not_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skykeep.pid");
+        std::fs::write(&path, "").unwrap();
+        let writer = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                std::fs::write(&path, "77").unwrap();
+            })
+        };
+        let hold = mark_as(dir.path(), 5, |pid| pid == 77).unwrap();
+        writer.join().unwrap();
+        assert!(hold.is_none(), "the other Skykeep runs");
+        assert_eq!(marked_by(&path), Some(77), "its mark stands");
     }
 
     #[test]
