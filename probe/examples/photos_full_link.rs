@@ -1,7 +1,7 @@
 //! Live, read-only: which renditions a photo's master offers, and that the "full" one Quince
 //! picks for zooming downloads as a displayable image.
 use anyhow::{anyhow, Result};
-use quince_icloud::photos::{links_of, CONTAINER, ZONE};
+use quince_icloud::photos::{links_of, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,8 +17,9 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p);
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let a = zc
-        .lookup_record(ZONE, &asset)
+        .lookup_record(&zone, &asset)
         .await?
         .ok_or_else(|| anyhow!("no asset"))?;
     let master = a
@@ -26,7 +27,7 @@ async fn main() -> Result<()> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("no master"))?;
     let m = zc
-        .lookup_record(ZONE, master)
+        .lookup_record(&zone, master)
         .await?
         .ok_or_else(|| anyhow!("no master record"))?;
     let mut keys: Vec<_> = m["fields"]

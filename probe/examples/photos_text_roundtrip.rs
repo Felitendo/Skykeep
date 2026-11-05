@@ -3,7 +3,7 @@
 //! cleared. Leaves the photo as it was.
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use quince_icloud::photos::{self, CONTAINER, ZONE};
+use quince_icloud::photos::{self, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,6 +19,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p.clone());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let text = |r: &serde_json::Value, f: &str| {
         r.pointer(&format!("/fields/{f}/value"))
             .and_then(|v| v.as_str())
@@ -39,7 +40,7 @@ async fn main() -> Result<()> {
         )
     };
     let before = zc
-        .lookup_record(ZONE, &asset)
+        .lookup_record(&zone, &asset)
         .await?
         .ok_or_else(|| anyhow!("gone"))?;
     println!("before: {}", show(&before));
@@ -52,10 +53,10 @@ async fn main() -> Result<()> {
         Some("Quince test — a caption ✿"),
     )
     .await?;
-    let now = zc.lookup_record(ZONE, &asset).await?.unwrap();
+    let now = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("set:    {}", show(&now));
     photos::set_title_and_caption(&http, &ck, p.clone(), &asset, Some(""), Some("")).await?;
-    let back = zc.lookup_record(ZONE, &asset).await?.unwrap();
+    let back = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("clear:  {}", show(&back));
     Ok(())
 }

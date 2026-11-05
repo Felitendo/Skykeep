@@ -1,7 +1,7 @@
 //! Live, read-only: a photo's whole picture fetched to a file in a folder named on the command
 //! line with Quince's own fetch_to_file, and compared with the same link fetched directly.
 use anyhow::{anyhow, Result};
-use quince_icloud::photos::{fetch_to_file, links_of, CONTAINER, ZONE};
+use quince_icloud::photos::{fetch_to_file, links_of, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,8 +20,9 @@ async fn main() -> Result<()> {
     let http = client.http().clone();
     let zc =
         quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, client.service_params());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let a = zc
-        .lookup_record(ZONE, &id)
+        .lookup_record(&zone, &id)
         .await?
         .ok_or_else(|| anyhow!("gone"))?;
     let m = a
@@ -29,7 +30,7 @@ async fn main() -> Result<()> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("no master"))?;
     let master = zc
-        .lookup_record(ZONE, m)
+        .lookup_record(&zone, m)
         .await?
         .ok_or_else(|| anyhow!("no master"))?;
     let url = links_of(&master).full.ok_or_else(|| anyhow!("no full"))?;

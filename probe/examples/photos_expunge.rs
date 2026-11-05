@@ -3,7 +3,7 @@
 //! quince-upload-test.jpg, and reads each back from Apple after.
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use quince_icloud::photos::{self, Flag, CONTAINER, ZONE};
+use quince_icloud::photos::{self, Flag, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,16 +18,17 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p.clone());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     for asset in std::env::args().skip(1) {
         let a = zc
-            .lookup_record(ZONE, &asset)
+            .lookup_record(&zone, &asset)
             .await?
             .ok_or_else(|| anyhow!("{asset}: gone"))?;
         let master = a
             .pointer("/fields/masterRef/value/recordName")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        let m = zc.lookup_record(ZONE, master).await?;
+        let m = zc.lookup_record(&zone, master).await?;
         let name = m
             .as_ref()
             .and_then(|m| {
@@ -47,7 +48,7 @@ async fn main() -> Result<()> {
         }
         let tag = a.get("recordChangeTag").and_then(|t| t.as_str());
         photos::set_flag(&http, &ck, p.clone(), &asset, tag, Flag::Expunged, true).await?;
-        let after = zc.lookup_record(ZONE, &asset).await?;
+        let after = zc.lookup_record(&zone, &asset).await?;
         println!(
             "{asset} ({name}): after = {}",
             after.map_or("record gone".into(), |r| format!(

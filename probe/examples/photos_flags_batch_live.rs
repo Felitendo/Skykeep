@@ -36,10 +36,19 @@ async fn main() -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as i64;
+        let library =
+            quince_icloud::photos::library_zone(&quince_icloud::cloudkit::ZoneClient::new(
+                &http,
+                &root,
+                quince_icloud::photos::CONTAINER,
+                p.clone(),
+            ))
+            .await;
         match quince_icloud::photos_upload::upload(
             &http,
             &up,
             &dsid,
+            &library,
             f,
             &name,
             now,

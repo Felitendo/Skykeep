@@ -3,7 +3,7 @@
 //! writes for ["loupe"] is byte for byte the one Apple wrote on his photo.
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use quince_icloud::photos::{self, CONTAINER, ZONE};
+use quince_icloud::photos::{self, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,21 +29,22 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p.clone());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let words = |r: &serde_json::Value| -> Option<plist::Value> {
         let v = r.pointer("/fields/keywordsEnc/value")?.as_str()?;
         plist::from_bytes(&base64::engine::general_purpose::STANDARD.decode(v).ok()?).ok()
     };
     let before = zc
-        .lookup_record(ZONE, &asset)
+        .lookup_record(&zone, &asset)
         .await?
         .ok_or_else(|| anyhow!("gone"))?;
     println!("before: {:?}", words(&before));
     let wanted: Vec<String> = vec!["spring".into(), "quince test ✿".into()];
     photos::set_keywords(&http, &ck, p.clone(), &asset, &[], &wanted).await?;
-    let now = zc.lookup_record(ZONE, &asset).await?.unwrap();
+    let now = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("set:    {:?}", words(&now));
     photos::set_keywords(&http, &ck, p.clone(), &asset, &wanted, &[]).await?;
-    let back = zc.lookup_record(ZONE, &asset).await?.unwrap();
+    let back = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("clear:  {:?}", words(&back));
     Ok(())
 }

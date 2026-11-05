@@ -18,8 +18,9 @@ async fn main() -> Result<()> {
         quince_icloud::photos::CONTAINER,
         client.service_params(),
     );
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let r = zc
-        .lookup_record(quince_icloud::photos::ZONE, &asset)
+        .lookup_record(&zone, &asset)
         .await?
         .ok_or_else(|| anyhow!("gone"))?;
     for (k, v) in r["fields"].as_object().unwrap() {

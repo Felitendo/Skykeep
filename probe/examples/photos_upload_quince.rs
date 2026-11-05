@@ -34,10 +34,18 @@ async fn main() -> Result<()> {
     let t = std::time::Instant::now();
     let progress: std::sync::Arc<dyn Fn(Stage) + Send + Sync> =
         std::sync::Arc::new(move |s| println!("  {:>6.2}s {s:?}", t.elapsed().as_secs_f64()));
+    let library = quince_icloud::photos::library_zone(&quince_icloud::cloudkit::ZoneClient::new(
+        &http,
+        &ck,
+        quince_icloud::photos::CONTAINER,
+        p.clone(),
+    ))
+    .await;
     let outcome = quince_icloud::photos_upload::upload(
         &http,
         &up,
         &dsid,
+        &library,
         &path,
         &name,
         std::time::SystemTime::now()

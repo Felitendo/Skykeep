@@ -2,7 +2,7 @@
 //! through Quince's own uploader, its original downloaded back from Apple and compared byte for
 //! byte by SHA-256, then deleted for good. Proves a heavy upload arrives whole.
 use anyhow::{anyhow, Result};
-use quince_icloud::photos::{download_choice, set_flag, Flag, Want, CONTAINER, ZONE};
+use quince_icloud::photos::{download_choice, set_flag, Flag, Want, CONTAINER};
 use quince_icloud::photos_upload::{Outcome, Stage};
 use sha2::{Digest, Sha256};
 
@@ -55,10 +55,18 @@ async fn main() -> Result<()> {
     let modified = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as i64;
+    let library = quince_icloud::photos::library_zone(&quince_icloud::cloudkit::ZoneClient::new(
+        &http,
+        &ck,
+        quince_icloud::photos::CONTAINER,
+        p.clone(),
+    ))
+    .await;
     let outcome = quince_icloud::photos_upload::upload(
         &http,
         &up,
         &dsid,
+        &library,
         &path,
         &name,
         modified,
@@ -72,12 +80,13 @@ async fn main() -> Result<()> {
         return Err(anyhow!("not uploaded: {outcome:?}"));
     };
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p.clone());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let asset = zc
-        .lookup_record(ZONE, &u.asset)
+        .lookup_record(&zone, &u.asset)
         .await?
         .ok_or_else(|| anyhow!("asset missing"))?;
     let master = zc
-        .lookup_record(ZONE, &u.master)
+        .lookup_record(&zone, &u.master)
         .await?
         .ok_or_else(|| anyhow!("master missing"))?;
     let (url, back_name) = download_choice(&asset, &master, Want::Originals, true)
@@ -106,7 +115,7 @@ async fn main() -> Result<()> {
         .get("recordChangeTag")
         .and_then(|x| x.as_str())
         .map(str::to_string);
-    let now = zc.lookup_record(ZONE, &u.asset).await?.unwrap();
+    let now = zc.lookup_record(&zone, &u.asset).await?.unwrap();
     let tag = tag.or_else(|| {
         now.get("recordChangeTag")
             .and_then(|x| x.as_str())
@@ -122,7 +131,7 @@ async fn main() -> Result<()> {
         true,
     )
     .await?;
-    let gone = zc.lookup_record(ZONE, &u.asset).await?;
+    let gone = zc.lookup_record(&zone, &u.asset).await?;
     println!(
         "deleted for good: {:?}",
         gone.and_then(|r| r.pointer("/fields/isExpunged/value").cloned())

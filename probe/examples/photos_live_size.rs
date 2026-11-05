@@ -2,7 +2,7 @@
 //! advertises (`resOriginalVidComplFileSize`) — what the Photos folder lists the .MOV at — and
 //! is a QuickTime file. Takes asset ids; prints only sizes and the file's first box.
 use anyhow::{anyhow, Result};
-use quince_icloud::photos::{links_of, CONTAINER, ZONE};
+use quince_icloud::photos::{links_of, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,9 +17,10 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p);
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     for (n, asset) in std::env::args().skip(1).enumerate() {
         let a = zc
-            .lookup_record(ZONE, &asset)
+            .lookup_record(&zone, &asset)
             .await?
             .ok_or_else(|| anyhow!("no asset"))?;
         let master = a
@@ -27,7 +28,7 @@ async fn main() -> Result<()> {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("no master"))?;
         let m = zc
-            .lookup_record(ZONE, master)
+            .lookup_record(&zone, master)
             .await?
             .ok_or_else(|| anyhow!("no master record"))?;
         let said = m

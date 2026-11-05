@@ -1,7 +1,7 @@
 //! Live, on a wallpaper he named as a throwaway: Hide then Unhide through Quince's own
 //! set_flag, each read back from Apple. Leaves the photo as it was.
 use anyhow::{anyhow, Result};
-use quince_icloud::photos::{self, Flag, CONTAINER, ZONE};
+use quince_icloud::photos::{self, Flag, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,9 +17,10 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p.clone());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let hidden = |r: &serde_json::Value| r.pointer("/fields/isHidden/value").cloned();
     let before = zc
-        .lookup_record(ZONE, &asset)
+        .lookup_record(&zone, &asset)
         .await?
         .ok_or_else(|| anyhow!("no such photo"))?;
     println!("before: isHidden={:?}", hidden(&before));
@@ -37,7 +38,7 @@ async fn main() -> Result<()> {
         true,
     )
     .await?;
-    let now = zc.lookup_record(ZONE, &asset).await?.unwrap();
+    let now = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("hidden: isHidden={:?}", hidden(&now));
     let tag = after
         .get("recordChangeTag")
@@ -58,7 +59,7 @@ async fn main() -> Result<()> {
         false,
     )
     .await?;
-    let back = zc.lookup_record(ZONE, &asset).await?.unwrap();
+    let back = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("unhidden: isHidden={:?}", hidden(&back));
     Ok(())
 }

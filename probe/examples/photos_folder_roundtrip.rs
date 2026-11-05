@@ -4,7 +4,7 @@
 //! read back. Whatever is left is deleted. No photo is touched.
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use quince_icloud::photos::{self, CONTAINER, ZONE};
+use quince_icloud::photos::{self, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,6 +19,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p.clone());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let show = |r: &serde_json::Value| {
         let name = r
             .pointer("/fields/albumNameEnc/value")
@@ -44,7 +45,7 @@ async fn main() -> Result<()> {
     .await?;
     println!(
         "folder: {}",
-        show(&zc.lookup_record(ZONE, &folder.id).await?.unwrap())
+        show(&zc.lookup_record(&zone, &folder.id).await?.unwrap())
     );
     let inner = photos::create_album(
         &http,
@@ -58,7 +59,7 @@ async fn main() -> Result<()> {
     .await?;
     println!(
         "inner:  {}",
-        show(&zc.lookup_record(ZONE, &inner.id).await?.unwrap())
+        show(&zc.lookup_record(&zone, &inner.id).await?.unwrap())
     );
     let tag = photos::rename_album(
         &http,
@@ -71,14 +72,14 @@ async fn main() -> Result<()> {
     .await?;
     println!(
         "renamed: {}",
-        show(&zc.lookup_record(ZONE, &folder.id).await?.unwrap())
+        show(&zc.lookup_record(&zone, &folder.id).await?.unwrap())
     );
     photos::delete_album(&http, &ck, p.clone(), &folder.id, tag.as_deref()).await?;
     println!(
         "folder after delete: {}",
-        show(&zc.lookup_record(ZONE, &folder.id).await?.unwrap())
+        show(&zc.lookup_record(&zone, &folder.id).await?.unwrap())
     );
-    let inner_now = zc.lookup_record(ZONE, &inner.id).await?.unwrap();
+    let inner_now = zc.lookup_record(&zone, &inner.id).await?.unwrap();
     println!("inner after the folder's delete: {}", show(&inner_now));
     if inner_now
         .pointer("/fields/isDeleted/value")
@@ -89,7 +90,7 @@ async fn main() -> Result<()> {
         photos::delete_album(&http, &ck, p.clone(), &inner.id, t).await?;
         println!(
             "inner deleted too: {}",
-            show(&zc.lookup_record(ZONE, &inner.id).await?.unwrap())
+            show(&zc.lookup_record(&zone, &inner.id).await?.unwrap())
         );
     }
     Ok(())

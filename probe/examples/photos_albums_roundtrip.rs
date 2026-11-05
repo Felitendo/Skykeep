@@ -3,7 +3,7 @@
 //! step read back from Apple. The photos themselves are never touched.
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use quince_icloud::photos::{self, CONTAINER, ZONE};
+use quince_icloud::photos::{self, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p.clone());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     let name_of = |r: &serde_json::Value| {
         r.pointer("/fields/albumNameEnc/value")
             .and_then(|v| v.as_str())
@@ -40,7 +41,7 @@ async fn main() -> Result<()> {
     )
     .await?;
     let made = zc
-        .lookup_record(ZONE, &album.id)
+        .lookup_record(&zone, &album.id)
         .await?
         .ok_or_else(|| anyhow!("album not there"))?;
     println!(
@@ -55,7 +56,7 @@ async fn main() -> Result<()> {
     println!("added {added:?}");
     for a in &assets {
         let r = zc
-            .lookup_record(ZONE, &format!("{a}-IN-{}", album.id))
+            .lookup_record(&zone, &format!("{a}-IN-{}", album.id))
             .await?;
         println!(
             "  relation {a}: {}",
@@ -65,7 +66,7 @@ async fn main() -> Result<()> {
 
     photos::remove_from_album(&http, &ck, p.clone(), &album.id, &assets[..1]).await?;
     let gone = zc
-        .lookup_record(ZONE, &format!("{}-IN-{}", assets[0], album.id))
+        .lookup_record(&zone, &format!("{}-IN-{}", assets[0], album.id))
         .await?;
     println!(
         "removed first: relation now {}",
@@ -75,7 +76,7 @@ async fn main() -> Result<()> {
             "STILL THERE"
         }
     );
-    let photo = zc.lookup_record(ZONE, &assets[0]).await?;
+    let photo = zc.lookup_record(&zone, &assets[0]).await?;
     println!(
         "  the photo itself: {}",
         photo.map_or("MISSING".into(), |r| format!(
@@ -94,20 +95,20 @@ async fn main() -> Result<()> {
     )
     .await?;
     let renamed = zc
-        .lookup_record(ZONE, &album.id)
+        .lookup_record(&zone, &album.id)
         .await?
         .ok_or_else(|| anyhow!("album gone"))?;
     println!("renamed: {:?}", name_of(&renamed));
 
     photos::delete_album(&http, &ck, p.clone(), &album.id, tag.as_deref()).await?;
-    let deleted = zc.lookup_record(ZONE, &album.id).await?;
+    let deleted = zc.lookup_record(&zone, &album.id).await?;
     println!(
         "deleted: isDeleted={:?}",
         deleted.and_then(|r| r.pointer("/fields/isDeleted/value").cloned())
     );
     // What the album's one remaining photo relation becomes once the album is deleted.
     let left = zc
-        .lookup_record(ZONE, &format!("{}-IN-{}", assets[1], album.id))
+        .lookup_record(&zone, &format!("{}-IN-{}", assets[1], album.id))
         .await?;
     println!(
         "  remaining relation after delete: {}",

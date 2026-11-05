@@ -10,7 +10,7 @@
 //! The file must be named quince-upload-test.jpg (photos_expunge deletes it for good after).
 use anyhow::{anyhow, Result};
 use quince_core::drive::DriveItem;
-use quince_icloud::photos::{Flag, CONTAINER, ZONE};
+use quince_icloud::photos::{Flag, CONTAINER};
 use quince_vfs::{fuse, Cache, Fut, Remote, Store, ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -80,10 +80,19 @@ impl Remote for Photos {
         Box::pin(async move {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             let c = &me.ctx;
+            let library =
+                quince_icloud::photos::library_zone(&quince_icloud::cloudkit::ZoneClient::new(
+                    &c.http,
+                    &c.ck,
+                    quince_icloud::photos::CONTAINER,
+                    c.params.clone(),
+                ))
+                .await;
             let outcome = quince_icloud::photos_upload::upload(
                 &c.http,
                 &c.up,
                 &c.dsid,
+                &library,
                 &path,
                 &name,
                 1_792_521_600_000,
@@ -126,8 +135,9 @@ impl Remote for Photos {
                 CONTAINER,
                 c.params.clone(),
             );
+            let zone = quince_icloud::photos::library_zone(&zc).await;
             let rec = zc
-                .lookup_record(ZONE, &asset)
+                .lookup_record(&zone, &asset)
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or("gone")?;
@@ -219,9 +229,10 @@ fn main() -> Result<()> {
     let asset = asset.ok_or_else(|| anyhow!("never sent"))?;
     let found = rt.block_on(async {
         let c = &photos.ctx;
-        quince_icloud::cloudkit::ZoneClient::new(&c.http, &c.ck, CONTAINER, c.params.clone())
-            .lookup_record(ZONE, &asset)
-            .await
+        let zc =
+            quince_icloud::cloudkit::ZoneClient::new(&c.http, &c.ck, CONTAINER, c.params.clone());
+        let zone = quince_icloud::photos::library_zone(&zc).await;
+        zc.lookup_record(&zone, &asset).await
     })?;
     println!(
         "{} in iCloud Photos",
@@ -253,9 +264,10 @@ fn main() -> Result<()> {
     std::fs::remove_file(&target)?;
     let after = rt.block_on(async {
         let c = &photos.ctx;
-        quince_icloud::cloudkit::ZoneClient::new(&c.http, &c.ck, CONTAINER, c.params.clone())
-            .lookup_record(ZONE, &asset)
-            .await
+        let zc =
+            quince_icloud::cloudkit::ZoneClient::new(&c.http, &c.ck, CONTAINER, c.params.clone());
+        let zone = quince_icloud::photos::library_zone(&zc).await;
+        zc.lookup_record(&zone, &asset).await
     })?;
     let deleted = after
         .as_ref()

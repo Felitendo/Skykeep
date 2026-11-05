@@ -1,7 +1,7 @@
 //! Live, read-only: for each of icloud.com's Download Options, the file Quince picks for a photo
 //! and a video, downloaded to a folder named on the command line and checked by its first bytes.
 use anyhow::{anyhow, Result};
-use quince_icloud::photos::{download_choice, Want, CONTAINER, ZONE};
+use quince_icloud::photos::{download_choice, Want, CONTAINER};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,9 +19,10 @@ async fn main() -> Result<()> {
     let http = client.http().clone();
     let zc =
         quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, client.service_params());
+    let zone = quince_icloud::photos::library_zone(&zc).await;
     for id in args {
         let asset = zc
-            .lookup_record(ZONE, &id)
+            .lookup_record(&zone, &id)
             .await?
             .ok_or_else(|| anyhow!("gone"))?;
         let m = asset
@@ -29,7 +30,7 @@ async fn main() -> Result<()> {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("no master"))?;
         let master = zc
-            .lookup_record(ZONE, m)
+            .lookup_record(&zone, m)
             .await?
             .ok_or_else(|| anyhow!("no master"))?;
         let video = master
