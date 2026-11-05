@@ -405,14 +405,6 @@ pub async fn download_with_progress(
         }
     }
     file.flush().await?;
-    // The file keeps the date it was last changed in iCloud, as a copy from any other disk
-    // does: sorted by date it sits where it belongs, and a resumed folder download tells by
-    // it which version it already has. Best effort — a disk that won't take a date keeps today's.
-    if let Some(when) = changed_at(item) {
-        let std_file = file.into_std().await;
-        let _ = std_file.set_modified(when);
-        file = tokio::fs::File::from_std(std_file);
-    }
     file.sync_all().await?;
     drop(file);
     // Fewer bytes than were promised is a connection that ended early, whatever it said: never
@@ -420,6 +412,35 @@ pub async fn download_with_progress(
     if promised.is_some_and(|n| n != received) {
         return Err(Error::Refused(BUSY.into()));
     }
+    let placed = place(&partial, destination, placing, &mut cleanup).await;
+    // The file keeps the date it was last changed in iCloud, as a copy from any other disk
+    // does: sorted by date it sits where it belongs, and a resumed folder download tells by it
+    // which version it already has. Set once it is whole, closed and in place: set on the open
+    // part file, Windows put today's date back over it as the written file was closed.
+    // Best effort: a disk that won't take a date keeps today's.
+    if placed.is_ok() {
+        if let Some(when) = changed_at(item) {
+            let at = destination.to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&at)
+                    .and_then(|f| f.set_modified(when))
+            })
+            .await;
+        }
+    }
+    placed
+}
+
+/// The whole part file moved to `destination` as `placing` says, and `cleanup` told to keep it.
+async fn place(
+    partial: &std::path::Path,
+    destination: &std::path::Path,
+    placing: Placing,
+    cleanup: &mut Partial,
+) -> Result<()> {
+    let partial = partial.to_path_buf();
     if placing == Placing::Replace {
         if std::fs::symlink_metadata(destination).is_ok_and(|m| m.is_dir()) {
             return Err(Error::Protocol(
