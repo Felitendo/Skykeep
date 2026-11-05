@@ -1148,10 +1148,10 @@ async fn trusted_numbers_are_found_wherever_apple_keeps_them() {
                 "bridgeInitiateData": {
                     "phoneNumberVerification": {
                         "trustedPhoneNumbers": [
-                            { "id": 1, "numberWithDialCode": "+91 ••••• ••318", "pushMode": "sms" },
+                            { "id": 1, "numberWithDialCode": "+1 ••• ••• ••42", "pushMode": "sms" },
                             { "id": 2, "obfuscatedNumber": "(•••) •••-••12", "pushMode": "voice", "nonFTEU": true }
                         ],
-                        "trustedPhoneNumber": { "id": 1, "numberWithDialCode": "+91 ••••• ••318", "pushMode": "sms" },
+                        "trustedPhoneNumber": { "id": 1, "numberWithDialCode": "+1 ••• ••• ••42", "pushMode": "sms" },
                         "securityCode": { "tooManyCodesSent": true }
                     }
                 }
@@ -1202,7 +1202,7 @@ async fn trusted_numbers_are_found_wherever_apple_keeps_them() {
         let options = client.two_factor_options().await.unwrap();
         let ids: Vec<u64> = options.phones.iter().map(|p| p.id).collect();
         assert_eq!(ids, vec![1, 2], "{label}: each number once");
-        assert_eq!(options.phones[0].masked_number, "+91 ••••• ••318");
+        assert_eq!(options.phones[0].masked_number, "+1 ••• ••• ••42");
         assert_eq!(options.phones[1].mode, "voice", "{label}");
         assert_eq!(options.trusted_device_count, 0, "{label}");
         assert!(options.too_many_codes_sent, "{label}");
@@ -1219,6 +1219,64 @@ async fn trusted_numbers_are_found_wherever_apple_keeps_them() {
             assert_eq!(body["mode"], "voice", "{label}: {body}");
             assert_eq!(body["phoneNumber"]["id"], 2, "{label}: {body}");
             assert_eq!(body["phoneNumber"]["nonFTEU"], true, "{label}: {body}");
+        }
+    }
+}
+
+/// Apple's answer to "where can a code go" refused, empty, or a page with nothing in it: an
+/// error, never "this account has nowhere to send a code" to someone whose iPhone and number
+/// are right there. An account Apple says truly has none still reads as none.
+#[tokio::test]
+async fn a_failed_answer_is_never_nowhere_to_send() {
+    for (label, reply, said) in [
+        (
+            "refused",
+            ResponseTemplate::new(401).set_body_string("{}"),
+            false,
+        ),
+        (
+            "empty",
+            ResponseTemplate::new(200).set_body_json(json!({})),
+            false,
+        ),
+        (
+            "bare page",
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string("<html></html>"),
+            false,
+        ),
+        (
+            "truly none",
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "trustedDeviceCount": 0, "trustedPhoneNumbers": [] })),
+            true,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        mount_init(&server, 200).await;
+        mount_complete(&server, 409).await;
+        Mock::given(method("GET"))
+            .and(path("/appleauth/auth"))
+            .respond_with(reply)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = client_for(&server, dir.path());
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap();
+        let options = client.two_factor_options().await;
+        if said {
+            let o = options.unwrap();
+            assert_eq!((o.trusted_device_count, o.phones.len()), (0, 0), "{label}");
+        } else {
+            assert!(
+                options.is_err(),
+                "{label}: {:?}",
+                options.map(|o| o.trusted_device_count)
+            );
         }
     }
 }

@@ -1257,9 +1257,37 @@ impl Client {
             .send()
             .await?;
         self.capture(&r);
+        let status = r.status();
         let text = r.text().await.unwrap_or_default();
+        // A reply Apple refused, or one that names no devices and no numbers at all, says
+        // nothing about where a code can go. Read as "0 devices, no numbers" it told someone
+        // with an iPhone and a number that their account had nowhere to send a code (reported
+        // on X, 5 Nov 2026, after airplane-mode codes had failed): it is an error, and the code
+        // screen falls back to its plain wording.
+        if !status.is_success() {
+            return Err(apple_error(
+                "reading where Apple can send a code",
+                status,
+                &text,
+            ));
+        }
         let v = auth_options_of(&text);
         let places = two_factor_places(&v);
+        let says_where = places.iter().any(|p| {
+            [
+                "trustedDeviceCount",
+                "hasTrustedDevices",
+                "trustedPhoneNumbers",
+                "trustedPhoneNumber",
+            ]
+            .iter()
+            .any(|k| p.get(*k).is_some())
+        });
+        if !says_where {
+            return Err(Error::Protocol(
+                "Apple didn't say where it can send a code".into(),
+            ));
+        }
 
         let phones = trusted_phones(&v);
         self.phones.clone_from(&phones);
