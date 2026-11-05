@@ -1561,3 +1561,75 @@ async fn hundred_thousand_files() {
         );
     }
 }
+
+/// A disk that really fills up part way — not a free-space number made up for the test, but
+/// writes the disk refuses (ENOSPC) — stops the download with words a person can act on: what
+/// fit is saved whole, nothing half-written is left (no partial file, no part of the one that
+/// didn't fit), and it can be gone on with once there is room.
+///
+/// Needs a small filesystem of its own, so it runs only when given one:
+///   sudo mount -t tmpfs -o size=1m,uid=$(id -u) tmpfs /tmp/skykeep-full
+///   SKYKEEP_FULL_DISK=/tmp/skykeep-full cargo test -p quince-app real_full_disk -- --ignored
+#[tokio::test]
+#[ignore = "needs a tiny filesystem: SKYKEEP_FULL_DISK (see the comment)"]
+async fn a_real_full_disk_stops_it_cleanly() {
+    let Some(small) = std::env::var_os("SKYKEEP_FULL_DISK") else {
+        panic!("set SKYKEEP_FULL_DISK to a small, empty filesystem");
+    };
+    let downloads = tempfile::tempdir_in(&small).unwrap();
+    let tree = folder(
+        "f",
+        "F",
+        vec![
+            file("small", "fits", Some("bin"), &[7; 200_000]),
+            file("large", "too-big", Some("bin"), &[9; 3_000_000]),
+        ],
+    );
+    // The space check before the start is told there is plenty: the disk itself has to say no.
+    let (_server, drive, _) = drive_of(
+        std::slice::from_ref(&tree),
+        Setup {
+            free_space: Some(|_| Some(u64::MAX / 4)),
+            ..Setup::default()
+        },
+    )
+    .await;
+    let state = tempfile::tempdir().unwrap();
+    let journal = Journal::new(state.path().to_path_buf());
+    let (_heard, emit) = hearing();
+    let report = tokio::time::timeout(
+        Duration::from_secs(60),
+        download(
+            &drive,
+            &[&tree],
+            downloads.path(),
+            Some(&journal),
+            emit,
+            &Stop::default(),
+        ),
+    )
+    .await
+    .expect("it ends")
+    .unwrap();
+    let problem = report.problem.clone().unwrap_or_default();
+    assert!(problem.contains("ran out of space"), "{report:?}");
+    assert!(report.resumable, "it can be gone on with: {report:?}");
+    let failed = format!("{:?}", report.failed);
+    assert!(
+        failed.contains("space left on the disk"),
+        "the file that didn't fit says why: {failed}"
+    );
+    let left = on_disk(downloads.path());
+    assert_eq!(
+        left.get("F/fits.bin").cloned().flatten().map(|b| b.len()),
+        Some(200_000),
+        "what fit is saved whole: {:?}",
+        left.keys()
+    );
+    assert!(
+        left.keys()
+            .all(|k| !k.contains("too-big") && !k.contains(".part")),
+        "nothing half-written is left: {:?}",
+        left.keys()
+    );
+}

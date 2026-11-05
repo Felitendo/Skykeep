@@ -101,6 +101,13 @@ jobs:
       - run: npx vite build
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --lib --bins --tests --locked --no-fail-fast
+      # A download onto a disk that really fills up (a 1 MB tmpfs): the disk's own refusal,
+      # not a made-up free-space number, stops it cleanly (folder_download/tests.rs).
+      - name: A real full disk
+        run: |
+          sudo mkdir -p /mnt/skykeep-full
+          sudo mount -t tmpfs -o size=1m,uid=$(id -u) tmpfs /mnt/skykeep-full
+          SKYKEEP_FULL_DISK=/mnt/skykeep-full cargo test --locked -p quince-app real_full_disk -- --ignored
 
   web:
     runs-on: ubuntu-24.04
