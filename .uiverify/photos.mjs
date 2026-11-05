@@ -172,9 +172,11 @@ await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(300);
 ok((await page.locator(".px-tile").count()) === 4, "Hide Photo takes it out of the library at once");
 await page.locator(".px-source", { hasText: "Hidden" }).click();
-// Locked, as Photos keeps Hidden (photos-hidden-lock.mjs): viewed first.
+// Locked, as icloud.com keeps Hidden (photos-hidden-lock.mjs): unlocked with the password first.
 await page.getByRole("button", { name: "View Hidden Photos" }).click();
-await page.waitForTimeout(250);
+await page.getByRole("dialog", { name: "View Hidden Photos" }).getByLabel("Password").fill("right");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(300);
 ok((await page.locator(".px-tile").count()) === 1, "and it is in Hidden");
 await page.locator(".px-tile").first().click();
 await page.keyboard.press("Control+l");
