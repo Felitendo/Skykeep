@@ -202,7 +202,9 @@ ok(await page.locator(".px-pan").evaluate((p) => {
 }), "zooming is drawn by the page: no transition, no will-change, no 3D layer, no compositor animation (each flickered)");
 ok(/full/.test((await page.locator(".px-sharp").getAttribute("src")) ?? ""), "and the full picture is laid over");
 await page.keyboard.press("Escape");
-await page.waitForTimeout(400); // the zoom glides
+// The zoom glides back: waited for until it is home (on a loaded machine the glide takes
+// longer than its usual 400 ms, and a fixed wait looked mid-glide).
+await page.waitForFunction(() => new DOMMatrix(getComputedStyle(document.querySelector(".px-pan")).transform).a === 1, null, { timeout: 3000 }).catch(() => {});
 ok((await scaleOf()) === 1 && (await page.locator(".px-viewer").count()) === 1, "Escape zooms back out first, and keeps the photo open");
 const box = await page.locator(".px-pan").boundingBox();
 await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
