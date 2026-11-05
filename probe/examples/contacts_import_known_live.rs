@@ -17,6 +17,7 @@ async fn main() -> Result<()> {
     use quince_icloud::contacts as c;
     let card = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:test;Quince dup;;;\r\nFN:Quince dup test\r\nTEL;type=CELL:+1 555 0199\r\nEND:VCARD\r\n";
     let (book, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     println!("before: known {}", c::already_in(card, &book));
     let (ids, _) = c::import_vcards(&http, &root, p.clone(), &tokens, card).await?;
     let id = ids
@@ -24,6 +25,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("nothing imported"))?
         .clone();
     let (book, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     println!("after import: known {}", c::already_in(card, &book));
     let other = card.replace("0199", "0123");
     println!(

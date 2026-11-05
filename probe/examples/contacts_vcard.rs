@@ -15,6 +15,7 @@ async fn main() -> Result<()> {
     let (http, p) = (client.http().clone(), client.service_params());
     use quince_icloud::contacts as c;
     let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     let card = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:test;Quince vCard;;;\r\nFN:Quince vCard test\r\nTEL;type=CELL:+1 555 0100\r\nEND:VCARD\r\n";
     let (ids, failed) = c::import_vcards(&http, &root, p.clone(), &tokens, card).await?;
     println!("imported {ids:?}, {failed} failed");
@@ -23,6 +24,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("nothing imported"))?
         .clone();
     let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     let out = c::export_vcards(
         &http,
         &root,
@@ -39,6 +41,7 @@ async fn main() -> Result<()> {
         out.contains("555")
     );
     let (people, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     let mine = people
         .iter()
         .find(|x| x.guid == id)

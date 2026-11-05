@@ -7,7 +7,7 @@
 //! sent with the card's current etag and the book's sync token, so Apple refuses it rather
 //! than overwrite a change it has not seen.
 
-use super::{address_wire, postal_from, startup, write, Tokens};
+use super::{address_wire, card, postal_from, write, Ledger};
 use crate::{Error, Result};
 use quince_core::contacts::{country_code_for, PostalAddress, ADDRESS_FIELDS};
 use serde::{Deserialize, Serialize};
@@ -333,29 +333,11 @@ pub async fn edit(
         return Ok(after);
     }
     let mut attempt = 0;
+    let ledger = Ledger::new();
     loop {
         attempt += 1;
-        let body = startup(http, root, params.clone()).await?;
-        let token = |key: &str| {
-            body.get(key)
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-                .ok_or_else(|| Error::Protocol(format!("/co/startup carried no {key}")))
-        };
-        let tokens = Tokens {
-            sync: token("syncToken")?,
-            pref: token("prefToken")?,
-        };
-        let Some(card) = body
-            .get("contacts")
-            .and_then(Value::as_array)
-            .and_then(|cards| {
-                cards
-                    .iter()
-                    .find(|c| c.get("contactId").and_then(Value::as_str) == Some(guid))
-            })
-            .cloned()
-        else {
+        // Read with the book's tokens, so the write goes against this very version.
+        let Some(card) = card(http, root, params.clone(), &ledger, guid).await? else {
             return Err(Error::Refused(
                 "Apple doesn't have this contact (yet, or any more), so the address wasn't saved."
                     .into(),
@@ -371,7 +353,7 @@ pub async fn edit(
             http,
             root,
             params.clone(),
-            &tokens,
+            &ledger,
             reqwest::Method::PUT,
             card,
         )

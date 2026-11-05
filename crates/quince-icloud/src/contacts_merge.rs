@@ -10,7 +10,7 @@
 
 use super::{
     address, card_written, contact_from, entry_label, entry_value, parse_lists, postal_from,
-    startup, string, write, ContactList, Tokens, METHOD_KEYS,
+    startup, string, write, ContactList, Ledger, Tokens, METHOD_KEYS,
 };
 use crate::{Error, Result};
 use quince_core::contacts::merge::{joined_notes, method_key};
@@ -213,10 +213,10 @@ pub async fn put(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     card: Value,
 ) -> Result<()> {
-    write(http, root, params, tokens, reqwest::Method::PUT, card).await?;
+    write(http, root, params, ledger, reqwest::Method::PUT, card).await?;
     Ok(())
 }
 
@@ -228,7 +228,7 @@ pub async fn delete_card(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     card: &Value,
 ) -> Result<()> {
     let Some(guid) = string(card, "contactId") else {
@@ -240,7 +240,7 @@ pub async fn delete_card(
         http,
         root,
         query,
-        tokens,
+        ledger,
         reqwest::Method::POST,
         serde_json::json!({ "contactId": guid, "etag": card.get("etag") }),
     )

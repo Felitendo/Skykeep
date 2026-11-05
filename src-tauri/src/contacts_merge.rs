@@ -228,12 +228,16 @@ pub async fn send(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
+    ledger: &c::Ledger,
     p: &Pending,
 ) -> Result<(), Error> {
     let m: ContactMerge = serde_json::from_str(&p.payload)
         .map_err(|e| Error::Refused(format!("A queued merge could not be read: {e}")))?;
     let book = match apple::read_book(http, root, params.clone()).await {
-        Ok(book) => book,
+        Ok(book) => {
+            ledger.hold(book.tokens.clone());
+            book
+        }
         Err(e) => {
             // Nothing of it reached Apple: it can still be undone.
             if unreached(&e) {
@@ -267,7 +271,7 @@ pub async fn send(
         }
     }
     if card != kept {
-        apple::put(http, root, params.clone(), &book.tokens, card).await?;
+        apple::put(http, root, params.clone(), ledger, card).await?;
     }
 
     // Into every list the others were in.
@@ -277,6 +281,7 @@ pub async fn send(
         .map(|a| a.card.contact.guid.as_str())
         .collect();
     let book = apple::read_book(http, root, params.clone()).await?;
+    ledger.hold(book.tokens.clone());
     for mut list in book.lists() {
         let had = list
             .members
@@ -284,24 +289,25 @@ pub async fn send(
             .any(|x| absorbed.iter().any(|a| same(a, x)));
         if had && !list.members.iter().any(|x| same(x, &p.record)) {
             list.members.push(p.record.clone());
-            let tokens = apple::read_book(http, root, params.clone()).await?.tokens;
-            c::update_list(http, root, params.clone(), &tokens, &list).await?;
+            c::update_list(http, root, params.clone(), ledger, &list).await?;
         }
     }
 
     // And the others gone. My Card moves to the kept card first, if it was one of them.
     let book = apple::read_book(http, root, params.clone()).await?;
+    ledger.hold(book.tokens.clone());
     let me = book.me();
     if me
         .as_deref()
         .is_some_and(|me| absorbed.iter().any(|a| same(a, me)))
     {
-        c::set_me_card(http, root, params.clone(), &book.tokens, &p.record).await?;
+        c::set_me_card(http, root, params.clone(), ledger, &p.record).await?;
     }
     for guid in absorbed {
         let book = apple::read_book(http, root, params.clone()).await?;
+        ledger.hold(book.tokens.clone());
         if let Some(card) = book.card(guid) {
-            apple::delete_card(http, root, params.clone(), &book.tokens, &card).await?;
+            apple::delete_card(http, root, params.clone(), ledger, &card).await?;
         }
     }
     Ok(())
@@ -420,11 +426,11 @@ pub async fn contacts_merge_undo(kept: String, data: State<'_, Data>) -> UiResul
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use quince_core::contacts::ContactMethod;
 
-    fn person(guid: &str, first: &str, phone: &str) -> Card {
+    pub(crate) fn person(guid: &str, first: &str, phone: &str) -> Card {
         Card {
             contact: Contact {
                 guid: guid.into(),
@@ -568,7 +574,7 @@ mod tests {
 
     /// Apple's contacts service, enough of it to merge against: it keeps the cards and lists
     /// it is sent, and counts every write.
-    mod apple_stub {
+    pub(crate) mod apple_stub {
         use serde_json::{json, Value};
         use std::sync::{Arc, Mutex as StdMutex};
         use wiremock::{Request, Respond, ResponseTemplate};
@@ -579,6 +585,8 @@ mod tests {
             pub groups: Vec<Value>,
             pub writes: Vec<String>,
             pub version: u64,
+            /// Whether a write is answered with the new tokens, as Apple may or may not.
+            pub answers_tokens: bool,
         }
 
         #[derive(Clone)]
@@ -602,8 +610,23 @@ mod tests {
                         "contacts": b.cards, "groups": b.groups, "contactsOrder": order,
                     }));
                 }
+                // As Apple: a write carrying a sync token an earlier write spent is refused.
+                let token = req
+                    .url
+                    .query_pairs()
+                    .find(|(k, _)| k == "syncToken")
+                    .map(|(_, v)| v.to_string());
+                if token.as_deref() != Some(format!("S{}", b.version).as_str()) {
+                    b.writes.push(format!("refused, spent token {token:?}"));
+                    return ResponseTemplate::new(412);
+                }
                 b.version += 1;
                 let v = b.version;
+                let answer = if b.answers_tokens {
+                    json!({ "syncToken": format!("S{v}"), "prefToken": "P" })
+                } else {
+                    json!({})
+                };
                 if path.contains("/co/contacts/card") {
                     let card = body["contacts"][0].clone();
                     let id = card["contactId"].as_str().unwrap_or("").to_string();
@@ -623,7 +646,7 @@ mod tests {
                     b.groups.retain(|x| x["groupId"] != g["groupId"]);
                     b.groups.push(g);
                 }
-                ResponseTemplate::new(200).set_body_json(json!({}))
+                ResponseTemplate::new(200).set_body_json(answer)
             }
         }
     }
@@ -632,6 +655,17 @@ mod tests {
     /// other is gone; sent again — a send cut off, retried — nothing more is written.
     #[test]
     fn a_merge_sent_twice_lands_once_and_loses_nothing() {
+        merge_sent_twice(false);
+    }
+
+    /// The same, where Apple answers each write with its new tokens: the writes in a row go
+    /// with those, and none is refused for a token an earlier write spent.
+    #[test]
+    fn a_merge_carries_the_tokens_each_write_is_answered_with() {
+        merge_sent_twice(true);
+    }
+
+    fn merge_sent_twice(answers_tokens: bool) {
         use serde_json::json;
         tauri::async_runtime::block_on(async {
             let server = wiremock::MockServer::start().await;
@@ -650,7 +684,9 @@ mod tests {
                     ],
                     groups: vec![
                         json!({ "groupId": "L1", "name": "Family", "contactIds": ["A", "C"], "etag": "g1" }),
+                        json!({ "groupId": "L2", "name": "Work", "contactIds": ["A"], "etag": "g2" }),
                     ],
+                    answers_tokens,
                     ..Default::default()
                 },
             )));
@@ -664,7 +700,9 @@ mod tests {
             assert_eq!(kept, "B", "the card holding the most");
             let p = lib.lock().await.outbox_pending(CONTACTS).unwrap().remove(0);
             let http = reqwest::Client::new();
-            send(&lib, &http, &server.uri(), vec![], &p).await.unwrap();
+            send(&lib, &http, &server.uri(), vec![], &c::Ledger::new(), &p)
+                .await
+                .unwrap();
 
             {
                 let b = apple.0.lock().unwrap();
@@ -691,11 +729,14 @@ mod tests {
                     .as_array()
                     .unwrap()
                     .contains(&json!(kept)));
-                assert_eq!(b.writes.len(), 3, "{:?}", b.writes);
+                // The card, two lists, the other card gone — and not one write refused.
+                assert_eq!(b.writes.len(), 4, "{:?}", b.writes);
             }
             // Sent again: nothing more to write.
-            send(&lib, &http, &server.uri(), vec![], &p).await.unwrap();
-            assert_eq!(apple.0.lock().unwrap().writes.len(), 3);
+            send(&lib, &http, &server.uri(), vec![], &c::Ledger::new(), &p)
+                .await
+                .unwrap();
+            assert_eq!(apple.0.lock().unwrap().writes.len(), 4);
         });
     }
 }

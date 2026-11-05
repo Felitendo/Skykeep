@@ -75,7 +75,14 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let (first, original) = &copies[0];
-    c::delete(&http, &root, p.clone(), &tokens, first).await?;
+    c::delete(
+        &http,
+        &root,
+        p.clone(),
+        &c::Ledger::holding(tokens.clone()),
+        first,
+    )
+    .await?;
     let (book2, mut tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
     let kept = book2.iter().any(|x| &x.guid == original);
     let gone = !book2.iter().any(|x| x.guid == first.guid);
@@ -90,7 +97,15 @@ async fn main() -> Result<()> {
         if !book2.iter().any(|x| x.guid == original) {
             continue;
         }
-        match c::delete(&http, &root, p.clone(), &tokens, &copy).await {
+        match c::delete(
+            &http,
+            &root,
+            p.clone(),
+            &c::Ledger::holding(tokens.clone()),
+            &copy,
+        )
+        .await
+        {
             // Each delete moves the book's sync token on: read it before the next.
             Ok(()) => {
                 done += 1;

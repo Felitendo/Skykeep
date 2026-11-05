@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
     let read = |guid: String| {
         let (http, root, p) = (http.clone(), root.clone(), p.clone());
         async move {
-            let card = c::card(&http, &root, p, &guid).await?;
+            let card = c::card(&http, &root, p, &c::Ledger::new(), &guid).await?;
             let contact = card.as_ref().and_then(|v| {
                 c::parse_cards(&serde_json::json!({ "contacts": [v] }))
                     .pop()
@@ -50,6 +50,7 @@ async fn main() -> Result<()> {
         methods: vec![],
     };
     let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     let guid = c::create(&http, &root, p.clone(), &tokens, &throwaway).await?;
     let result = async {
         // A picture added, as the form sends one: the JPEG as a data: URL with its square.
@@ -62,6 +63,7 @@ async fn main() -> Result<()> {
         ));
         with.photo_crop = Some("0,0,600,600".into());
         let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+        let tokens = c::Ledger::holding(tokens);
         c::update_from(
             &http,
             &root,
@@ -102,6 +104,7 @@ async fn main() -> Result<()> {
         let mut moved = now.clone();
         moved.photo_crop = Some("100,100,400,400".into());
         let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+        let tokens = c::Ledger::holding(tokens);
         c::update_from(
             &http,
             &root,
@@ -129,6 +132,7 @@ async fn main() -> Result<()> {
         none.photo_crop = None;
         none.photo_signature = None;
         let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+        let tokens = c::Ledger::holding(tokens);
         c::update_from(
             &http,
             &root,
@@ -154,6 +158,7 @@ async fn main() -> Result<()> {
     let (_, last) = read(guid.clone()).await?;
     if let Some(last) = last {
         let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+        let tokens = c::Ledger::holding(tokens);
         c::delete(&http, &root, p.clone(), &tokens, &last).await?;
     }
     let (card, _) = read(guid).await?;

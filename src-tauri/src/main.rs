@@ -4048,6 +4048,7 @@ async fn contact_list_write(
             quince_icloud::contacts::fetch_book_with_tokens(&http, &root, params.clone())
                 .await
                 .map_err(|e| e.to_string())?;
+        let tokens = quince_icloud::contacts::Ledger::holding(tokens);
         let written = match guid.as_deref().filter(|g| !g.is_empty()) {
             None => {
                 quince_icloud::contacts::create_list(
@@ -4212,9 +4213,8 @@ async fn contacts_export(
         return Err("Choose someone to export.".into());
     }
     let (http, root, params) = contacts_context(&auth).await?;
-    let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    // An export changes nothing; its tokens are read with the book on the way.
+    let tokens = quince_icloud::contacts::Ledger::new();
     let vcard =
         quince_icloud::contacts::export_vcards(&http, &root, params, &tokens, &guids, &file_name)
             .await
@@ -4274,6 +4274,9 @@ async fn contacts_import(
     let (book, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
         .await
         .map_err(|e| e.to_string())?;
+    // Each batch is a write that moves the book on: the next carries the tokens Apple
+    // answered it with, or reads them again — never the first batch's spent ones.
+    let tokens = quince_icloud::contacts::Ledger::holding(tokens);
     // Someone already in Contacts is left out, as Apple's Contacts leaves them: an export of
     // this same book imported back once doubled every person in it.
     let before = cards.len();
@@ -4317,9 +4320,7 @@ async fn contact_set_me(
 ) -> UiResult<()> {
     let _one = CONTACTS_PASS.lock().await;
     let (http, root, params) = contacts_context(&auth).await?;
-    let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    let tokens = quince_icloud::contacts::Ledger::new();
     quince_icloud::contacts::set_me_card(&http, &root, params.clone(), &tokens, &guid)
         .await
         .map_err(|e| e.to_string())?;

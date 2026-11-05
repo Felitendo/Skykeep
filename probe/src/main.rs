@@ -1762,6 +1762,7 @@ async fn main() -> Result<()> {
             match quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone()).await {
                 Err(e) => println!("  \x1b[31mFAIL\x1b[0m tokens: {e}"),
                 Ok((_, tokens)) => {
+                    let tokens = quince_icloud::contacts::Ledger::holding(tokens);
                     let draft = quince_core::contacts::Contact {
                         guid: String::new(),
                         first_name: Some("Quince".into()),
@@ -1814,11 +1815,12 @@ async fn main() -> Result<()> {
                                     params.clone(),
                                 )
                                 .await
-                                .map(|(_, t)| t);
+                                .map(|(_, t)| quince_icloud::contacts::Ledger::holding(t));
                                 let card = quince_icloud::contacts::card(
                                     &http,
                                     &root,
                                     params.clone(),
+                                    &quince_icloud::contacts::Ledger::new(),
                                     &guid,
                                 )
                                 .await
@@ -1858,7 +1860,7 @@ async fn main() -> Result<()> {
                                     params.clone(),
                                 )
                                 .await
-                                .map(|(_, t)| t);
+                                .map(|(_, t)| quince_icloud::contacts::Ledger::holding(t));
                                 match (latest, tokens) {
                                     (Some(c), Ok(tokens)) => match quince_icloud::contacts::delete(
                                         &http, &root, params.clone(), &tokens, &c,

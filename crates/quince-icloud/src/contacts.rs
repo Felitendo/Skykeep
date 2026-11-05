@@ -372,6 +372,98 @@ pub fn parse(body: &Value) -> Vec<Contact> {
         .unwrap_or_default()
 }
 
+/// The tokens the next write to Contacts carries, kept through a run of writes.
+///
+/// Every write changes the address book, and with it the sync token: the token a write was
+/// sent with is spent once Apple takes it. A run of writes (an import in batches, a merge, the
+/// queue sent in order) therefore never reuses one. A write Apple answers with new tokens
+/// leaves those for the next; one answered without them, or not taken, leaves none, and the
+/// next write reads the book again first. Tokens a read of the book just returned are fresh,
+/// and are what the first write carries.
+#[derive(Debug, Default)]
+pub struct Ledger {
+    held: std::sync::Mutex<Option<Tokens>>,
+}
+
+impl Ledger {
+    /// No tokens yet: the first write reads them.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Tokens read with the book a moment ago, for the next write.
+    #[must_use]
+    pub fn holding(tokens: Tokens) -> Self {
+        Ledger {
+            held: std::sync::Mutex::new(Some(tokens)),
+        }
+    }
+
+    /// Tokens a read of the book just returned: the next write carries them.
+    pub fn hold(&self, tokens: Tokens) {
+        *self.held() = Some(tokens);
+    }
+
+    /// Whether it holds tokens no write has spent yet. Without them the next write reads the
+    /// book first.
+    #[must_use]
+    pub fn has_tokens(&self) -> bool {
+        self.held().is_some()
+    }
+
+    /// A write made outside the ledger (with tokens it read itself) has moved the book on:
+    /// the tokens held are spent.
+    pub fn spend(&self) {
+        *self.held() = None;
+    }
+
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Tokens>> {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// What the next write carries: tokens not yet spent, or the book's own, read now.
+    async fn tokens(
+        &self,
+        http: &reqwest::Client,
+        root: &str,
+        params: Vec<(String, String)>,
+    ) -> Result<Tokens> {
+        if let Some(tokens) = self.held().clone() {
+            return Ok(tokens);
+        }
+        let body = startup(http, root, params).await?;
+        self.read(&body)
+    }
+
+    /// A read of the whole book: its tokens are the current ones.
+    fn read(&self, body: &Value) -> Result<Tokens> {
+        let tokens = Tokens::of_startup(body)?;
+        *self.held() = Some(tokens.clone());
+        Ok(tokens)
+    }
+
+    /// After a write: the tokens Apple answered with, if it did; otherwise none — the next
+    /// write reads them again rather than send these twice.
+    fn answered(&self, body: Option<&Value>) {
+        let mut held = self.held();
+        let next = body.and_then(|b| {
+            let sync = b.get("syncToken").and_then(Value::as_str)?.to_string();
+            let pref = b
+                .get("prefToken")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .or_else(|| held.as_ref().map(|t| t.pref.clone()))?;
+            // The same token back is no new token: the write may still have moved the book.
+            (held.as_ref().map(|t| t.sync.as_str()) != Some(sync.as_str()))
+                .then_some(Tokens { sync, pref })
+        });
+        *held = next;
+    }
+}
+
 /// The tokens Apple hands out at startup, which every write has to carry.
 ///
 /// `syncToken` is how the service knows which version of the address book a change is based
@@ -384,6 +476,20 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// The tokens a `/co/startup` answer carries.
+    fn of_startup(body: &Value) -> Result<Self> {
+        let token = |key: &str| {
+            body.get(key)
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .ok_or_else(|| Error::Protocol(format!("/co/startup carried no {key}")))
+        };
+        Ok(Tokens {
+            sync: token("syncToken")?,
+            pref: token("prefToken")?,
+        })
+    }
+
     /// As kept in the library's sync position for Contacts.
     #[must_use]
     pub fn stored(&self) -> String {
@@ -787,6 +893,20 @@ async fn write(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
+    ledger: &Ledger,
+    method: reqwest::Method,
+    card: Value,
+) -> Result<Value> {
+    let tokens = ledger.tokens(http, root, params.clone()).await?;
+    let answer = write_with(http, root, params, &tokens, method, card).await;
+    ledger.answered(answer.as_ref().ok());
+    answer
+}
+
+async fn write_with(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
     tokens: &Tokens,
     method: reqwest::Method,
     card: Value,
@@ -839,7 +959,7 @@ pub async fn create(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     contact: &Contact,
 ) -> Result<String> {
     // Apple keeps a card that is only a number or an address — "No Name" on the phone — so
@@ -857,7 +977,7 @@ pub async fn create(
     // Apple's own client mints the id rather than asking the service for one.
     let guid = new_contact_id();
     // A fresh id: no card can hold it yet.
-    write_new(http, root, params, tokens, &guid, contact).await?;
+    write_new(http, root, params, ledger, &guid, contact).await?;
     Ok(guid)
 }
 
@@ -882,7 +1002,7 @@ pub async fn create_named(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     guid: &str,
     contact: &Contact,
 ) -> Result<()> {
@@ -891,28 +1011,31 @@ pub async fn create_named(
             "Add a name, a phone number or an email address first.".into(),
         ));
     }
-    if card(http, root, params.clone(), guid).await?.is_some() {
+    if card(http, root, params.clone(), ledger, guid)
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
-    write_new(http, root, params, tokens, guid, contact).await
+    write_new(http, root, params, ledger, guid, contact).await
 }
 
 async fn write_new(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     guid: &str,
     contact: &Contact,
 ) -> Result<()> {
-    write_new_card(http, root, params, tokens, guid, contact, None).await
+    write_new_card(http, root, params, ledger, guid, contact, None).await
 }
 
 async fn write_new_card(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     guid: &str,
     contact: &Contact,
     details: Option<&ContactDetails>,
@@ -925,7 +1048,7 @@ async fn write_new_card(
         http,
         root,
         params,
-        tokens,
+        ledger,
         reqwest::Method::POST,
         card_written(&fresh, details, None, None, None),
     )
@@ -938,7 +1061,7 @@ pub async fn create_card_named(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     guid: &str,
     card: &Card,
 ) -> Result<()> {
@@ -947,7 +1070,7 @@ pub async fn create_card_named(
             "Add a name, a phone number or an email address first.".into(),
         ));
     }
-    if self::card(http, root, params.clone(), guid)
+    if self::card(http, root, params.clone(), ledger, guid)
         .await?
         .is_some()
     {
@@ -957,7 +1080,7 @@ pub async fn create_card_named(
         http,
         root,
         params,
-        tokens,
+        ledger,
         guid,
         &card.contact,
         Some(&card.details),
@@ -971,7 +1094,7 @@ pub async fn update_card(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     card: &Card,
     existing: Option<&Value>,
     base: Option<&Card>,
@@ -985,7 +1108,7 @@ pub async fn update_card(
         http,
         root,
         params,
-        tokens,
+        ledger,
         reqwest::Method::PUT,
         card_written(
             &card.contact,
@@ -1007,11 +1130,11 @@ pub async fn update(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     contact: &Contact,
     existing: Option<&Value>,
 ) -> Result<()> {
-    update_from(http, root, params, tokens, contact, existing, None).await
+    update_from(http, root, params, ledger, contact, existing, None).await
 }
 
 /// [`update`], writing only what changed from `base` — the card as the form opened it — over
@@ -1021,7 +1144,7 @@ pub async fn update_from(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     contact: &Contact,
     existing: Option<&Value>,
     base: Option<&Contact>,
@@ -1035,7 +1158,7 @@ pub async fn update_from(
         http,
         root,
         params,
-        tokens,
+        ledger,
         reqwest::Method::PUT,
         card_merged(contact, existing, base),
     )
@@ -1048,13 +1171,13 @@ pub async fn delete(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     contact: &Contact,
 ) -> Result<()> {
     // The tag Apple holds now, not the one stored at the last sync: a card edited on the
     // phone since then was refused as a conflict, and the delete failed for no reason a
     // person could see. Gone already is done.
-    let Some(current) = card(http, root, params.clone(), &contact.guid).await? else {
+    let Some(current) = card(http, root, params.clone(), ledger, &contact.guid).await? else {
         return Ok(());
     };
     let etag = current
@@ -1068,7 +1191,7 @@ pub async fn delete(
         http,
         root,
         query,
-        tokens,
+        ledger,
         reqwest::Method::POST,
         serde_json::json!({
             "contactId": contact.guid,
@@ -1079,14 +1202,20 @@ pub async fn delete(
     Ok(())
 }
 
-/// Apple's card for one person, as it currently stands.
+/// Apple's card for one person, as it currently stands. The book is read whole for it, so
+/// its tokens go to `ledger`: the write that follows carries the tokens of the very version
+/// it was made against.
 pub async fn card(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
+    ledger: &Ledger,
     guid: &str,
 ) -> Result<Option<Value>> {
     let body = startup(http, root, params).await?;
+    if ledger.read(&body).is_err() {
+        *ledger.held() = None;
+    }
     Ok(body
         .get("contacts")
         .and_then(Value::as_array)
@@ -1186,6 +1315,20 @@ async fn write_list(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
+    ledger: &Ledger,
+    method: Option<&str>,
+    group: Value,
+) -> Result<Value> {
+    let tokens = ledger.tokens(http, root, params.clone()).await?;
+    let answer = write_list_with(http, root, params, &tokens, method, group).await;
+    ledger.answered(answer.as_ref().ok());
+    answer
+}
+
+async fn write_list_with(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
     tokens: &Tokens,
     method: Option<&str>,
     group: Value,
@@ -1255,7 +1398,7 @@ pub async fn create_list(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     name: &str,
     members: &[String],
 ) -> Result<String> {
@@ -1268,7 +1411,7 @@ pub async fn create_list(
         http,
         root,
         params,
-        tokens,
+        ledger,
         None,
         serde_json::json!({ "groupId": guid, "name": name, "contactIds": members }),
     )
@@ -1281,14 +1424,14 @@ pub async fn update_list(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     list: &ContactList,
 ) -> Result<()> {
     write_list(
         http,
         root,
         params,
-        tokens,
+        ledger,
         Some("PUT"),
         serde_json::json!({ "groupId": list.guid, "etag": list.etag, "name": list.name, "contactIds": list.members }),
     )
@@ -1301,14 +1444,14 @@ pub async fn delete_list(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     guid: &str,
 ) -> Result<()> {
     write_list(
         http,
         root,
         params,
-        tokens,
+        ledger,
         Some("DELETE"),
         serde_json::json!({ "groupId": guid }),
     )
@@ -1319,6 +1462,25 @@ pub async fn delete_list(
 /// A plain-text call to Contacts with the address book's tokens, as icloud.com makes its
 /// export, import and my-card calls. Answers with Apple's reply as text.
 async fn co_text(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    ledger: &Ledger,
+    method: reqwest::Method,
+    path: &str,
+    body: String,
+) -> Result<String> {
+    let tokens = ledger.tokens(http, root, params.clone()).await?;
+    let answer = co_text_with(http, root, params, &tokens, method, path, body).await;
+    let json = answer
+        .as_ref()
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(t).ok());
+    ledger.answered(json.as_ref().filter(|_| answer.is_ok()));
+    answer
+}
+
+async fn co_text_with(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
@@ -1364,7 +1526,7 @@ pub async fn export_vcards(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     ids: &[String],
     file_name: &str,
 ) -> Result<String> {
@@ -1373,7 +1535,7 @@ pub async fn export_vcards(
         http,
         root,
         params,
-        tokens,
+        ledger,
         reqwest::Method::POST,
         "co/export/",
         body.to_string(),
@@ -1772,7 +1934,7 @@ pub async fn import_vcards(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     vcard: &str,
 ) -> Result<(Vec<String>, usize)> {
     // Apple's own ceiling for an import, checked here so the refusal says why.
@@ -1788,7 +1950,7 @@ pub async fn import_vcards(
         http,
         root,
         params,
-        tokens,
+        ledger,
         reqwest::Method::POST,
         "co/import/",
         vcard.to_string(),
@@ -1817,7 +1979,7 @@ pub async fn set_me_card(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-    tokens: &Tokens,
+    ledger: &Ledger,
     id: &str,
 ) -> Result<()> {
     let body = serde_json::json!({ "meCardId": id });
@@ -1825,7 +1987,7 @@ pub async fn set_me_card(
         http,
         root,
         params,
-        tokens,
+        ledger,
         reqwest::Method::PUT,
         "co/mecardid",
         body.to_string(),
@@ -2586,11 +2748,11 @@ mod write_tests {
         }
     }
 
-    fn tokens() -> Tokens {
-        Tokens {
+    fn tokens() -> Ledger {
+        Ledger::holding(Tokens {
             sync: "SYNC".into(),
             pref: "PREF".into(),
-        }
+        })
     }
 
     async fn server() -> MockServer {
@@ -2801,7 +2963,8 @@ mod write_tests {
         let server = server().await;
         Mock::given(path_regex(r".*/co/startup$"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "contacts": [{ "contactId": "C1", "etag": "v2" }]
+                "contacts": [{ "contactId": "C1", "etag": "v2" }],
+                "syncToken": "SYNC-NOW", "prefToken": "PREF",
             })))
             .mount(&server)
             .await;
@@ -2824,8 +2987,150 @@ mod write_tests {
         let query: std::collections::HashMap<_, _> = request.url.query_pairs().collect();
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(query["method"], "DELETE");
+        // The tokens of the read the etag came from, not older ones held before it.
+        assert_eq!(query["syncToken"], "SYNC-NOW");
         assert_eq!(body["contacts"][0]["contactId"], "C1");
         assert_eq!(body["contacts"][0]["etag"], "v2");
+    }
+
+    /// A run of writes never sends a token twice: the next write carries the tokens Apple
+    /// answered the last with, and where Apple's answer carried none the book is read again
+    /// for fresh ones before the next write goes.
+    #[tokio::test]
+    async fn a_run_of_writes_never_sends_a_spent_token() {
+        let server = MockServer::start().await;
+        // The first write is answered with new tokens; the second without any.
+        Mock::given(path_regex(r".*/co/contacts/card$"))
+            .and(wiremock::matchers::query_param("syncToken", "S1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contacts": [], "syncToken": "S2", "prefToken": "P1",
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/contacts/card$"))
+            .and(wiremock::matchers::query_param("syncToken", "S2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "contacts": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/contacts/card$"))
+            .and(wiremock::matchers::query_param("syncToken", "S3"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "contacts": [] })))
+            .mount(&server)
+            .await;
+        // A spent token is refused as Apple refuses one.
+        Mock::given(path_regex(r".*/co/contacts/card$"))
+            .respond_with(ResponseTemplate::new(412))
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/startup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contacts": [], "syncToken": "S3", "prefToken": "P1",
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let ledger = Ledger::holding(Tokens {
+            sync: "S1".into(),
+            pref: "P0".into(),
+        });
+        for _ in 0..3 {
+            create(&http, &server.uri(), vec![], &ledger, &person())
+                .await
+                .expect("every write carries a live token");
+        }
+        let sent: Vec<(String, String)> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let q: std::collections::HashMap<_, _> = r.url.query_pairs().collect();
+                (
+                    r.url
+                        .path()
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string(),
+                    q.get("syncToken")
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        let pairs: Vec<(&str, &str)> = sent.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        assert_eq!(
+            pairs,
+            [
+                ("card", "S1"),
+                ("card", "S2"),
+                ("startup", ""),
+                ("card", "S3")
+            ]
+        );
+
+        // A write that fails leaves no token behind either.
+        let ledger = Ledger::holding(Tokens {
+            sync: "OLD".into(),
+            pref: "P0".into(),
+        });
+        assert!(matches!(
+            create(&http, &server.uri(), vec![], &ledger, &person()).await,
+            Err(Error::Conflict)
+        ));
+        assert!(ledger.held().is_none());
+    }
+
+    /// An import in batches: the second batch went with the first's token, which the first
+    /// had spent. It now carries the token the first was answered with, or reads one.
+    #[tokio::test]
+    async fn an_import_in_batches_carries_a_live_token_for_each() {
+        let server = MockServer::start().await;
+        Mock::given(path_regex(r".*/co/import/$"))
+            .and(wiremock::matchers::query_param("syncToken", "S1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "importedContactIds": ["N1"], "syncToken": "S2", "prefToken": "P",
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/import/$"))
+            .and(wiremock::matchers::query_param("syncToken", "S2"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "importedContactIds": ["N2"] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/import/$"))
+            .and(wiremock::matchers::query_param("syncToken", "S3"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "importedContactIds": ["N3"] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/import/$"))
+            .respond_with(ResponseTemplate::new(412))
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/startup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contacts": [], "syncToken": "S3", "prefToken": "P",
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let ledger = Ledger::holding(Tokens {
+            sync: "S1".into(),
+            pref: "P".into(),
+        });
+        let vcard = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:A\r\nEND:VCARD\r\n";
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let (got, _) = import_vcards(&http, &server.uri(), vec![], &ledger, vcard)
+                .await
+                .expect("each batch carries a live token");
+            ids.extend(got);
+        }
+        assert_eq!(ids, ["N1", "N2", "N3"]);
     }
 
     /// A card Apple no longer has is already deleted: nothing is sent and nothing fails.

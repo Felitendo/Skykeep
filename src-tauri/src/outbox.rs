@@ -1753,10 +1753,13 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
     let Some(account) = crate::asked_as(&params) else {
         return Outcome::Later;
     };
-    // The book read once for the run, not once for each change in it.
+    // The book read once for the run, not once for each change in it — while Apple's answers
+    // keep the run in tokens. The ledger holds the tokens the next write carries: the read's,
+    // then each write's answer's, never one an earlier write spent.
     let book = std::sync::Mutex::new(Book::default());
+    let ledger = quince_icloud::contacts::Ledger::new();
     let report = drain_as(&data.0, CONTACTS, &crate::CONTACTS_PASS, &account, |p| {
-        send_contact(&data.0, &http, &root, params.clone(), p, &book)
+        send_contact(&data.0, &http, &root, params.clone(), p, &book, &ledger)
     })
     .await;
     tell_refused(app, CONTACTS, &report);
@@ -1769,25 +1772,28 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
 
 /// The address book a run of queued contact changes is sent from: read once for the run, not
 /// once for each change — every read is the whole book, every card in it. A card the run has
-/// written since is read again before it is written again (the copy here is from before), and
-/// a write Apple says was made against an old book is sent once more from a fresh read.
+/// written since is read again before it is written again (the copy here is from before); so
+/// is the book when the last write's answer left no tokens to carry on with (see
+/// [`quince_icloud::contacts::Ledger`]); and a write Apple says was made against an old book
+/// is sent once more from a fresh read.
 #[derive(Default)]
 struct Book {
     read: Option<std::sync::Arc<BookRead>>,
     written: std::collections::HashSet<String>,
 }
 
-/// One read of the book: each card as Apple wrote it, by id, and the tokens a write needs.
+/// One read of the book: each card as Apple wrote it, by id.
 struct BookRead {
     cards: std::collections::HashMap<String, serde_json::Value>,
-    tokens: quince_icloud::contacts::Tokens,
 }
 
 impl Book {
-    /// The book to send a change to `record` from, read now if the run has none it can use;
-    /// and whether it was read just now.
+    /// The book to send a change to `record` from, read now if the run has none it can use —
+    /// none read yet, `record` written since, or no live tokens left to write with; and
+    /// whether it was read just now. A read hands its tokens to `ledger`.
     async fn for_record(
         book: &std::sync::Mutex<Self>,
+        ledger: &quince_icloud::contacts::Ledger,
         http: &reqwest::Client,
         root: &str,
         params: &[(String, String)],
@@ -1797,13 +1803,16 @@ impl Book {
             let b = book
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            b.read.clone().filter(|_| !b.written.contains(record))
+            b.read
+                .clone()
+                .filter(|_| !b.written.contains(record) && ledger.has_tokens())
         };
         if let Some(read) = kept {
             return Ok((read, false));
         }
         let (cards, tokens) =
             quince_icloud::contacts::cards_with_tokens(http, root, params.to_vec()).await?;
+        ledger.hold(tokens);
         let cards = cards
             .into_iter()
             .filter_map(|card| {
@@ -1814,7 +1823,7 @@ impl Book {
         let mut b = book
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let read = std::sync::Arc::new(BookRead { cards, tokens });
+        let read = std::sync::Arc::new(BookRead { cards });
         b.read = Some(std::sync::Arc::clone(&read));
         b.written.clear();
         Ok((read, true))
@@ -1843,28 +1852,30 @@ async fn send_contact(
     params: Vec<(String, String)>,
     p: Pending,
     book: &std::sync::Mutex<Book>,
+    ledger: &quince_icloud::contacts::Ledger,
 ) -> Result<(), Error> {
     use quince_icloud::contacts as c;
     if p.kind == "merge" {
         // A merge writes and deletes cards of its own, read by itself.
         Book::forget(book);
-        return crate::contacts_merge::send(library, http, root, params, &p).await;
+        return crate::contacts_merge::send(library, http, root, params, ledger, &p).await;
     }
     if p.kind == "address" {
         let a: ContactAddress = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
         Book::wrote(book, &p.record);
-        return c::address::edit(http, root, params, &p.record, &a.base, &a.edits)
-            .await
-            .map(|_| ());
+        // It reads the card and its tokens itself: the run's tokens are spent by its write.
+        let edited = c::address::edit(http, root, params, &p.record, &a.base, &a.edits).await;
+        ledger.spend();
+        return edited.map(|_| ());
     }
-    let (read, fresh) = Book::for_record(book, http, root, &params, &p.record).await?;
-    let sent = send_contact_from(http, root, params.clone(), &p, &read).await;
+    let (read, fresh) = Book::for_record(book, ledger, http, root, &params, &p.record).await?;
+    let sent = send_contact_from(http, root, params.clone(), &p, &read, ledger).await;
     if matches!(sent, Err(Error::Conflict)) && !fresh {
         // Made against a book read earlier in the run, which Apple says is old now: from a
         // fresh read, once.
         Book::forget(book);
-        let (read, _) = Book::for_record(book, http, root, &params, &p.record).await?;
-        let again = send_contact_from(http, root, params, &p, &read).await;
+        let (read, _) = Book::for_record(book, ledger, http, root, &params, &p.record).await?;
+        let again = send_contact_from(http, root, params, &p, &read, ledger).await;
         Book::wrote(book, &p.record);
         return again;
     }
@@ -1872,24 +1883,25 @@ async fn send_contact(
     sent
 }
 
-/// One queued card change sent, from `read`: Apple's card as it was read, and its tokens.
+/// One queued card change sent, from `read`: Apple's card as it was read, with the tokens
+/// `ledger` holds.
 async fn send_contact_from(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
     p: &Pending,
     read: &BookRead,
+    ledger: &quince_icloud::contacts::Ledger,
 ) -> Result<(), Error> {
     use quince_icloud::contacts as c;
-    let tokens = &read.tokens;
     let card = read.cards.get(&p.record);
     if p.kind == "delete" {
-        // Gone already — deleted elsewhere, or by an earlier send of this one.
-        let Some(card) = card.and_then(|v| c::parse(&serde_json::json!({ "contacts": [v] })).pop())
-        else {
+        // Gone already — deleted elsewhere, or by an earlier send of this one. Otherwise
+        // against the version read: changed since, Apple refuses it as a conflict.
+        let Some(card) = card else {
             return Ok(());
         };
-        return c::delete(http, root, params, tokens, &card).await;
+        return c::merge::delete_card(http, root, params, ledger, card).await;
     }
     let s: ContactSave = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
     if let Some(details) = &s.details {
@@ -1899,7 +1911,11 @@ async fn send_contact_from(
         };
         let mine = whole(&s.contact, details);
         if s.create {
-            return c::create_card_named(http, root, params, tokens, &p.record, &mine).await;
+            // Already made — an earlier send of this one — is done.
+            if card.is_some() {
+                return Ok(());
+            }
+            return c::create_card_named(http, root, params, ledger, &p.record, &mine).await;
         }
         // A base from before the form showed these has none: compared with Apple's own, so
         // only what this form changed is written.
@@ -1916,16 +1932,19 @@ async fn send_contact_from(
             .base
             .as_ref()
             .map(|b| whole(b, &base_details.clone().unwrap_or_default()));
-        return c::update_card(http, root, params, tokens, &mine, card, base.as_ref()).await;
+        return c::update_card(http, root, params, ledger, &mine, card, base.as_ref()).await;
     }
     if s.create {
-        return c::create_named(http, root, params, tokens, &p.record, &s.contact).await;
+        if card.is_some() {
+            return Ok(());
+        }
+        return c::create_named(http, root, params, ledger, &p.record, &s.contact).await;
     }
     c::update_from(
         http,
         root,
         params,
-        tokens,
+        ledger,
         &s.contact,
         card,
         s.base.as_ref(),
@@ -3706,8 +3725,9 @@ mod tests {
     }
 
     /// Three cards edited offline go in one run from one read of the address book — each read
-    /// is the whole book — not two reads for each card; a card edited twice is read again
-    /// before its second write, its copy from before the first being old.
+    /// is the whole book — not two reads for each card, while Apple answers each write with
+    /// the tokens for the next; a card edited twice is read again before its second write, its
+    /// copy from before the first being old.
     #[tokio::test]
     async fn queued_card_edits_are_sent_from_one_read_of_the_book() {
         use wiremock::matchers::{method, path, path_regex};
@@ -3722,10 +3742,14 @@ mod tests {
             })))
             .mount(&server)
             .await;
+        let answered = std::sync::atomic::AtomicU64::new(0);
         Mock::given(path_regex(r".*/co/contacts/card$"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "contacts": [] })),
-            )
+            .respond_with(move |_: &wiremock::Request| {
+                let n = answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "contacts": [], "syncToken": format!("S{n}"), "prefToken": "P",
+                }))
+            })
             .mount(&server)
             .await;
 
@@ -3742,9 +3766,10 @@ mod tests {
         let lib = crate::library_lock::LibraryLock::new(l, None);
         let http = reqwest::Client::new();
         let book = std::sync::Mutex::new(Book::default());
+        let ledger = quince_icloud::contacts::Ledger::new();
         let root = server.uri();
         let report = drain_as(&lib, CONTACTS, &Mutex::new(()), "me", |p| {
-            send_contact(&lib, &http, &root, Vec::new(), p, &book)
+            send_contact(&lib, &http, &root, Vec::new(), p, &book, &ledger)
         })
         .await;
         assert!(report.refused.is_empty(), "{:?}", report.refused);
@@ -4062,5 +4087,82 @@ mod held_tests {
             "never held"
         );
         assert!(!held(NOTES, &[]), "approved: sent");
+    }
+
+    /// Contacts waiting in the queue go one after another, each write moving the book's sync
+    /// token on. Against an Apple that refuses a spent token, every one lands — whether Apple
+    /// answers a write with its new tokens or not — and none is sent with the token an
+    /// earlier one spent.
+    #[test]
+    fn queued_contact_writes_never_send_a_spent_token() {
+        use crate::contacts_merge::tests::{apple_stub, person};
+        use serde_json::json;
+        for answers_tokens in [false, true] {
+            tauri::async_runtime::block_on(async {
+                let server = wiremock::MockServer::start().await;
+                let apple = apple_stub::Apple(std::sync::Arc::new(std::sync::Mutex::new(
+                    apple_stub::Book {
+                        cards: vec![
+                            json!({ "contactId": "A", "etag": "ea", "firstName": "Zoya" }),
+                            json!({ "contactId": "B", "etag": "eb", "firstName": "Ravi" }),
+                            json!({ "contactId": "C", "etag": "ec", "firstName": "Old" }),
+                        ],
+                        answers_tokens,
+                        ..Default::default()
+                    },
+                )));
+                wiremock::Mock::given(wiremock::matchers::any())
+                    .respond_with(apple.clone())
+                    .mount(&server)
+                    .await;
+                let mut l = Library::in_memory().unwrap();
+                let (a, b, c) = (
+                    person("A", "Zoya", "+91 90000 00001").contact,
+                    person("B", "Ravi", "+91 90000 00002").contact,
+                    person("C", "Old", "+91 90000 00003").contact,
+                );
+                l.put_contacts(&[a.clone(), b.clone(), c.clone()]).unwrap();
+                let mut a2 = a.clone();
+                a2.first_name = Some("Zoya R".into());
+                let mut b2 = b.clone();
+                b2.first_name = Some("Ravi K".into());
+                record_contact_save(&mut l, &a2, Some(a)).unwrap();
+                record_contact_save(&mut l, &b2, Some(b)).unwrap();
+                record_contact_delete(&mut l, &c).unwrap();
+                let lib = crate::library_lock::LibraryLock::new(l, None);
+                let http = reqwest::Client::new();
+                let ledger = quince_icloud::contacts::Ledger::new();
+                let pass = Mutex::new(());
+                let uri = server.uri();
+                let book = std::sync::Mutex::new(Book::default());
+                let report = drain(&lib, CONTACTS, &pass, |p| {
+                    send_contact(&lib, &http, &uri, vec![], p, &book, &ledger)
+                })
+                .await;
+                assert!(lib
+                    .lock()
+                    .await
+                    .outbox_pending(CONTACTS)
+                    .unwrap()
+                    .is_empty());
+                let book = apple.0.lock().unwrap();
+                assert!(report.refused.is_empty(), "{:?}", report.refused);
+                assert!(
+                    !book.writes.iter().any(|w| w.starts_with("refused")),
+                    "answers_tokens {answers_tokens}: {:?}",
+                    book.writes
+                );
+                assert_eq!(book.writes.len(), 3, "{:?}", book.writes);
+                let first = |id: &str| {
+                    book.cards
+                        .iter()
+                        .find(|c| c["contactId"] == id)
+                        .map(|c| c["firstName"].clone())
+                };
+                assert_eq!(first("A"), Some(json!("Zoya R")));
+                assert_eq!(first("B"), Some(json!("Ravi K")));
+                assert_eq!(first("C"), None);
+            });
+        }
     }
 }

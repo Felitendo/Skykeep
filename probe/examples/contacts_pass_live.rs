@@ -69,7 +69,14 @@ async fn main() -> Result<()> {
             value: "quince-test@example.com".into(),
         }],
     };
-    let guid = contacts::create(&http, &root, p.clone(), &tokens, &throwaway).await?;
+    let guid = contacts::create(
+        &http,
+        &root,
+        p.clone(),
+        &contacts::Ledger::holding(tokens.clone()),
+        &throwaway,
+    )
+    .await?;
     let (after, ms) = run(Some(tokens.clone())).await?;
     say("after a card was made", &after, ms);
     let ok = matches!(&after, Pass::Read(b, _) if b.contacts.len() == before + 1 && b.contacts.iter().any(|c| c.guid == guid));
@@ -83,7 +90,14 @@ async fn main() -> Result<()> {
     };
     let made = made
         .ok_or_else(|| anyhow!("throwaway not read back — delete it by hand: Quince mount test"))?;
-    contacts::delete(&http, &root, p.clone(), &tokens, &made).await?;
+    contacts::delete(
+        &http,
+        &root,
+        p.clone(),
+        &contacts::Ledger::holding(tokens.clone()),
+        &made,
+    )
+    .await?;
     let (gone, ms) = run(Some(tokens)).await?;
     say("after it was deleted", &gone, ms);
     let ok = matches!(&gone, Pass::Read(b, _) if b.contacts.len() == before && !b.contacts.iter().any(|c| c.guid == guid));

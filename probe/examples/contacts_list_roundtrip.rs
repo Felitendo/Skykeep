@@ -15,6 +15,7 @@ async fn main() -> Result<()> {
     let (http, p) = (client.http().clone(), client.service_params());
     use quince_icloud::contacts as c;
     let (people, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     let (a, b) = (people[0].guid.clone(), people[1].guid.clone());
     let show = |label: &str, lists: &[c::ContactList]| {
         let mine: Vec<_> = lists
@@ -42,6 +43,7 @@ async fn main() -> Result<()> {
         .cloned()
         .ok_or_else(|| anyhow!("not listed"))?;
     let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     list.name = "Quince list test, renamed".into();
     list.members.push(b);
     c::update_list(&http, &root, p.clone(), &tokens, &list).await?;
@@ -50,6 +52,7 @@ async fn main() -> Result<()> {
         &c::fetch(&http, &root, p.clone()).await?.lists,
     );
     let (_, tokens) = c::fetch_with_tokens(&http, &root, p.clone()).await?;
+    let tokens = c::Ledger::holding(tokens);
     c::delete_list(&http, &root, p.clone(), &tokens, &list.guid).await?;
     show("deleted", &c::fetch(&http, &root, p.clone()).await?.lists);
     Ok(())
