@@ -110,11 +110,7 @@ export default function App() {
   // saying so, and the sign-in a click away rather than forced in its place.
   const [lapsed, setLapsed] = useState(false);
   useEffect(() => {
-    // Its reason, when it has one (new iCloud terms to accept), is what the line says.
-    const stop = listen<string | null>(NEEDS_SIGNIN, (event) => {
-      if (typeof event.payload === "string" && event.payload) setWhy(event.payload);
-      setLapsed(true);
-    });
+    const stop = listen(NEEDS_SIGNIN, () => setLapsed(true));
     return () => {
       void stop.then((unlisten) => unlisten()).catch(() => {});
     };

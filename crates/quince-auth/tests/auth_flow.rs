@@ -1260,10 +1260,11 @@ async fn trusted_numbers_at_the_top_are_still_texted() {
 }
 
 /// New iCloud terms not yet accepted: `accountLogin` answers 200 with `termsUpdateNeeded`
-/// and opens the session only part-way (rclone/rclone#9919). Taken as signed in, every sync
-/// failed after with nothing to say why. It says so, and costs no wait: no password was wrong.
+/// and opens the session only part-way (rclone/rclone#9919). It is a sign-in all the same:
+/// the password proved itself, so it is kept, the terms are said, and it costs no wait.
+/// Signing in again meets the same terms and is never counted as a failed attempt.
 #[tokio::test]
-async fn new_terms_to_accept_are_said_not_taken_for_a_sign_in() {
+async fn new_terms_to_accept_are_said_and_cost_no_wait() {
     let server = MockServer::start().await;
     mount_init(&server, 200).await;
     mount_complete(&server, 200).await;
@@ -1279,21 +1280,21 @@ async fn new_terms_to_accept_are_said_not_taken_for_a_sign_in() {
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
     for attempt in 0..2 {
-        let err = client
+        let outcome = client
             .sign_in("someone@example.invalid", "hunter2")
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err, quince_auth::Error::TermsPending),
-            "attempt {attempt}: {err:?}"
-        );
-        assert!(err.to_string().contains("icloud.com"), "{err}");
+            .unwrap_or_else(|e| panic!("attempt {attempt}: {e:?}"));
+        assert_eq!(outcome, SignInOutcome::Complete, "attempt {attempt}");
+        assert!(client.session().terms_update_needed, "attempt {attempt}");
+        assert!(client.waits_on_icloud_com());
+        assert_eq!(client.session().consecutive_failures, 0, "no wait");
+        assert!(client.session().retry_after.is_none(), "no wait");
     }
-    assert!(client.session().webservices.is_none(), "not signed in");
+    assert_eq!(client.session().password.as_deref(), Some("hunter2"));
 }
 
-/// The same for a session already kept: said, and kept, rather than signed in again with
-/// the password into the same terms.
+/// The same for a session already kept: kept, with the terms said, rather than signed in
+/// again with the password into the same terms.
 #[tokio::test]
 async fn new_terms_on_a_kept_session_keep_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -1312,13 +1313,15 @@ async fn new_terms_on_a_kept_session_keep_it() {
         .mount(&server)
         .await;
     let mut client = client_for(&server, dir.path());
-    let err = client.resume().await.unwrap_err();
-    assert!(matches!(err, quince_auth::Error::TermsPending), "{err:?}");
+    assert!(client.resume().await.unwrap(), "the session holds");
+    assert!(client.session().terms_update_needed);
+    assert!(client.waits_on_icloud_com());
     assert!(
         client.session().session_token.is_some(),
         "the session is kept"
     );
     assert_eq!(client.session().password.as_deref(), Some("hunter2"));
+    assert_eq!(client.session().consecutive_failures, 0);
     let reqs = server.received_requests().await.unwrap();
     assert!(
         requests_to(&reqs, "/signin/init").is_empty(),

@@ -120,10 +120,6 @@ pub enum Error {
     CoolingDown { seconds: u64 },
     #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
     ReauthRequired,
-    /// Apple holds the session back until new iCloud terms are accepted, which only a browser
-    /// or an Apple device can do.
-    #[error("Apple has new iCloud terms for this account. Sign in at icloud.com, accept them, then sign in here again.")]
-    TermsPending,
     // Apple's 429 and its 503 on sign-in both mean "not now", whether from too many tries or
     // its own load: say what to do, not which of the two it was.
     #[error(
@@ -938,8 +934,8 @@ impl Client {
                 self.keep();
                 return Ok(true);
             }
-            // Signing in again would only meet the same terms, and count as a failed attempt.
-            Err(Error::TermsPending) => return Err(Error::TermsPending),
+            // New iCloud terms waiting are not a lapse: `absorb` keeps Apple's flag and the
+            // session stays, so nothing signs in again with the password into the same terms.
             Err(e) => e,
         };
         // Unreachable is not rejected. Offline — no network yet after login, or a resume
@@ -1083,7 +1079,6 @@ impl Client {
                 | Error::Keyring(_)
                 | Error::Io(_)
                 | Error::Json(_)
-                | Error::TermsPending
                 | Error::RepairNeeded,
             ) => {}
             Err(e) => {
@@ -1616,12 +1611,10 @@ impl Client {
         let data: Value = serde_json::from_str(&text)?;
         diag::account("accountLogin", &data);
         // New iCloud terms not yet accepted: Apple answers 200 but opens the session only
-        // part-way, without the web cookies every service needs (rclone/rclone#9919), so every
-        // sync failed afterwards with nothing to say why. Only icloud.com or a device of the
-        // person's own can accept them.
-        if data.get("termsUpdateNeeded").and_then(Value::as_bool) == Some(true) {
-            return Err(Error::TermsPending);
-        }
+        // part-way, without the web cookies every service needs (rclone/rclone#9919). Not an
+        // error: a sign-in that met them is complete — the password proved itself, and is no
+        // failed attempt — and `absorb` keeps `termsUpdateNeeded`, which the window says and
+        // every pass asks again until the person has agreed at icloud.com.
         Ok(data)
     }
 

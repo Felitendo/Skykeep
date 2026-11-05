@@ -1332,6 +1332,8 @@ const NEEDS_SIGNIN: &str = "quince://needs-signin";
 async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
     // Said once per lapse, not on every pass after it.
     static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    // And once per wait at icloud.com, apart from a lapse: one never hides the other.
+    static TOLD_ICLOUD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let mut guard = client.lock().await;
     if guard.session().webservices.is_none() {
         return;
@@ -1367,29 +1369,37 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
         }
         Ok(true) => {
             TOLD.store(false, std::sync::atomic::Ordering::Relaxed);
-            // New iCloud terms waiting at icloud.com: asked again each pass, so the whole
-            // session opens by itself once the person has agreed — one request every few
-            // minutes, and only while they are waiting.
+            // New iCloud terms waiting at icloud.com (or the account to finish there): asked
+            // again each pass, so the whole session opens by itself once the person has agreed
+            // — one request every few minutes, and only while they are waiting. The session
+            // and password stay as they are: signing in again would meet the same terms.
             if guard.waits_on_icloud_com() {
                 let _ = guard.refresh_account().await;
+            }
+            if guard.waits_on_icloud_com() {
+                // The window shows its own page for it; the desktop is told once, for someone
+                // with only the tray running. Never "Apple signed you out": it did not.
+                if !TOLD_ICLOUD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let (title, body) = if guard.session().terms_update_needed {
+                        (
+                            "Agree to Apple's new iCloud terms",
+                            "Sign in at icloud.com and agree to them. Your copy on this computer is still here.",
+                        )
+                    } else {
+                        (
+                            "Finish setting up iCloud",
+                            "Sign in at icloud.com to finish. Your copy on this computer is still here.",
+                        )
+                    };
+                    alerts::tell(app, title, body);
+                }
+            } else {
+                TOLD_ICLOUD.store(false, std::sync::atomic::Ordering::Relaxed);
             }
             // Keys that ran out while the approval still holds are attached again before the
             // pass needs them — never a prompt on the person's phone from here.
             drop(guard);
             data_access::check(app, client, data_access::Ask::Background).await;
-        }
-        // New iCloud terms to accept: nothing syncs until they are, and only icloud.com can
-        // take them. Said with its reason, where "Apple signed you out" would be untrue.
-        Err(e @ quince_auth::Error::TermsPending) => {
-            LIVE.store(false, Ordering::SeqCst);
-            app.emit(NEEDS_SIGNIN, e.to_string()).ok();
-            if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                alerts::tell(
-                    app,
-                    "Accept Apple's new iCloud terms",
-                    "Sign in at icloud.com and accept them. Your copy on this computer is still here.",
-                );
-            }
         }
         // Not reaching Apple says nothing about the session.
         Err(_) => {}
