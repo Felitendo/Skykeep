@@ -18,6 +18,14 @@ function expiry(at: number | null): string | null {
   return `Expires ${new Date(at * 1000).toLocaleDateString(undefined, { month: "long", day: "numeric" })}`;
 }
 
+/** An album's picture: its cover, or — none, or one that won't load (offline, a link Apple let
+ *  lapse) — the album's plain glyph, never a broken image. */
+function Cover({ id }: { id: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (!id || failed) return <Users size={34} strokeWidth={1.6} aria-hidden="true" />;
+  return <img src={pictureSrc(id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />;
+}
+
 export function SharedAlbums({ onError, onOpen }: { onError: (message: string) => void; onOpen: (album: SharedAlbum) => void }) {
   const [albums, setAlbums] = useState<SharedAlbum[] | null>(null);
   // Read again whenever a sync changed Photos: an album new, changed or gone redraws the page.
@@ -50,11 +58,7 @@ export function SharedAlbums({ onError, onOpen }: { onError: (message: string) =
             return (
               <button key={a.zone} type="button" role="listitem" className="px-card" aria-label={name} onClick={() => onOpen(a)}>
                 <span className="px-card-pic">
-                  {a.cover ? (
-                    <img src={pictureSrc(a.cover, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
-                  ) : (
-                    <Users size={34} strokeWidth={1.6} aria-hidden="true" />
-                  )}
+                  <Cover key={a.cover ?? ""} id={a.cover} />
                 </span>
                 <span className="px-card-name">{name}</span>
                 <span className="px-card-count">{a.database === "private" ? "Created by You" : "Shared with You"}</span>

@@ -3520,11 +3520,15 @@ export function PhotosView() {
               <Plus size={15} strokeWidth={2.2} aria-hidden="true" />
             </button>
           </div>}
-          <div className="toolbar-group">
-            <button className="tool px-cap px-add" onClick={() => void choose()} title="Add photos and videos" aria-label="Add Photos">
-              <ImagePlus size={16} strokeWidth={1.9} aria-hidden="true" />
-            </button>
-          </div>
+          {/* Adds to the library — so not offered in a shared album, where it would read as
+              adding to the album. */}
+          {!viewOnly && (
+            <div className="toolbar-group">
+              <button className="tool px-cap px-add" onClick={() => void choose()} title="Add photos and videos" aria-label="Add Photos">
+                <ImagePlus size={16} strokeWidth={1.9} aria-hidden="true" />
+              </button>
+            </div>
+          )}
           {/* Search, as icloud.com's toolbar has it: names, titles, captions, keywords, years and
               months, from the library on this machine — nothing typed leaves it. */}
           <SearchField

@@ -17,9 +17,13 @@ await ctx.addInitScript(() => {
   ];
   window.__sharedPhotos = { "SharedCollection-W": [P("s2", 1792600000), P("s1", 1792500000)], "SharedCollection-F": [P("s3", 1792000000)] };
 });
+// Every cover picture the page puts up, as it puts it up (a cover that fails is replaced at once).
+await ctx.addInitScript(() => addEventListener("DOMContentLoaded", () => new MutationObserver(() => {
+  for (const img of document.querySelectorAll(".px-albums-page .px-card img")) (window.__coverSrcs ??= new Set()).add(img.getAttribute("src"));
+}).observe(document.body, { childList: true, subtree: true })));
 const page = await ctx.newPage();
 page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.goto(process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Photos");
 await page.waitForTimeout(400);
 let failures = 0;
@@ -33,7 +37,11 @@ ok((await page.locator(".px-albums-head .px-span").innerText()) === "2 Shared Al
 const [w, f] = await cards();
 ok(/Wallpapers[\s\S]*Created by You[\s\S]*Expires November 19/.test(w ?? ""), `one of yours: its name, made by you, when it ends  ${JSON.stringify(w)}`);
 ok(/Family[\s\S]*Shared with You/.test(f ?? "") && !/Expires/.test(f ?? ""), `one shared with you says so  ${JSON.stringify(f)}`);
-ok((await page.locator(".px-albums-page .px-card img").first().getAttribute("src"))?.includes("s2"), "each card shows its newest photo");
+ok(await page.evaluate(() => [...(window.__coverSrcs ?? [])].some((src) => src.includes("s2")) && [...window.__coverSrcs].some((src) => src.includes("s3"))), "each card shows its newest photo");
+// The test's server sends no pictures: each cover fails to load, as offline, and the album's
+// glyph takes its place rather than a broken image.
+await page.waitForTimeout(300);
+ok((await page.locator(".px-albums-page .px-card img").count()) === 0 && (await page.locator(".px-albums-page .px-card svg").count()) === 2, "a cover that won't load gives way to the album's glyph");
 ok((await page.getByRole("button", { name: "New Shared Album" }).count()) === 0, "no New Shared Album: making one isn't possible from here yet");
 
 // Opened: its photos in the grid, under its name.
@@ -53,6 +61,7 @@ const albumAfterSync = async () => { await page.evaluate(() => window.__emit?.("
 await albumAfterSync();
 ok((await page.locator(".px-bar h1").innerText()) === "Wallpapers", "and stays open when a sync lands (it is in no album list of yours)");
 
+ok((await page.getByRole("button", { name: "Add Photos" }).count()) === 0, "no Add Photos in a shared album: it would add to your library, not the album");
 // Looked at, never edited.
 await page.locator(".px-tile").first().click({ button: "right" });
 const menu = await page.locator(".row-menu").innerText();
