@@ -898,6 +898,30 @@ pub const MIGRATIONS: &[&str] = &[
         UPDATE photo_view_counts SET n = n - (CASE view WHEN 'library' THEN (old.deleted = 0 AND old.hidden = 0) WHEN 'favorites' THEN (old.deleted = 0 AND old.hidden = 0 AND old.favorite = 1) WHEN 'videos' THEN (old.deleted = 0 AND old.hidden = 0 AND old.kind = 'video') WHEN 'screenshots' THEN (old.deleted = 0 AND old.hidden = 0 AND old.subtype = 3) WHEN 'panoramas' THEN (old.deleted = 0 AND old.hidden = 0 AND old.subtype = 1) WHEN 'portrait' THEN (old.deleted = 0 AND old.hidden = 0 AND old.rendered = 8) WHEN 'hidden' THEN (old.deleted = 0 AND old.hidden = 1) WHEN 'rated' THEN (old.deleted = 0 AND old.hidden = 0 AND old.rating > 0) WHEN 'recentlyDeleted' THEN (old.deleted = 1) ELSE 0 END) + (CASE view WHEN 'library' THEN (new.deleted = 0 AND new.hidden = 0) WHEN 'favorites' THEN (new.deleted = 0 AND new.hidden = 0 AND new.favorite = 1) WHEN 'videos' THEN (new.deleted = 0 AND new.hidden = 0 AND new.kind = 'video') WHEN 'screenshots' THEN (new.deleted = 0 AND new.hidden = 0 AND new.subtype = 3) WHEN 'panoramas' THEN (new.deleted = 0 AND new.hidden = 0 AND new.subtype = 1) WHEN 'portrait' THEN (new.deleted = 0 AND new.hidden = 0 AND new.rendered = 8) WHEN 'hidden' THEN (new.deleted = 0 AND new.hidden = 1) WHEN 'rated' THEN (new.deleted = 0 AND new.hidden = 0 AND new.rating > 0) WHEN 'recentlyDeleted' THEN (new.deleted = 1) ELSE 0 END);
     END;
     "#,
+    // 51 — Shared Albums as iOS 27 keeps them (shared collections): each album, where it lives
+    // in Apple's databases and how far its change feed was read, and its photos — kept apart
+    // from the library's own, so nothing shared ever shows in Library, its counts or search.
+    // A photo is stored as the library describes one (JSON of `Photo`): an album is replaced
+    // whole whenever it changes, so it never needs a column of its own.
+    r#"
+    CREATE TABLE shared_albums (
+        zone       TEXT PRIMARY KEY,
+        database   TEXT NOT NULL,
+        owner      TEXT,
+        title      TEXT,
+        expires_at INTEGER,
+        token      TEXT
+    ) STRICT;
+    CREATE TABLE shared_album_photos (
+        zone     TEXT NOT NULL REFERENCES shared_albums (zone) ON DELETE CASCADE,
+        id       TEXT NOT NULL,
+        taken_at INTEGER NOT NULL,
+        photo    TEXT NOT NULL,
+        PRIMARY KEY (zone, id)
+    ) STRICT;
+    CREATE INDEX shared_album_photos_by_taken ON shared_album_photos (zone, taken_at DESC, id);
+    CREATE INDEX shared_album_photos_by_id ON shared_album_photos (id);
+    "#,
 ];
 
 /// Migrations that need more than SQL, run in the same transaction as the one numbered.
