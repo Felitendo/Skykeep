@@ -2913,7 +2913,18 @@ export function PhotosView() {
     const t = window.setTimeout(() => setSlow(true), 120);
     return () => window.clearTimeout(t);
   }, [switching, view, album?.id, searching]);
-  const waiting = switching && slow;
+  /**
+   * An album opened from the Albums or Shared Albums page. The view the grid last drew was out
+   * of sight behind that page, so keeping it up while the album comes (as a switch between
+   * views does, for its first moment) showed something not looked at — Recently Deleted's
+   * title and photos for a frame, in a recording of a shared album opening. The album's own
+   * title and plain tiles are up at once instead.
+   */
+  const [fromPage, setFromPage] = useState(false);
+  useEffect(() => {
+    if (!switching) setFromPage(false);
+  }, [switching]);
+  const waiting = switching && (slow || fromPage);
   const shownAs = waiting ? { view, album, query: searching } : drawn;
   const title = shownAs.query
     ? `“${shownAs.query}”`
@@ -3304,6 +3315,10 @@ export function PhotosView() {
           <SharedAlbums
             onError={(m) => setError(m)}
             onOpen={(a) => {
+              // The grid underneath still holds the last view's photos (Recently Deleted, say):
+              // let go of first, so they never show for a frame before the album's own.
+              setPhotos(null);
+              setFromPage(true);
               setAlbum({ id: `shared:${a.zone}`, name: a.title ?? "Shared Album", position: 0, changeTag: null, shared: a.zone });
               setAlbumsPage(false);
               setSharedPage(false);
@@ -3360,6 +3375,11 @@ export function PhotosView() {
                           className={`px-card${a.folder ? " is-folder" : ""}`}
                           onClick={() => {
                             if (a.folder) return openFolder(a.id);
+                            // As a shared album opens: the last view's photos never show first.
+                            if (album?.id !== a.id) {
+                              setPhotos(null);
+                              setFromPage(true);
+                            }
                             setAlbum(a);
                             setAlbumsPage(false);
                             setSharedPage(false);

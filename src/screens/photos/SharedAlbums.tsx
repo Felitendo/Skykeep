@@ -23,7 +23,8 @@ function expiry(at: number | null): string | null {
 function Cover({ id }: { id: string | null }) {
   const [failed, setFailed] = useState(false);
   if (!id || failed) return <Users size={34} strokeWidth={1.6} aria-hidden="true" />;
-  return <img src={pictureSrc(id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />;
+  // A few covers, asked for at once: lazily, each came a frame or two after its card (grey first).
+  return <img src={pictureSrc(id, "thumb")} alt="" loading="eager" decoding="async" draggable={false} onError={() => setFailed(true)} />;
 }
 
 export function SharedAlbums({ onError, onOpen }: { onError: (message: string) => void; onOpen: (album: SharedAlbum) => void }) {

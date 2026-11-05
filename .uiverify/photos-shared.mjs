@@ -44,6 +44,35 @@ await page.waitForTimeout(300);
 ok((await page.locator(".px-albums-page .px-card img").count()) === 0 && (await page.locator(".px-albums-page .px-card svg").count()) === 2, "a cover that won't load gives way to the album's glyph");
 ok((await page.getByRole("button", { name: "New Shared Album" }).count()) === 0, "no New Shared Album: making one isn't possible from here yet");
 
+// Opened straight after another view — Recently Deleted, as in the recording that found it —
+// with Apple slow to answer: not one frame of that view's photos shows before the album's own.
+await page.locator(".px-source", { hasText: "Recently Deleted" }).click();
+await page.waitForTimeout(400);
+await page.locator(".px-source", { hasText: "Shared Albums" }).click();
+await page.waitForTimeout(300);
+await page.evaluate(() => {
+  window.__pageDelay = 150;
+  window.__indexDelay = 150;
+  window.__seen = new Set();
+  window.__titles = new Set();
+  const tick = () => {
+    if (!document.querySelector(".px-main[data-page]")) {
+      for (const t of document.querySelectorAll(".px-tile")) if (t.getClientRects().length) window.__seen.add(t.dataset.id);
+      const h = document.querySelector(".px-main h1")?.textContent;
+      if (h) window.__titles.add(h);
+    }
+    if (!window.__stopSeen) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+});
+await page.locator(".px-albums-page .px-card", { hasText: "Wallpapers" }).click();
+await page.waitForTimeout(700);
+const [seen, titles] = await page.evaluate(() => { window.__stopSeen = true; window.__pageDelay = 0; window.__indexDelay = 0; return [[...window.__seen], [...window.__titles]]; });
+ok(seen.length > 0 && seen.every((id) => id.startsWith("s")) && JSON.stringify(titles) === '["Wallpapers"]',
+  `opening it shows only its own title and photos, never the last view's  ${JSON.stringify({ seen, titles })}`);
+await page.locator(".px-source", { hasText: "Shared Albums" }).click();
+await page.waitForTimeout(300);
+
 // Opened: its photos in the grid, under its name.
 await page.locator(".px-albums-page .px-card", { hasText: "Wallpapers" }).click();
 await page.waitForTimeout(350);

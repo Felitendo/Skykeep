@@ -699,7 +699,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const order = sortable ? args.order : null;
           const key = (p) => (order?.by === "added" || (!order && src.view === "recents") ? (p.addedAt ?? p.takenAt) : p.takenAt);
           if (order) list = [...list].sort((a, b) => (key(b) - key(a)) * (order.oldest ? -1 : 1) || (a.id < b.id ? -1 : 1));
-          if (cmd === "photos_page") { const from = args.after ? list.findIndex((p) => p.id === args.after.id) + 1 : 0; return list.slice(from, from + args.limit); }
+          // A page that takes its time (`__pageDelay` ms), as the real app's does over IPC.
+          if (cmd === "photos_page") { if (window.__pageDelay) await new Promise((r) => setTimeout(r, window.__pageDelay)); const from = args.after ? list.findIndex((p) => p.id === args.after.id) + 1 : 0; return list.slice(from, from + args.limit); }
           (window.__indexReads ??= []).push(src);
           // A large library's index takes a moment: a test can make it take one.
           if (window.__indexDelay) await new Promise((r) => setTimeout(r, window.__indexDelay));
