@@ -1817,6 +1817,17 @@ export function DriveView() {
             <ActionGlyph name="newFolder" />
             New Folder
           </button>
+          {/* What is selected, saved to Downloads — a file, a folder as its whole tree, or
+              several — as icloud.com's toolbar offers it; nothing selected, nothing to save. */}
+          <button
+            className="tool has-label with-glyph"
+            title={pickedItems.length ? "Download a copy of what is selected" : "Select something to download"}
+            onClick={() => downloadItems(pickedItems)}
+            disabled={pickedItems.length === 0}
+          >
+            <ActionGlyph name="download" />
+            Download
+          </button>
           </span>
           <span className="upload-menu-wrap">
             <button

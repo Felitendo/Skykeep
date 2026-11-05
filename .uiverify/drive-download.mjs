@@ -28,6 +28,32 @@ const end = (batch, report) => page.evaluate(([batch, report]) => window.__downl
   key: "k", saved: [], failed: [], moreFailed: 0, cancelled: false, problem: null, resumable: false, ...report }), [batch, report]);
 const settle = () => page.waitForTimeout(250);
 
+// ── The toolbar's Download ─────────────────────────────────────────────────────────────────
+// Nothing selected, nothing to save; a file, saved as one; a folder, as its whole tree.
+const toolbarDownload = page.locator(".drive-tools").getByRole("button", { name: "Download" });
+ok(await toolbarDownload.isDisabled(), "the toolbar's Download waits for something to be selected");
+const firstFile = page.locator(".drive-row-hit").filter({ hasNotText: "Downloads" }).last();
+await firstFile.click();
+await settle();
+await toolbarDownload.click();
+await settle();
+ok((await got("__singleDownloads")).length === 1, `a selected file is saved from the toolbar  ${JSON.stringify(await got("__singleDownloads"))}`);
+await row("Downloads").click();
+await settle();
+const before = (await got("__downloadItems")).length;
+await toolbarDownload.click();
+await settle();
+const fromBar = (await got("__downloadItems")).at(-1);
+ok((await got("__downloadItems")).length === before + 1 && fromBar?.items?.[0]?.drivewsid === "FOLDER::a", "a selected folder is saved as its whole tree");
+await end(await lastBatch(), { saved: [] });
+await settle();
+// What follows starts as it always has: a fresh window, counting its own downloads.
+await page.reload({ waitUntil: "networkidle" });
+await page.locator(".nav-item", { hasText: "Drive" }).click();
+await page.waitForSelector(".drive-row-hit");
+await page.waitForTimeout(300);
+await page.evaluate(() => { window.__singleDownloads = []; window.__downloadItems = []; });
+
 // ── A folder, from its menu ────────────────────────────────────────────────────────────────
 await row("Downloads").click({ button: "right" });
 const entries = await page.getByRole("menuitem").allInnerTexts();
