@@ -673,6 +673,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           window.__hiddenOpen = true;
           return null;
         case "photos_lock_hidden": (window.__hiddenCalls ??= []).push("lock"); window.__hiddenOpen = false; return null;
+        // Windows Hello: offered only where a test says it is set up (`__hello`: its answer).
+        case "photos_hello_available": return Boolean(window.__hello);
+        case "photos_unlock_hidden_hello":
+          (window.__hiddenCalls ??= []).push("hello");
+          if (window.__hello === "verified") window.__hiddenOpen = true;
+          return window.__hello ?? "unavailable";
         case "photos_index": case "photos_page": {
           const self = window.__TAURI_INTERNALS__.invoke;
           const src = args.source;

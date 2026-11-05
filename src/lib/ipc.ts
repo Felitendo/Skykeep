@@ -297,6 +297,9 @@ export const api = {
   /** The Hidden album unlocked with the Apple ID password; refused with why (wrong, or a wait). */
   photosUnlockHidden: (password: string) => invoke<void>("photos_unlock_hidden", { password }),
   photosLockHidden: () => invoke<void>("photos_lock_hidden"),
+  /** Whether Windows Hello can unlock Hidden here (Windows, with Hello set up). */
+  photosHelloAvailable: () => invoke<boolean>("photos_hello_available"),
+  photosUnlockHiddenHello: () => invoke<"verified" | "declined" | "unavailable">("photos_unlock_hidden_hello"),
   /** Every photo of one burst, in the order they were shot. */
   photosBurst: (burst: string) => invoke<Photo[]>("photos_burst", { burst }),
   /** Favorite, Delete (to Recently Deleted) or Recover; answers the photo as Apple now has it. */

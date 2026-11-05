@@ -25,6 +25,7 @@ mod drive_watch;
 mod export;
 mod folder_download;
 mod grants;
+mod hello;
 mod intake;
 mod library_lock;
 mod links;
@@ -7308,6 +7309,8 @@ fn main() {
             photos::photos_shared_albums,
             photos::photos_unlock_hidden,
             photos::photos_lock_hidden,
+            photos::photos_hello_available,
+            photos::photos_unlock_hidden_hello,
             photos::photos_prepare,
             photos::photos_index,
             photos::photos_months,

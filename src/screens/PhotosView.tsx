@@ -4244,7 +4244,25 @@ function UnlockSheet({ onCancel, onUnlocked }: { onCancel: () => void; onUnlocke
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  /** Windows Hello set up on this computer: offered first, as Face ID is on a phone. */
+  const [hello, setHello] = useState(false);
   useEffect(() => field.current?.focus(), []);
+  useEffect(() => {
+    api.photosHelloAvailable().then(setHello, () => setHello(false));
+  }, []);
+  const withHello = async () => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      const outcome = await api.photosUnlockHiddenHello();
+      if (outcome === "verified") return onUnlocked();
+      if (outcome === "unavailable") setHello(false);
+    } catch (e) {
+      setProblem(messageOf(e));
+    }
+    setBusy(false);
+    field.current?.focus();
+  };
   const go = async () => {
     if (!password || busy) return;
     setBusy(true);
@@ -4299,6 +4317,11 @@ function UnlockSheet({ onCancel, onUnlocked }: { onCancel: () => void; onUnlocke
             <p id="px-unlock-problem" className="px-unlock-problem" role="alert">
               {problem}
             </p>
+          )}
+          {hello && (
+            <button type="button" className="quiet px-unlock-hello" disabled={busy} onClick={() => void withHello()}>
+              Use Windows Hello
+            </button>
           )}
           <div className="confirm-actions">
             <button type="button" className="quiet" onClick={onCancel}>

@@ -104,6 +104,28 @@ await comeBack();
 await page.waitForTimeout(200);
 ok(await isLocked(), "…and the album is locked behind it");
 
+// Windows Hello, where it is set up: offered beside the password; declined, still locked with
+// the password still there; verified, unlocked. Not set up (Linux, or no Hello): not offered.
+await openScreen(page, "Photos");
+await page.waitForTimeout(200);
+await openHidden();
+await view.click();
+ok((await sheet.getByRole("button", { name: "Use Windows Hello" }).count()) === 0, "without Windows Hello, only the password is asked");
+await page.keyboard.press("Escape");
+await page.evaluate(() => { window.__hello = "declined"; });
+await view.click();
+await sheet.getByRole("button", { name: "Use Windows Hello" }).click();
+await page.waitForTimeout(250);
+ok(await sheet.count() === 1 && await isLocked() && (await sheet.getByLabel("Password").count()) === 1, "Windows Hello declined: still locked, the password still there");
+await page.evaluate(() => { window.__hello = "verified"; });
+await sheet.getByRole("button", { name: "Use Windows Hello" }).click();
+await page.locator('.px-tile[data-id="p2"]').waitFor({ timeout: 3000 });
+ok(await sheet.count() === 0 && (await tiles()).includes("p2"), "Windows Hello verified: Hidden opens");
+await page.evaluate(() => { window.__hello = undefined; });
+await page.locator(".px-source", { hasText: "Library" }).first().click();
+await page.waitForTimeout(250);
+await openHidden();
+
 // A new start: locked.
 await unlock();
 await page.reload({ waitUntil: "networkidle" });

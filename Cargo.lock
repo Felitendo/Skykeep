@@ -4065,6 +4065,7 @@ dependencies = [
  "uuid",
  "webkit2gtk",
  "windows 0.62.2",
+ "windows-future 0.3.2",
  "wiremock",
  "zbus 5.19.0",
 ]

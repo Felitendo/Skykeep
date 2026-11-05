@@ -58,6 +58,9 @@ tauri = { version = "2", features = ["tray-icon"] }
 # Toasts with buttons on Windows (notify-rust sends none there): the same crate notify-rust uses.
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"
+# The asynchronous operations the windows crate's WinRT calls answer with (hello.rs waits on
+# Windows Hello's): the same 0.3 the windows crate itself is built on.
+windows-future = "0.3"
 # Each app its own taskbar button and the jump list's tasks (taskbar.rs), and whether this copy
 # is an MSIX package's (package.rs) and its startup task (login.rs): the shell's own calls,
 # from the same build of the crate Tauri and the toasts already compile.
@@ -76,6 +79,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_Shell_PropertiesSystem",
+    # Windows Hello for the Hidden album (hello.rs): the consent verifier, owned by our window.
+    "Foundation",
+    "Security_Credentials_UI",
+    "Win32_System_WinRT",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -101,6 +101,35 @@ pub async fn photos_unlock_hidden(password: String, auth: State<'_, Auth>) -> Ui
     Err("That password isn't right.".into())
 }
 
+/// Whether Hidden can be unlocked with Windows Hello on this computer (never elsewhere).
+#[tauri::command]
+pub async fn photos_hello_available() -> bool {
+    crate::hello::available().await
+}
+
+/// The Hidden album unlocked with Windows Hello — face, fingerprint or PIN — its prompt owned
+/// by the window that asked. Answers what came of it; Verified unlocks.
+#[tauri::command]
+pub async fn photos_unlock_hidden_hello(
+    window: tauri::WebviewWindow,
+) -> UiResult<crate::hello::Hello> {
+    #[cfg(windows)]
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    #[cfg(not(windows))]
+    let hwnd = {
+        let _ = &window;
+        0
+    };
+    let outcome = crate::hello::verify(hwnd, "Unlock the Hidden album in Skykeep".into()).await;
+    if outcome == crate::hello::Hello::Verified {
+        *HIDDEN_TRIES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (0, None);
+        HIDDEN_OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(outcome)
+}
+
 /// The Hidden album locked again: the window left it, or went out of sight.
 #[tauri::command]
 pub fn photos_lock_hidden() {
