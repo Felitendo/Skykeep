@@ -58,8 +58,13 @@ jobs:
           tar -xzf gl.tgz gitleaks
           ./gitleaks git --no-banner --redact .
 
+  # On x86_64 and on 64-bit ARM: Apple Silicon Macs run Linux (Asahi, Omarchy) on aarch64.
   rust:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 50  # a cold cache (new toolchain, new lockfile) compiles everything; warm runs take ~12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
