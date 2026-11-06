@@ -380,6 +380,9 @@ body {
   --glass-clear-a: 0.9;
   --glass-regular-filter: none;
   --glass-clear-filter: none;
+  /* The narrow window's sidebar button, the last glass still blurred live here: frosted too. */
+  --glass: var(--glass-frost);
+  --glass-blur: none;
 }
 
 /* A control gives under a press and springs back, as Apple's do — buttons, icons, pop-up
