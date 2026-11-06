@@ -103,6 +103,20 @@ jobs:
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
         run: |
           if (-not $env:CHOCOLATEY_API_KEY) { throw "the CHOCOLATEY_API_KEY secret is not set" }
+          # Until a moderator approves its first version, the community repository refuses every
+          # other push (403), and every release said it failed. With no version of it approved
+          # yet, this one is kept for later and said so; once one is, a refusal is a failure.
+          $approved = $null
+          try {
+            $approved = Invoke-RestMethod "https://community.chocolatey.org/api/v2/FindPackagesById()?id='skykeep'"
+          } catch {
+            "couldn't ask the community repository ($($_.Exception.Message)); pushing anyway"
+            $approved = 'unknown'
+          }
+          if (-not $approved) {
+            "::notice::skykeep's first version is still in Chocolatey moderation: $env:VERSION is not pushed yet (re-run this job once it is approved)"
+            exit 0
+          }
           choco push "out\skykeep.$env:VERSION.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
           if ($LASTEXITCODE) { throw "choco push failed ($LASTEXITCODE)" }
 

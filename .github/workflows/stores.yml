@@ -177,14 +177,26 @@ jobs:
       KOMAC_SHA256: b03b020eec98acfb0b53e284a6e21815b884be33de6785b97e7a120f0e748966
     steps:
       - name: The winget token is there, and winget-pkgs has the package
+        id: has
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::error::the WINGET_TOKEN secret is not set: a classic token with the public_repo scope"; exit 1; }
           # Komac adds a version to a package winget already has; the first one is a manual PR.
-          gh api "repos/microsoft/winget-pkgs/contents/manifests/y/${IDENTIFIER//.//}" --silent \
-            || { echo "::error::microsoft/winget-pkgs has no $IDENTIFIER yet: its first version's pull request must be merged first"; exit 1; }
+          if gh api "repos/microsoft/winget-pkgs/contents/manifests/y/${IDENTIFIER//.//}" --silent; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Not there yet: while the first version's pull request still waits for winget's
+          # moderators that is no failure, and every release said it was one. Without such a
+          # pull request open, it is.
+          open=$(gh pr list --repo microsoft/winget-pkgs --state open --search "New package: $IDENTIFIER in:title" --json number --jq 'length')
+          if [ "${open:-0}" -gt 0 ]; then
+            echo "::notice::$IDENTIFIER's first version is still waiting for winget's moderators: $VERSION goes once it is merged (re-run this job then)"
+            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "::error::microsoft/winget-pkgs has no $IDENTIFIER, and no pull request for its first version is open"; exit 1
       - name: Komac
+        if: steps.has.outputs.ready == 'true'
         run: |
           cd "$RUNNER_TEMP"
           curl -fsSLo komac.tar.gz "https://github.com/russellbanks/Komac/releases/download/v$KOMAC_VERSION/komac-$KOMAC_VERSION-x86_64-unknown-linux-gnu.tar.gz"
@@ -194,6 +206,7 @@ jobs:
       # The per-user NSIS installer only: the versioned name, never the .msi or the unversioned
       # copy (Skykeep-windows-x64-setup.exe) that sits beside it.
       - name: The pull request to microsoft/winget-pkgs
+        if: steps.has.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
