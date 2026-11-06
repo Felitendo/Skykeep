@@ -126,6 +126,34 @@ fn default_window() -> (String, String, String) {
     )
 }
 
+/// Apple's web service each app's data comes from, by the app's sidebar key: what a refresh
+/// reads it through, and so what the sidebar shows it for. Notes, Reminders and Photos all live
+/// in CloudKit (`ckdatabasews`). The sidebar once looked for each app's own name in Apple's
+/// list, and some accounts' lists have no `notes` though CloudKit is there: Notes synced, and
+/// its row never showed (#9). One list for both, so they can't disagree.
+pub(crate) const APP_SERVICES: &[(&str, &str)] = &[
+    ("reminders", CLOUDKIT),
+    ("notes", CLOUDKIT),
+    ("drivews", DRIVE),
+    ("photos", CLOUDKIT),
+    ("calendar", CALENDAR),
+    ("contacts", CONTACTS),
+];
+
+const CALENDAR: &str = "calendar";
+const CONTACTS: &str = "contacts";
+const CLOUDKIT: &str = "ckdatabasews";
+const DRIVE: &str = "drivews";
+
+/// The apps whose data Apple's web services for this account can reach, in the sidebar's keys.
+pub(crate) fn apps_offered(webservices: &[String]) -> Vec<String> {
+    APP_SERVICES
+        .iter()
+        .filter(|(_, service)| webservices.iter().any(|w| w == service))
+        .map(|(app, _)| (*app).to_string())
+        .collect()
+}
+
 /// What each service needs from the session, taken in one go so the auth lock is released
 /// before any network work starts.
 struct Context {
@@ -148,10 +176,10 @@ async fn context(client: &Arc<Mutex<Client>>) -> Context {
     Context {
         http: guard.http().clone(),
         params: guard.service_params(),
-        calendar: session.service_url("calendar"),
-        contacts: session.service_url("contacts"),
-        cloudkit: session.service_url("ckdatabasews"),
-        drive: session.service_url("drivews"),
+        calendar: session.service_url(CALENDAR),
+        contacts: session.service_url(CONTACTS),
+        cloudkit: session.service_url(CLOUDKIT),
+        drive: session.service_url(DRIVE),
         account: session.dsid.as_deref().map(crate::account_tag),
         waiting: crate::data_access::waiting(&guard),
     }
@@ -1148,6 +1176,57 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    /// The sidebar's apps (Library.tsx's SCREENS) and the services they read (APP_SERVICES)
+    /// are one list: an app added or renamed in one and not the other fails here, never in a
+    /// person's sidebar.
+    #[test]
+    fn every_sidebar_app_has_its_service_and_no_other() {
+        let screens = include_str!("../../src/screens/Library.tsx");
+        let start = screens
+            .find("const SCREENS")
+            .expect("SCREENS in Library.tsx");
+        let list = &screens[start..start + screens[start..].find("];").expect("end of SCREENS")];
+        let keys: Vec<&str> = list
+            .split("key: \"")
+            .skip(1)
+            .filter_map(|k| k.split('"').next())
+            .collect();
+        let ours: Vec<&str> = APP_SERVICES.iter().map(|(app, _)| *app).collect();
+        assert_eq!(
+            keys, ours,
+            "Library.tsx's SCREENS and APP_SERVICES must list the same apps"
+        );
+    }
+
+    /// An app shows when the service its data comes from is offered, whatever else is listed:
+    /// an account whose list has CloudKit but no `notes` still gets Notes (#9); one without
+    /// CloudKit gets none of the three that live there.
+    #[test]
+    fn an_app_shows_when_the_service_it_reads_is_there() {
+        let list = |w: &[&str]| w.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let offered = apps_offered(&list(&[
+            "ckdatabasews",
+            "reminders",
+            "photos",
+            "calendar",
+            "contacts",
+            "drivews",
+        ]));
+        assert_eq!(
+            offered,
+            [
+                "reminders",
+                "notes",
+                "drivews",
+                "photos",
+                "calendar",
+                "contacts"
+            ]
+        );
+        let offered = apps_offered(&list(&["calendar", "contacts", "notes", "reminders"]));
+        assert_eq!(offered, ["calendar", "contacts"]);
+    }
     use super::*;
 
     /// Apple still preparing the library: the pass reads nothing (so stores no empty library

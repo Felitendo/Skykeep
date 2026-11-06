@@ -98,7 +98,7 @@ struct SessionFacts {
     signed_in: bool,
     /// The account it is (`account_tag`).
     account: Option<String>,
-    /// The services Apple offers it, for the sidebar (`account_services`).
+    /// The apps the sidebar shows, those whose service Apple offers it (`account_services`).
     services: Vec<String>,
     /// Who it is, as Apple names them (`account_info`).
     name: Option<String>,
@@ -119,16 +119,14 @@ impl SessionFacts {
             has_stored_session: client.has_stored_session(),
             signed_in: s.webservices.is_some(),
             account: s.dsid.as_deref().map(account_tag),
-            services: s
-                .webservices
-                .as_ref()
-                .and_then(|w| w.as_object())
-                .map(|o| {
-                    let mut keys: Vec<String> = o.keys().cloned().collect();
-                    keys.sort();
-                    keys
-                })
-                .unwrap_or_default(),
+            // The apps the sidebar shows: each where the service its data comes from is offered.
+            services: refresh::apps_offered(
+                &s.webservices
+                    .as_ref()
+                    .and_then(|w| w.as_object())
+                    .map(|o| o.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            ),
             name: s.account_name.clone(),
             email: s.account_email.clone().or_else(|| s.apple_id.clone()),
             web_access_allowed: s.gate.web_access_allowed(),
