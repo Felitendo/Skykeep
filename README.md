@@ -126,7 +126,7 @@ Skykeep asks for your Apple Account, so it's built to deserve it.
 | **Ubuntu, Debian, Mint** | [Snap Store](https://snapcraft.io/skykeep) · [`.deb`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb) · [`.deb` for ARM](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-arm64.deb) |
 | **Fedora**, including Fedora Asahi Remix | [COPR](https://copr.fedorainfracloud.org/coprs/yashonfed/skykeep/): `sudo dnf copr enable yashonfed/skykeep && sudo dnf install skykeep` |
 | **openSUSE** | [`.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) · [`.rpm` for ARM](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-aarch64.rpm) |
-| **Arch, CachyOS, Manjaro** | AUR: [`skykeep`](https://aur.archlinux.org/packages/skykeep) or [`skykeep-bin`](https://aur.archlinux.org/packages/skykeep-bin), kept by [@Felitendo](https://github.com/Felitendo) · [more](#arch-linux) |
+| **Arch, CachyOS, Manjaro** | AUR: [`skykeep`](https://aur.archlinux.org/packages/skykeep) or [`skykeep-bin`](https://aur.archlinux.org/packages/skykeep-bin) · [more](#arch-linux) |
 | **Any other Linux** | [AppImage](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.AppImage) |
 
 Then open **Skykeep**, sign in with your Apple Account, and approve the sign-in on your iPhone. Each app fills in as your library arrives. Every file, with checksums, is on the [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest).
