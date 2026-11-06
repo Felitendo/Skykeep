@@ -99,9 +99,10 @@ Skykeep asks for your Apple Account, so it's built to deserve it.
 | Opens instantly and works offline, in sync with your iPhone | ✅ | ✅ |
 | Reminder alerts with Complete and Snooze | ✅ | ✅ |
 | Its own launcher or Start-menu entry for each app | ✅ | ✅ |
-| Shared albums, and a password-locked Hidden album | ✅ | ✅ |
+| Your family's Shared Library, shared albums, and a password-locked Hidden album | ✅ | ✅ |
 | Export everything to Markdown, iCalendar and vCard | ✅ | ✅ |
-| Keeps itself up to date | ✅ Snap, COPR, AppImage | ✅ |
+| Keeps itself up to date | ✅ Snap, COPR, AUR, AppImage | ✅ |
+| Apple Silicon Macs running Linux (64-bit ARM) | ✅ | |
 | iCloud Drive and Photos as folders in your file manager | ✅ | Coming |
 | Results in system search | ✅ GNOME, KDE | |
 
@@ -113,7 +114,7 @@ Skykeep asks for your Apple Account, so it's built to deserve it.
 - **Calendar:** Day, Week, Month and Year; drag to create, move and resize; repeating events, alerts, time zones, birthdays and holidays; a Join button for video calls; your reminders on the schedule; `webcal://` subscriptions and `.ics` files.
 - **Contacts:** nearly every field with Apple's labels, contact photos, lists, My Card, finding and merging duplicates; vCard and Google or Outlook CSV import, vCard export.
 - **iCloud Drive:** list or grid with thumbnails; upload files and folders, rename, move, duplicate, Space to preview; download whole folders, which carry on where they stopped if interrupted.
-- **Photos:** your library by month, albums, shared albums, Favourites and Videos; Live Photos and videos play; slideshow, upload, copy and original-quality download.
+- **Photos:** your library by month, albums, shared albums, Favourites and Videos; your family's Shared Library beside your own, with Both, Personal and Shared to choose between, as on iPhone; Live Photos and videos play; slideshow, upload, copy and original-quality download.
 - **Everywhere:** search across every app, light and dark, results in GNOME and KDE search, and a jump list and taskbar button for each app on Windows.
 </details>
 
@@ -121,11 +122,11 @@ Skykeep asks for your Apple Account, so it's built to deserve it.
 
 | Your system | Get Skykeep |
 |---|---|
-| **Windows 10 and 11** | [Microsoft Store](https://apps.microsoft.com/detail/9P6B042JNK54) · [installer](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe) · [Scoop](https://github.com/YashwanthKamireddi/scoop-bucket) |
-| **Ubuntu, Debian, Mint** | [Snap Store](https://snapcraft.io/skykeep) · [`.deb`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb) |
-| **Fedora** | [COPR](https://copr.fedorainfracloud.org/coprs/yashonfed/skykeep/): `sudo dnf copr enable yashonfed/skykeep && sudo dnf install skykeep` |
-| **openSUSE** | [`.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) |
-| **Arch, CachyOS, Manjaro** | [PKGBUILD](#arch-linux) |
+| **Windows 10 and 11** | [Microsoft Store](https://apps.microsoft.com/detail/9P6B042JNK54) · [installer](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe) · [Chocolatey](https://community.chocolatey.org/packages/skykeep): `choco install skykeep` · [Scoop](https://github.com/YashwanthKamireddi/scoop-bucket) |
+| **Ubuntu, Debian, Mint** | [Snap Store](https://snapcraft.io/skykeep) · [`.deb`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb) · [`.deb` for ARM](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-arm64.deb) |
+| **Fedora**, including Fedora Asahi Remix | [COPR](https://copr.fedorainfracloud.org/coprs/yashonfed/skykeep/): `sudo dnf copr enable yashonfed/skykeep && sudo dnf install skykeep` |
+| **openSUSE** | [`.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) · [`.rpm` for ARM](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-aarch64.rpm) |
+| **Arch, CachyOS, Manjaro** | AUR: [`skykeep`](https://aur.archlinux.org/packages/skykeep) or [`skykeep-bin`](https://aur.archlinux.org/packages/skykeep-bin), kept by [@Felitendo](https://github.com/Felitendo) · [more](#arch-linux) |
 | **Any other Linux** | [AppImage](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.AppImage) |
 
 Then open **Skykeep**, sign in with your Apple Account, and approve the sign-in on your iPhone. Each app fills in as your library arrives. Every file, with checksums, is on the [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest).
@@ -135,7 +136,8 @@ Then open **Skykeep**, sign in with your Apple Account, and approve the sign-in 
 
 ```sh
 sudo apt install ./Skykeep-linux-amd64.deb                          # Ubuntu 24.04+, Debian 13, Mint 22
-sudo dnf install ./Skykeep-linux-x86_64.rpm                         # Fedora 41+
+sudo apt install ./Skykeep-linux-arm64.deb                          # the same, on 64-bit ARM
+sudo dnf install ./Skykeep-linux-x86_64.rpm                         # Fedora 41+ (Skykeep-linux-aarch64.rpm on ARM)
 sudo zypper install --allow-unsigned-rpm ./Skykeep-linux-x86_64.rpm # openSUSE Tumbleweed
 chmod +x Skykeep-linux-x86_64.AppImage && ./Skykeep-linux-x86_64.AppImage
 sudo snap install skykeep && sudo snap connect skykeep:password-manager-service
@@ -176,7 +178,13 @@ Start it with `./Skykeep-linux-x86_64.AppImage --appimage-extract-and-run`, or i
 <details>
 <summary><b>Arch, CachyOS, EndeavourOS, Manjaro</b></summary>
 
-Coming to the AUR as `skykeep`. Until then:
+From the AUR, built from source or as the released binary:
+
+```sh
+yay -S skykeep        # or: yay -S skykeep-bin
+```
+
+Or from this repository's own PKGBUILD:
 
 ```sh
 git clone https://github.com/YashwanthKamireddi/Skykeep.git
@@ -189,9 +197,9 @@ For iCloud Drive and Photos as folders, also `sudo pacman -S fuse3`.
 <details>
 <summary><b>Updates and system requirements</b></summary>
 
-The Windows installer and the AppImage update themselves: a notice offers **Update and Restart**, and a new version installs only after its signature check, never while a change is still on its way to iCloud. The Microsoft Store, Snap, COPR and Scoop keep their copies current. For the `.deb` or `.rpm`, install a new version over the old one; your library and sign-in stay.
+The Windows installer and the AppImage update themselves: a notice offers **Update and Restart**, and a new version installs only after its signature check, never while a change is still on its way to iCloud. The Microsoft Store, Chocolatey, Scoop, Snap, COPR and the AUR keep their copies current. For the `.deb` or `.rpm`, install a new version over the old one; your library and sign-in stay.
 
-Skykeep needs Windows 10 or 11, or a Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Keyring or KWallet), on Wayland or X11, with glibc 2.39 or newer: Ubuntu 24.04, Mint 22, Debian 13, Fedora 41, openSUSE Tumbleweed or later. The AppImage runs on Ubuntu 22.04 too.
+Skykeep needs Windows 10 or 11, or a Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Keyring or KWallet), on Wayland or X11, with glibc 2.39 or newer: Ubuntu 24.04, Mint 22, Debian 13, Fedora 41, openSUSE Tumbleweed or later, on 64-bit x86 or ARM (Apple Silicon Macs with Asahi Linux included). The AppImage is x86 only and runs on Ubuntu 22.04 too.
 </details>
 
 ## FAQ
@@ -249,9 +257,9 @@ Over 1,000 Rust tests hold it together. The full tour is in [ARCHITECTURE.md](AR
 
 - iCloud Drive and Photos as folders on Windows
 - Replying to calendar invitations
-- Shared notes, shared reminder lists and the iCloud Shared Photo Library
-- Downloading a whole photo album to a folder
-- Skykeep on the AUR, Flathub and winget
+- Shared notes and shared reminder lists
+- Downloading a whole photo album or library to a folder
+- Skykeep on Flathub and winget
 
 Something you miss? [Open an issue](https://github.com/YashwanthKamireddi/Skykeep/issues). I read every one.
 
