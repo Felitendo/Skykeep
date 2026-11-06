@@ -78,7 +78,8 @@ jobs:
         run: |
           choco pack packaging/chocolatey/skykeep.nuspec --outputdirectory out
           if ($LASTEXITCODE) { throw "choco pack failed" }
-          choco install skykeep --source "$PWD\out" -y --no-progress
+          # The package from this run; its dependency (webview2-runtime) from the community feed.
+          choco install skykeep --source "$PWD\out;https://community.chocolatey.org/api/v2/" -y --no-progress
           if ($LASTEXITCODE) { throw "choco install failed ($LASTEXITCODE)" }
           $exe = (Get-ChildItem $env:LOCALAPPDATA -Recurse -Depth 3 -Filter skykeep.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
           if (-not $exe) { throw "choco install ran, but there is no skykeep.exe" }
@@ -93,6 +94,11 @@ jobs:
           if (Test-Path $exe) { throw "uninstalled, but $exe is still there" }
           if (choco list skykeep --exact --limit-output) { throw "choco still lists skykeep" }
           "uninstalled: skykeep.exe gone and choco lists nothing"
+          # WebView2 is every other app's too: removing Skykeep must leave it where it was.
+          $wv = Get-ItemProperty HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*, HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\* -ErrorAction SilentlyContinue |
+            Where-Object DisplayName -eq 'Microsoft Edge WebView2 Runtime'
+          if (-not $wv) { throw "uninstalling skykeep took WebView2 with it" }
+          "WebView2 $($wv[0].DisplayVersion) is still installed"
 
       # Only the package this run just installed and uninstalled, and only when asked. The
       # first versions wait for a human moderator on community.chocolatey.org.

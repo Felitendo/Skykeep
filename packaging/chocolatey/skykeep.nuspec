@@ -26,6 +26,13 @@
 Skykeep is an independent project. Not affiliated with Apple. iCloud is a trademark of Apple Inc.
 ]]></description>
     <releaseNotes>https://github.com/YashwanthKamireddi/Skykeep/releases/tag/v0.1.2</releaseNotes>
+    <!-- Skykeep draws its window with Microsoft's WebView2. As its own package it is installed
+         before Skykeep and kept apart from it: when Skykeep's installer set it up instead,
+         Chocolatey took WebView2 for part of Skykeep and its auto-uninstaller went to remove
+         it with Skykeep (the 0.1.11 moderation test), which every other app using it needs. -->
+    <dependencies>
+      <dependency id="webview2-runtime" />
+    </dependencies>
   </metadata>
   <files>
     <file src="tools\**" target="tools" />

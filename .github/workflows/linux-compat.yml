@@ -195,6 +195,11 @@ jobs:
                 libheif-devel fuse3-devel gstreamer1-devel gstreamer1-plugins-base-devel \
                 pkgconf-pkg-config libayatana-appindicator-gtk3-devel ;;
             tumbleweed)
+              # Tumbleweed rolls: the image can be newer than a mirror that is mid-sync (6 Nov:
+              # libnghttp2 1.71 installed, its -devel only 1.70), and then nothing installs. A
+              # distribution upgrade first lines the system up with the repositories, as
+              # openSUSE says to do on Tumbleweed, so a mirror's timing never fails the build.
+              zypper -n dup --no-recommends
               zypper -n install --no-recommends gcc gcc-c++ make curl git tar gzip \
                 nodejs-default npm-default \
                 webkitgtk3-devel gtk3-devel librsvg-devel libsecret-devel \
