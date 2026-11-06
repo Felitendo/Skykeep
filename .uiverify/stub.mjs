@@ -1139,6 +1139,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_sync_folder":
           // A folder deleted on another device: the backend forgets it and says so.
           if (args.folderId === window.__driveGone) throw "This folder was deleted or moved on another device.";
+          // Apple busy for the next `__driveBusy` asks (a test's): refused as the backend says it.
+          if ((window.__driveBusy ?? 0) > 0) { window.__driveBusy--; (window.__busyAsks ??= []).push(args.folderId); throw "iCloud Drive is busy right now \u2014 try this one again in a minute."; }
           return driveItems.length;
         case "drive_download": (window.__singleDownloads ??= []).push(args.drivewsid); return "/home/user/Downloads/file.pdf";
         // A folder, or a selection, into Downloads (folder_download.rs): kept going until the

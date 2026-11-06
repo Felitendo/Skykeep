@@ -104,6 +104,11 @@ const modified = (seconds: number | null, now = new Date()) => {
   return dateText(d, { day: "numeric", month: "short", year: "numeric" });
 };
 
+/** Apple busy, or the network away for a moment: a failure that passes on its own. */
+function passing(message: string): boolean {
+  return /busy|try (this one )?again in a minute|offline|can.t reach|network|timed out/i.test(message);
+}
+
 /**
  * Recently Deleted, as icloud.com shows it: what was deleted, when, and two ways out —
  * Recover, back to where it was, and Delete Now, for good. Each leaves the list the moment it
@@ -682,7 +687,26 @@ export function DriveView() {
       setItems(Array.isArray(cached) ? cached : []);
       setThumbs({});
       thumbsOf.current = null;
-      await api.driveSyncFolder(folderId);
+      try {
+        await api.driveSyncFolder(folderId);
+      } catch (e) {
+        // Apple busy or out of reach while the folder kept here is already on screen: nothing
+        // the person asked for failed, so nothing is said. Asked again a little later, quietly;
+        // the next sync brings it anyway. Anything else (the folder gone) is said as before.
+        if (!(Array.isArray(cached) && cached.length > 0 && passing(messageOf(e)))) throw e;
+        const again = (wait: number, left: number) =>
+          window.setTimeout(async () => {
+            if (token !== openToken.current) return;
+            try {
+              await api.driveSyncFolder(folderId);
+              const fresh = await api.driveChildren(folderId);
+              if (token === openToken.current) setItems(Array.isArray(fresh) ? fresh : []);
+            } catch (e2) {
+              if (left > 0 && passing(messageOf(e2))) again(wait * 3, left - 1);
+            }
+          }, wait);
+        again(5_000, 2);
+      }
       if (token !== openToken.current) return;
       const fresh = await api.driveChildren(folderId);
       if (token !== openToken.current) return;
