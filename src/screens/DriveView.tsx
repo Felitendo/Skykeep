@@ -35,6 +35,7 @@ import { dateText, timeText } from "../lib/when";
 import { Clock } from "lucide-react";
 import { useReveal } from "../lib/reveal";
 import { keepSame } from "../lib/same";
+import { carryLabel } from "../lib/dragPicture";
 import { copyName, copyText, keepBothName } from "../lib/clipboard";
 import { useChosen, useIsChosen, type Chosen } from "../lib/chosen";
 
@@ -1529,6 +1530,7 @@ export function DriveView() {
         dragItem.current = picked.includes(item.drivewsid) ? rows.filter((r) => picked.includes(r.drivewsid)) : [item];
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("application/x-quince-drive", item.drivewsid);
+        carryLabel(e, driveName(item), dragItem.current.length);
       },
       dragEnd: () => {
         dragItem.current = null;

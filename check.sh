@@ -66,6 +66,7 @@ step "photos preparing"  node .uiverify/photos-preparing.mjs
 step "photo albums"      node .uiverify/photos-albums.mjs
 step "photos at scale"   node .uiverify/photos-scale.mjs
 step "photos drag"       node .uiverify/photos-drag.mjs
+step "drag pictures"     node .uiverify/drag-picture.mjs
 step "photos keys"       node .uiverify/photos-keys.mjs
 step "photos sort"       node .uiverify/photos-sort.mjs
 step "slideshow"         node .uiverify/photos-show.mjs
@@ -124,6 +125,7 @@ step "webkit: photos"    env ENGINE=webkit node .uiverify/photos.mjs
 step "webkit: albums"    env ENGINE=webkit node .uiverify/photos-albums.mjs
 step "webkit: at scale"  env ENGINE=webkit node .uiverify/photos-scale.mjs
 step "webkit: drag"      env ENGINE=webkit node .uiverify/photos-drag.mjs
+step "webkit: drag pictures" env ENGINE=webkit node .uiverify/drag-picture.mjs
 # As Skykeep's window is on Windows, where no drag event of the engine's reaches the page.
 step "windows: photos drag"    env WEBVIEW2=1 node .uiverify/photos-drag.mjs
 step "windows: reminder drag"  env WEBVIEW2=1 node .uiverify/reminders-drag-list.mjs
