@@ -312,6 +312,7 @@ fn previous() -> Result<Vec<SystemKeyring>, String> {
         .collect())
 }
 
+#[cfg(not(target_os = "linux"))]
 impl Secrets for SystemKeyring {
     fn get(&self, name: &str) -> Result<Option<String>, String> {
         match keyring::Entry::new(self.0, name).and_then(|e| e.get_password()) {
@@ -330,6 +331,135 @@ impl Secrets for SystemKeyring {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Secrets for SystemKeyring {
+    fn get(&self, name: &str) -> Result<Option<String>, String> {
+        secret_service::get(self.0, name)
+    }
+    fn set(&self, name: &str, value: &str) -> Result<(), String> {
+        secret_service::set(self.0, name, value)
+    }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        secret_service::delete(self.0, name)
+    }
+}
+
+/// The Secret Service (gnome-keyring, KWallet) over one connection for the life of the app.
+///
+/// The keyring crate opened a new D-Bus connection and a new encrypted session for every read
+/// and two for every write, and closed them at once. gnome-keyring 50 and 51 abort when such
+/// short-lived sessions race its own handshake (GNOME/gnome-keyring#190; the same crash came
+/// from Codex, gh, Docker's sbx and others), and every app's secrets go with it until it
+/// restarts. Here one connection is opened when first needed, every call goes through it one at
+/// a time, and a connection the daemon dropped (it restarted) is opened again once.
+///
+/// Items are the ones the keyring crate made, read and written the same way (`service`,
+/// `username`, `target` `default`, `application` `rust-keyring`, in the default collection;
+/// a v1 item without `target` found too), so a session kept by an earlier build reads as it was.
+#[cfg(target_os = "linux")]
+mod secret_service {
+    use dbus_secret_service::{EncryptionType, Item, SecretService};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static SERVICE: Mutex<Option<SecretService>> = Mutex::new(None);
+
+    /// `f` over the one connection, opened if it is not yet; when a call fails, once more over
+    /// a new one, for a daemon that restarted since.
+    fn with<T>(
+        f: impl Fn(&SecretService) -> Result<T, dbus_secret_service::Error>,
+    ) -> Result<T, String> {
+        let mut held = SERVICE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(ss) = held.as_ref() {
+            match f(ss) {
+                Ok(v) => return Ok(v),
+                // A refusal the daemon meant (a locked keyring the person dismissed) is said as
+                // it is; anything else may be a connection gone stale.
+                Err(e @ dbus_secret_service::Error::Locked) => return Err(e.to_string()),
+                Err(_) => *held = None,
+            }
+        }
+        let ss = SecretService::connect(EncryptionType::Dh).map_err(|e| e.to_string())?;
+        let out = f(&ss).map_err(|e| e.to_string());
+        *held = Some(ss);
+        out
+    }
+
+    fn attributes<'a>(service: &'a str, user: &'a str) -> HashMap<&'a str, &'a str> {
+        HashMap::from([
+            ("service", service),
+            ("username", user),
+            ("target", "default"),
+        ])
+    }
+
+    /// `f` over the one item for `service`/`user`, unlocked; none when there is none. Two or
+    /// more is refused, as the keyring crate refused it, rather than one picked at random.
+    fn on_item<T>(
+        ss: &SecretService,
+        service: &str,
+        user: &str,
+        f: impl Fn(&Item<'_>) -> Result<T, dbus_secret_service::Error>,
+    ) -> Result<Option<T>, dbus_secret_service::Error> {
+        let one = |items: Vec<Item<'_>>| -> Result<Option<T>, dbus_secret_service::Error> {
+            match items.as_slice() {
+                [] => Ok(None),
+                [item] => {
+                    item.ensure_unlocked()?;
+                    f(item).map(Some)
+                }
+                _ => Err(dbus_secret_service::Error::NoResult),
+            }
+        };
+        let found = ss.search_items(attributes(service, user))?;
+        let items: Vec<Item<'_>> = found.unlocked.into_iter().chain(found.locked).collect();
+        if !items.is_empty() {
+            return one(items);
+        }
+        // As keyring v1 made them: no `target`, in the default collection.
+        let default = ss.get_default_collection()?;
+        let legacy = HashMap::from([("service", service), ("username", user)]);
+        one(default.search_items(legacy)?)
+    }
+
+    pub(super) fn get(service: &str, user: &str) -> Result<Option<String>, String> {
+        let secret = with(|ss| on_item(ss, service, user, |item| item.get_secret()))?;
+        secret
+            .map(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
+            .transpose()
+    }
+
+    pub(super) fn set(service: &str, user: &str, value: &str) -> Result<(), String> {
+        with(|ss| {
+            if on_item(ss, service, user, |item| {
+                item.set_secret(value.as_bytes(), "text/plain")
+            })?
+            .is_some()
+            {
+                return Ok(());
+            }
+            let collection = ss.get_default_collection()?;
+            collection.ensure_unlocked()?;
+            let mut attrs = attributes(service, user);
+            attrs.insert("application", "rust-keyring");
+            collection.create_item(
+                &format!("{user}@{service}:default"),
+                attrs,
+                value.as_bytes(),
+                true,
+                "text/plain",
+            )?;
+            Ok(())
+        })
+    }
+
+    pub(super) fn delete(service: &str, user: &str) -> Result<(), String> {
+        with(|ss| on_item(ss, service, user, |item| item.delete()).map(|_| ()))
     }
 }
 
@@ -1392,6 +1522,61 @@ mod move_tests {
         assert_eq!(now.get(&entry).unwrap().as_deref(), Some("{}"));
         now.delete(&entry).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The one-connection Secret Service (Linux) against a real, throwaway gnome-keyring: what the
+/// keyring crate saved reads here and the other way round, so no session is lost moving to it,
+/// and a burst of calls leaves the daemon standing (gnome-keyring 50/51 aborted on bursts of
+/// short-lived sessions). Run only on an isolated bus (QUINCE_ISOLATED_KEYRING), as above.
+#[cfg(all(test, target_os = "linux"))]
+mod secret_service_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs an isolated Secret Service; see the_move_through_a_real_secret_service"]
+    fn the_keyring_crates_items_and_ours_are_the_same_items() {
+        let Ok(bus) = std::env::var("QUINCE_ISOLATED_KEYRING") else {
+            return;
+        };
+        assert_eq!(
+            std::env::var("DBUS_SESSION_BUS_ADDRESS").ok().as_deref(),
+            Some(bus.as_str()),
+            "refusing: not on the isolated bus"
+        );
+        let ours = SystemKeyring("org.example.OneConnection");
+        // Saved the old way, read the new way.
+        keyring::Entry::new(ours.0, "old")
+            .unwrap()
+            .set_password("{\"trust\":\"kept\"}")
+            .unwrap();
+        assert_eq!(
+            ours.get("old").unwrap().as_deref(),
+            Some("{\"trust\":\"kept\"}")
+        );
+        // Saved the new way, read the old way (a build from before still finds it).
+        ours.set("new", "fresh").unwrap();
+        assert_eq!(
+            keyring::Entry::new(ours.0, "new")
+                .unwrap()
+                .get_password()
+                .unwrap(),
+            "fresh"
+        );
+        // Replaced, not duplicated.
+        ours.set("new", "fresher").unwrap();
+        assert_eq!(ours.get("new").unwrap().as_deref(), Some("fresher"));
+        // A burst, as a sign-in and a refresh make together: the daemon answers every one.
+        for i in 0..100 {
+            ours.set("burst", &format!("v{i}")).unwrap();
+            assert_eq!(ours.get("burst").unwrap(), Some(format!("v{i}")));
+            assert_eq!(ours.get("nothing-here").unwrap(), None);
+        }
+        for name in ["old", "new", "burst"] {
+            ours.delete(name).unwrap();
+            assert_eq!(ours.get(name).unwrap(), None);
+        }
+        ours.delete("never-was").unwrap();
     }
 }
 

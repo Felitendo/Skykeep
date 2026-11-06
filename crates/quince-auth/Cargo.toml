@@ -1,6 +1,6 @@
 [package]
 name = "quince-auth"
-version = "0.1.9"
+version = "0.1.10"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -50,6 +50,9 @@ tempfile = "3"
 # persistent one (gnome-keyring / kwallet).
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+# Linux talks to the Secret Service itself, over one connection (session.rs, `secret_service`):
+# the keyring crate's connection per call crashes gnome-keyring 50 and 51.
+dbus-secret-service = { version = "4.1", features = ["crypto-rust"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }

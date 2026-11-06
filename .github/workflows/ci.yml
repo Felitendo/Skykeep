@@ -106,6 +106,17 @@ jobs:
       - run: npx vite build
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --lib --bins --tests --locked --no-fail-fast
+      # The keyring code against a real, throwaway gnome-keyring on a private bus (check.sh's
+      # "real keyring"): what the keyring crate saved reads with ours, and a burst is survived.
+      - name: A real keyring
+        if: runner.arch == 'X64'
+        run: |
+          sudo apt-get install -y --no-install-recommends gnome-keyring dbus-daemon
+          t=$(mktemp -d); mkdir -p "$t/data" "$t/run"; chmod 700 "$t/run"
+          XDG_DATA_HOME="$t/data" XDG_RUNTIME_DIR="$t/run" dbus-run-session -- bash -c '
+            echo -n throwaway | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1
+            export QUINCE_ISOLATED_KEYRING=$DBUS_SESSION_BUS_ADDRESS
+            cargo test --locked -p quince-auth --lib secret_service -- --ignored'
       # A download onto a disk that really fills up (a 1 MB tmpfs): the disk's own refusal,
       # not a made-up free-space number, stops it cleanly (folder_download/tests.rs).
       - name: A real full disk

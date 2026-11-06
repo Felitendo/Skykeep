@@ -20,6 +20,19 @@ step "nothing stray is published" bash -c '! git ls-files | grep -vxE -f <(grep 
 
 step "rust format"      cargo fmt --all -- --check
 step "rust lint"        cargo clippy --workspace --all-targets -- -D warnings
+# The keyring code against a real gnome-keyring: a throwaway one, on a private session bus with
+# its own folders, never the person's own (session.rs, secret_service_tests).
+real_keyring() {
+  local t; t=$(mktemp -d) && mkdir -p "$t/data" "$t/run" && chmod 700 "$t/run"
+  XDG_DATA_HOME="$t/data" XDG_RUNTIME_DIR="$t/run" dbus-run-session -- bash -c '
+    echo -n throwaway | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1
+    export QUINCE_ISOLATED_KEYRING=$DBUS_SESSION_BUS_ADDRESS
+    cargo test -q -p quince-auth --lib secret_service -- --ignored'
+  local rc=$?; rm -rf "$t"; return $rc
+}
+if command -v gnome-keyring-daemon >/dev/null && command -v dbus-run-session >/dev/null; then
+  step "real keyring"   real_keyring
+fi
 step "rust tests"       cargo test --workspace --quiet
 step "typescript"       npx tsc --noEmit
 step "calendar layout"  node --test .uiverify/calendar-model.test.mjs
@@ -90,6 +103,7 @@ step "notes instant"     node .uiverify/notes-instant.mjs
 step "drive sort"        node .uiverify/drive-sort.mjs
 step "drive trash"       node .uiverify/drive-trash.mjs
 step "drive info"        node .uiverify/drive-info.mjs
+step "drive busy quiet"  node .uiverify/drive-busy-quiet.mjs
 step "drive delete"      node .uiverify/drive-delete.mjs
 step "drive delete changed" node .uiverify/drive-delete-changed.mjs
 step "notes folders"     node .uiverify/notes-folders.mjs
