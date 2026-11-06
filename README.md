@@ -26,12 +26,13 @@ Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as real desktop ap
 
 Skykeep asks for your Apple Account, so it's built to deserve it.
 
+- **Every line is public.** The whole app is open source under the GPL, so anyone can read exactly what it does with your account.
 - **Your password is never sent.** Sign-in uses Apple's SRP protocol with Apple's own two-factor, the same way icloud.com signs in.
 - **It talks to Apple.** Every connection is locked to its hosts in code. The only others are calendars you subscribe to yourself, and GitHub to check for Skykeep updates, which you can turn off.
 - **No Skykeep servers, accounts, analytics or crash reports.** Your iCloud data goes between your computer and Apple only.
 - **Your library stays on your disk,** readable only by you. Export everything to Markdown, iCalendar and vCard any time.
 - **The Hidden album is locked** behind your Apple Account password.
-- **Every release is built in public** by this repository's workflow, with SHA-256 checksums and signature-checked updates. On the Microsoft Store and the Snap Store.
+- **Every release is built in public** by this repository's workflow, with SHA-256 checksums and signature-checked updates, and published through the Microsoft Store, the Snap Store and Chocolatey, each with its own checks before anyone can install it.
 
 [SECURITY.md](SECURITY.md) shows the code behind each point.
 
