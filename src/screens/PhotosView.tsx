@@ -19,6 +19,7 @@ import {
   type PhotoAlbum,
   type PhotoMonth,
   type PhotoOrder,
+  type PhotoLibrary,
   type PhotoSource,
   type PhotoView,
   type UploadEvent,
@@ -48,6 +49,13 @@ import { Picker } from "../components/Picker";
 import { PAGE, PhotoList, PhotoStore } from "./photos/list";
 import { Periods, monthName, type Level, type Place } from "./photos/Periods";
 import { same } from "../lib/same";
+
+/** The library switcher's choices, named as Photos names them. */
+const LIBRARIES = [
+  { value: "both", label: "Both Libraries" },
+  { value: "personal", label: "Personal Library" },
+  { value: "shared", label: "Shared Library" },
+];
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
 const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
@@ -805,6 +813,9 @@ export function PhotosView() {
    */
   const [inBurst, setInBurst] = useState<{ from: string; count: number } | null>(null);
   const [counts, setCounts] = useState<Partial<Record<PhotoView, number>>>({});
+  /** The library switcher: which library the views show, and whether there is a Shared
+   *  Library to choose (the switcher shows only then). */
+  const [library, setLibrary] = useState<{ showing: PhotoLibrary; hasShared: boolean }>({ showing: "both", hasShared: false });
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
   const [zoom, setZoom] = useState(1);
@@ -982,7 +993,7 @@ export function PhotosView() {
         () => {},
       );
     }
-    const [read, c, a] = await Promise.all([index, api.photosCounts(), api.photosAlbums()]);
+    const [read, c, a, l] = await Promise.all([index, api.photosCounts(), api.photosAlbums(), api.photosLibrary().catch(() => null)]);
     indexed = true;
     if (mine !== reads.current) return;
     const next = new PhotoList(read, store);
@@ -1032,9 +1043,10 @@ export function PhotosView() {
     const counted = Object.fromEntries(c);
     setCounts((was) => (same(was, counted) ? was : counted));
     setAlbums((was) => (same(was, a) ? was : a));
+    if (l) setLibrary((was) => (was.showing === l.showing && was.hasShared === l.hasShared ? was : l));
     // An album deleted elsewhere is not left open, empty.
     if (album && !album.shared && !a.some(([x]) => x.id === album.id)) setAlbum(null);
-  }, [view, album, searching, want?.by, want?.oldest, hiddenOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, album, searching, want?.by, want?.oldest, hiddenOpen, library.showing]); // eslint-disable-line react-hooks/exhaustive-deps
   // A pass that lands while another screen is in front is read when this one comes back, once,
   // not at every landing: a screen out of sight is still mounted (lib/screen), and each pass
   // lands a service at a time.
@@ -3246,6 +3258,23 @@ export function PhotosView() {
       </div>
       <aside className="px-side" aria-label="Photos">
         <p className="side-heading px-side-heading">Photos</p>
+        {/* Photos' library switcher, only for an account with a Shared Library: the views,
+            their counts and the months then show the library chosen. */}
+        {library.hasShared && (
+          <Picker
+            className="px-library"
+            label="Library"
+            value={library.showing}
+            options={LIBRARIES}
+            onChange={(v) => {
+              const which = v as PhotoLibrary;
+              api.photosSetLibrary(which).then(
+                () => setLibrary((was) => ({ ...was, showing: which })),
+                (e) => setError(String(e)),
+              );
+            }}
+          />
+        )}
         {VIEWS.map(source)}
         {/* Collections, as icloud.com lists them: Albums and Media Types open to what they
             hold, then Rated, Hidden and Recently Deleted. */}

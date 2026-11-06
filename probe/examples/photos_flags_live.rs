@@ -59,6 +59,7 @@ async fn main() -> Result<()> {
             &http,
             &root,
             p.clone(),
+            None,
             &photo.id,
             tag.as_deref(),
             flag,

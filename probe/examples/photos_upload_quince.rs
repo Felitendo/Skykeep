@@ -74,6 +74,7 @@ async fn main() -> Result<()> {
             &http,
             &ck,
             p,
+            None,
             &u.asset,
             rec["recordChangeTag"].as_str(),
             Flag::Deleted,

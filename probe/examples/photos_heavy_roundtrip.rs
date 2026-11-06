@@ -110,7 +110,17 @@ async fn main() -> Result<()> {
     );
     // Gone for good: to Recently Deleted, then expunged.
     let tag = asset.get("recordChangeTag").and_then(|x| x.as_str());
-    let deleted = set_flag(&http, &ck, p.clone(), &u.asset, tag, Flag::Deleted, true).await?;
+    let deleted = set_flag(
+        &http,
+        &ck,
+        p.clone(),
+        None,
+        &u.asset,
+        tag,
+        Flag::Deleted,
+        true,
+    )
+    .await?;
     let tag = deleted
         .get("recordChangeTag")
         .and_then(|x| x.as_str())
@@ -125,6 +135,7 @@ async fn main() -> Result<()> {
         &http,
         &ck,
         p,
+        None,
         &u.asset,
         tag.as_deref(),
         Flag::Expunged,

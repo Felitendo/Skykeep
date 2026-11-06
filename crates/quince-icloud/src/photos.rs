@@ -7,7 +7,7 @@
 //! 273 records in eight seconds, and a pass from the token with nothing new is under half a
 //! second. See docs/icloud-web/photos.md.
 
-use crate::cloudkit::{field, ZoneClient};
+use crate::cloudkit::{field, Database, ZoneClient};
 use crate::Result;
 use base64::Engine;
 use quince_core::photos::{Album, Kind, Photo};
@@ -89,6 +89,47 @@ pub struct PhotosFetch {
     /// a whole read from the beginning, and what it never sees is gone.
     pub incremental: bool,
     pub complete: bool,
+    /// The library read: none for the personal one, else a Shared Library's zone.
+    pub zone: Option<String>,
+}
+
+/// Where a library's progress is kept in the library's sync state: `photos` for the personal
+/// library, `photos:<zone>` for a Shared Library.
+#[must_use]
+pub fn service_of(zone: Option<&str>) -> String {
+    zone.map_or_else(|| SERVICE.to_string(), |z| format!("{SERVICE}:{z}"))
+}
+
+/// The zones Shared Libraries live in: `SharedSync-<id>`.
+pub const SHARED_LIBRARY_PREFIX: &str = "SharedSync-";
+
+/// Every Shared Library this account set up (its own database) or joined (the shared one,
+/// with its owner): a `SharedSync-*` zone in either.
+///
+/// # Errors
+/// When Apple cannot be reached or refuses the question.
+pub async fn shared_libraries(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+) -> Result<Vec<crate::shared_collections::Place>> {
+    let mut out = Vec::new();
+    for database in [Database::Private, Database::Shared] {
+        let ids = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone())
+            .in_database(database)
+            .zone_ids()
+            .await?;
+        out.extend(
+            ids.into_iter()
+                .filter(|(name, _)| name.starts_with(SHARED_LIBRARY_PREFIX))
+                .map(|(zone, owner)| crate::shared_collections::Place {
+                    database,
+                    zone,
+                    owner,
+                }),
+        );
+    }
+    Ok(out)
 }
 
 /// How many pages of the change feed one fetch reads (500 records each). A library larger
@@ -101,6 +142,33 @@ const PASS_PAGES: usize = 10;
 /// hundred pages a refresh has always gone through, ten at a time.
 pub const PASS_ROUNDS: usize = 10;
 
+/// A client for one library: the personal one (`place` none), or a Shared Library where
+/// [`shared_libraries`] found it — in the shared database, under its owner, for one joined.
+fn client_in<'a>(
+    http: &'a reqwest::Client,
+    ckdatabasews_root: &'a str,
+    params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
+) -> ZoneClient<'a> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    match place {
+        None => client,
+        Some(p) => client.in_database(p.database).owned_by(p.owner.clone()),
+    }
+}
+
+/// The zone a library's records are in: a Shared Library's own, or the personal library's as
+/// [`library_zone`] finds it.
+async fn zone_in(
+    client: &ZoneClient<'_>,
+    place: Option<&crate::shared_collections::Place>,
+) -> String {
+    match place {
+        Some(p) => p.zone.clone(),
+        None => library_zone(client).await,
+    }
+}
+
 /// One pass of the change feed from `since` (or from the start).
 ///
 /// A `since` that Apple will not read any more (an expired or malformed change token) is
@@ -112,9 +180,26 @@ pub async fn fetch(
     params: Vec<(String, String)>,
     since: Option<&str>,
 ) -> Result<PhotosFetch> {
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    fetch_in(http, ckdatabasews_root, params, None, since).await
+}
+
+/// [`fetch`] of one library: `place` none for the personal library, else a Shared Library
+/// where [`shared_libraries`] found it.
+///
+/// # Errors
+/// When Apple cannot be reached or refuses the read.
+pub async fn fetch_in(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
+    since: Option<&str>,
+) -> Result<PhotosFetch> {
+    let client = client_in(http, ckdatabasews_root, params, place);
+    let zone = zone_in(&client, place).await;
+    let shared = place.map(|p| p.zone.clone());
     if let Some(from) = since.map(str::trim).filter(|t| !t.is_empty()) {
-        match walk(&client, Some(from)).await {
+        match walk(&client, &zone, Some(from)).await {
             Ok((records, token, complete)) => {
                 return Ok(PhotosFetch {
                     records,
@@ -122,6 +207,7 @@ pub async fn fetch(
                     from: Some(from.to_string()),
                     incremental: true,
                     complete,
+                    zone: shared,
                 })
             }
             Err(e) if refused_token(&e) => {
@@ -130,13 +216,14 @@ pub async fn fetch(
             Err(e) => return Err(e),
         }
     }
-    let (records, token, complete) = walk(&client, None).await?;
+    let (records, token, complete) = walk(&client, &zone, None).await?;
     Ok(PhotosFetch {
         records,
         token,
         from: None,
         incremental: false,
         complete,
+        zone: shared,
     })
 }
 
@@ -214,13 +301,13 @@ fn refused_token(e: &crate::Error) -> bool {
 /// the feed was read to its end.
 async fn walk(
     client: &ZoneClient<'_>,
+    zone: &str,
     since: Option<&str>,
 ) -> Result<(Vec<Value>, Option<String>, bool)> {
-    let zone = library_zone(client).await;
     let mut records = Vec::new();
     let mut token = since.map(str::to_string);
     for page_no in 0..PASS_PAGES {
-        let page = client.changes(&zone, token.as_deref()).await?;
+        let page = client.changes(zone, token.as_deref()).await?;
         // A token answered with no position at all was not taken: an expired one can come
         // back as the zone's error code alone, which reads as an empty zone.
         if page_no == 0 && since.is_some() && page.sync_token.is_none() {
@@ -552,21 +639,23 @@ fn apply_whole(
         from,
         incremental,
         complete,
+        zone,
     } = fetched;
+    let zone = zone.as_deref();
     let walking = if incremental {
-        let carrying_on = from.is_some() && library.photo_walk_cursor()? == from;
+        let carrying_on = from.is_some() && library.photo_walk_cursor(zone)? == from;
         if !carrying_on {
-            library.forget_photo_walk()?;
+            library.forget_photo_walk(zone)?;
         }
         carrying_on
     } else {
-        library.begin_photo_walk()?;
-        library.mark_full_sync(SERVICE)?;
+        library.begin_photo_walk(zone)?;
+        library.mark_full_sync(&service_of(zone))?;
         true
     };
     // What the last pass held back comes first, so this pass's own records win over it.
     let records: Vec<Value> = library
-        .photo_walk_held()?
+        .photo_walk_held(zone)?
         .iter()
         .filter_map(|r| serde_json::from_str(r).ok())
         .chain(fresh)
@@ -722,7 +811,7 @@ fn apply_whole(
         }
     }
     let changed = photos.len() + gone.len();
-    library.put_photos(&photos)?;
+    library.put_photos_in(zone, &photos)?;
     library.forget_photos(&gone)?;
     library.put_album_items(&in_albums)?;
     library.forget_album_items(&out_of_albums)?;
@@ -748,9 +837,9 @@ fn apply_whole(
             .map(|(album, asset, _)| (album.clone(), asset.clone()))
             .collect();
         let carry_on_from = if complete { None } else { token.as_deref() };
-        library.note_photo_walk(&seen, &album_ids, &items, carry_on_from)?;
+        library.note_photo_walk(zone, &seen, &album_ids, &items, carry_on_from)?;
         if complete {
-            library.finish_photo_walk()?;
+            library.finish_photo_walk(zone)?;
             library.forget_orphan_albums()?;
         }
     }
@@ -768,9 +857,9 @@ fn apply_whole(
             }
         }
     }
-    library.hold_for_photo_walk(&held)?;
+    library.hold_for_photo_walk(zone, &held)?;
     // Unfinished, this is where the next pass carries on from, so each pass gets further.
-    library.mark_synced(SERVICE, token.as_deref())?;
+    library.mark_synced(&service_of(zone), token.as_deref())?;
     Ok((changed, links))
 }
 
@@ -778,19 +867,21 @@ fn apply_whole(
 /// field, against the asset's change tag. Favorite is `isFavorite`; Delete (to Recently
 /// Deleted, never for good) is `isDeleted: 1`; Recover is `isDeleted: 0`; Hide is `isHidden`.
 /// Answers the asset as Apple now holds it.
+#[allow(clippy::too_many_arguments)]
 pub async fn set_flag(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
     asset: &str,
     change_tag: Option<&str>,
     flag: Flag,
     on: bool,
 ) -> Result<Value> {
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let zone = library_zone(&client).await;
+    let client = client_in(http, ckdatabasews_root, params, place);
+    let zone = zone_in(&client, place).await;
     if flag == Flag::Expunged && on {
-        return expunge_checked(&client, asset)
+        return expunge_checked(&client, &zone, asset)
             .await
             .map_err(crate::Error::Refused);
     }
@@ -817,9 +908,10 @@ pub async fn set_flag(
 /// is kept: the plain update resent the delete over that recovery when its change tag moved.
 async fn expunge_checked(
     client: &ZoneClient<'_>,
+    zone: &str,
     asset: &str,
 ) -> std::result::Result<Value, String> {
-    let zone = library_zone(client).await;
+    let zone = zone.to_string();
     let current = client
         .lookup_record(&zone, asset)
         .await
@@ -856,19 +948,20 @@ pub async fn set_flags(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
     assets: &[(String, Option<String>)],
     flag: Flag,
     on: bool,
 ) -> Result<Vec<std::result::Result<Value, String>>> {
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let zone = library_zone(&client).await;
+    let client = client_in(http, ckdatabasews_root, params, place);
+    let zone = zone_in(&client, place).await;
     if flag == Flag::Expunged && on {
         // Eight at a time: a full Recently Deleted empties quickly, each photo still checked.
         let mut out = Vec::with_capacity(assets.len());
         for batch in assets.chunks(8) {
             let mut pending = Vec::with_capacity(batch.len());
             for (id, _) in batch {
-                pending.push(expunge_checked(&client, id));
+                pending.push(expunge_checked(&client, &zone, id));
             }
             out.extend(futures_util::future::join_all(pending).await);
         }
@@ -900,6 +993,7 @@ pub async fn set_title_and_caption(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
     asset: &str,
     title: Option<&str>,
     caption: Option<&str>,
@@ -924,8 +1018,8 @@ pub async fn set_title_and_caption(
         return Ok(None);
     }
     let fields = Value::Object(fields);
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let zone = library_zone(&client).await;
+    let client = client_in(http, ckdatabasews_root, params, place);
+    let zone = zone_in(&client, place).await;
     client
         .edit_record(&zone, asset, "CPLAsset", |_| Some(fields.clone()))
         .await
@@ -937,12 +1031,13 @@ pub async fn set_rating(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
     asset: &str,
     change_tag: Option<&str>,
     rating: i64,
 ) -> Result<Value> {
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let zone = library_zone(&client).await;
+    let client = client_in(http, ckdatabasews_root, params, place);
+    let zone = zone_in(&client, place).await;
     client
         .update_record(
             &zone,
@@ -960,6 +1055,7 @@ pub async fn set_keywords(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
     asset: &str,
     base: &[String],
     wanted: &[String],
@@ -979,8 +1075,8 @@ pub async fn set_keywords(
         .cloned()
         .collect();
     let result = std::sync::Mutex::new(Vec::new());
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let zone = library_zone(&client).await;
+    let client = client_in(http, ckdatabasews_root, params, place);
+    let zone = zone_in(&client, place).await;
     let written = client
         .edit_record(&zone, asset, "CPLAsset", |current| {
             let mut words: Vec<String> = keywords_of(current)
@@ -1020,12 +1116,13 @@ pub async fn set_date(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
     asset: &str,
     change_tag: Option<&str>,
     millis: i64,
 ) -> Result<Value> {
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let zone = library_zone(&client).await;
+    let client = client_in(http, ckdatabasews_root, params, place);
+    let zone = zone_in(&client, place).await;
     client
         .update_record(
             &zone,
@@ -1404,11 +1501,12 @@ pub async fn links(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
+    place: Option<&crate::shared_collections::Place>,
     master: &str,
     asset: &str,
 ) -> Result<Option<Links>> {
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let zone = library_zone(&client).await;
+    let client = client_in(http, ckdatabasews_root, params, place);
+    let zone = zone_in(&client, place).await;
     let Some(m) = client.lookup_record(&zone, master).await? else {
         return Ok(None);
     };
@@ -1549,6 +1647,59 @@ mod tests {
     /// photo already known; an expunged asset goes.
     /// A pass that fails as it stores its position — its last write, standing in for a crash
     /// part way — stores none of the photos it had already put in.
+    /// A Shared Library read whole stores its photos marked with its zone and keeps its own
+    /// place; the personal library's whole read that follows, seeing none of them, lets go of
+    /// none of them; and the Shared Library's photo is the same photo the personal parser makes.
+    #[test]
+    fn a_shared_library_pass_is_its_own() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let mut shared_master = master();
+        shared_master["recordName"] = json!("M2");
+        let mut shared_asset = asset(json!({}));
+        shared_asset["recordName"] = json!("A2");
+        shared_asset["fields"]["masterRef"] = json!({"value": {"recordName": "M2"}});
+        apply(
+            &mut lib,
+            PhotosFetch {
+                records: vec![shared_master, shared_asset],
+                token: Some("S1".into()),
+                from: None,
+                incremental: false,
+                complete: true,
+                zone: Some("SharedSync-X".into()),
+            },
+        )
+        .unwrap();
+        apply(
+            &mut lib,
+            PhotosFetch {
+                records: vec![master(), asset(json!({}))],
+                token: Some("P1".into()),
+                from: None,
+                incremental: false,
+                complete: true,
+                zone: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            lib.photo_zone("A2").unwrap().as_deref(),
+            Some("SharedSync-X")
+        );
+        assert_eq!(lib.photo_zone("A1").unwrap(), None);
+        assert_eq!(
+            lib.sync_token("photos:SharedSync-X").unwrap().as_deref(),
+            Some("S1")
+        );
+        assert_eq!(lib.sync_token(SERVICE).unwrap().as_deref(), Some("P1"));
+        let a1 = lib.photo("A1").unwrap().unwrap();
+        let a2 = lib.photo("A2").unwrap().unwrap();
+        assert_eq!(
+            (a1.taken_at, a1.kind, a1.width),
+            (a2.taken_at, a2.kind, a2.width)
+        );
+    }
+
     #[test]
     fn a_pass_that_fails_part_way_stores_none_of_itself() {
         let mut lib = quince_core::Library::in_memory().unwrap();
@@ -1566,6 +1717,7 @@ mod tests {
             from: None,
             incremental: false,
             complete: true,
+            zone: None,
         };
         assert!(apply(&mut lib, pass).is_err());
         assert!(lib
@@ -1589,6 +1741,7 @@ mod tests {
             from: None,
             incremental: false,
             complete: true,
+            zone: None,
         };
         apply(&mut lib, full).unwrap();
         assert_eq!(
@@ -1603,6 +1756,7 @@ mod tests {
             from: None,
             incremental: true,
             complete: true,
+            zone: None,
         };
         apply(&mut lib, change).unwrap();
         assert!(lib
@@ -1624,6 +1778,7 @@ mod tests {
             from: None,
             incremental: true,
             complete: true,
+            zone: None,
         };
         apply(&mut lib, expunged).unwrap();
         assert!(lib.photo("A1").unwrap().is_none());
@@ -1647,6 +1802,7 @@ mod tests {
             from: None,
             incremental,
             complete: true,
+            zone: None,
         };
         apply(
             &mut lib,
@@ -1692,6 +1848,7 @@ mod tests {
             from: None,
             incremental,
             complete: true,
+            zone: None,
         };
         apply(
             &mut lib,
@@ -1725,6 +1882,7 @@ mod tests {
             from: None,
             incremental,
             complete: true,
+            zone: None,
         };
         apply(
             &mut lib,
@@ -1845,6 +2003,7 @@ mod tests {
             from: None,
             incremental,
             complete: true,
+            zone: None,
         };
         apply(
             &mut lib,
@@ -1958,6 +2117,7 @@ mod tests {
             &http,
             &server.uri(),
             vec![],
+            None,
             &[
                 ("KEPT".into(), Some("k1".into())),
                 ("GONE".into(), Some("g1".into())),
@@ -2021,6 +2181,7 @@ mod tests {
             from: None,
             incremental: false,
             complete: true,
+            zone: None,
         };
         apply(
             &mut lib,
@@ -2040,6 +2201,7 @@ mod tests {
             from: None,
             incremental: false,
             complete: false,
+            zone: None,
         };
         apply(&mut lib, first).unwrap();
         assert_eq!(
@@ -2059,6 +2221,7 @@ mod tests {
             from: Some("C1".into()),
             incremental: true,
             complete: true,
+            zone: None,
         };
         apply(&mut lib, second).unwrap();
         assert_eq!(
@@ -2079,6 +2242,7 @@ mod tests {
             from: Some("T1".into()),
             incremental: true,
             complete: true,
+            zone: None,
         };
         apply(&mut lib, after).unwrap();
         assert_eq!(ids(&lib), ["A1", "A2", "A3"]);
@@ -2095,6 +2259,7 @@ mod tests {
             from: None,
             incremental: false,
             complete: true,
+            zone: None,
         };
         apply(&mut lib, whole).unwrap();
         let part = PhotosFetch {
@@ -2103,6 +2268,7 @@ mod tests {
             from: Some("T0".into()),
             incremental: true,
             complete: false,
+            zone: None,
         };
         apply(&mut lib, part).unwrap();
         assert_eq!(lib.sync_token(SERVICE).unwrap().as_deref(), Some("C1"));
@@ -2112,6 +2278,7 @@ mod tests {
             from: Some("C1".into()),
             incremental: true,
             complete: true,
+            zone: None,
         };
         apply(&mut lib, rest).unwrap();
         assert_eq!(ids(&lib), ["A1", "A2"], "nothing pruned");
@@ -2225,6 +2392,7 @@ mod tests {
                 from: None,
                 incremental: false,
                 complete: true,
+                zone: None,
             };
             apply(&mut lib, had).unwrap();
             let (changed, _) = apply(&mut lib, fetched).unwrap();

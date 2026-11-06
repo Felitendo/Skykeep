@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let was = date(&before).ok_or_else(|| anyhow!("no date"))?;
     println!("before: {was}");
     let tag = before.get("recordChangeTag").and_then(|t| t.as_str());
-    photos::set_date(&http, &ck, p.clone(), &asset, tag, was + 86_400_000).await?;
+    photos::set_date(&http, &ck, p.clone(), None, &asset, tag, was + 86_400_000).await?;
     let now = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!(
         "moved:  {:?} (a day later: {})",
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
         date(&now) == Some(was + 86_400_000)
     );
     let tag = now.get("recordChangeTag").and_then(|t| t.as_str());
-    photos::set_date(&http, &ck, p.clone(), &asset, tag, was).await?;
+    photos::set_date(&http, &ck, p.clone(), None, &asset, tag, was).await?;
     let back = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!(
         "back:   {:?} (as it was: {})",

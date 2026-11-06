@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
             &http,
             &ck,
             p,
+            None,
             &asset,
             a["recordChangeTag"].as_str(),
             Flag::Deleted,

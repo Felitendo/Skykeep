@@ -206,8 +206,167 @@ impl Library {
     }
 }
 
+/// A Shared Library (iOS 16+): the family photo library this account owns or was invited to,
+/// in a `SharedSync-<id>` zone. Its photos are the library's own rows, marked with this zone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedLibrary {
+    pub zone: String,
+    /// `private` when this account set it up, `shared` when it joined someone else's.
+    pub database: String,
+    /// The account that owns it, for one this account joined.
+    pub owner: Option<String>,
+    pub title: Option<String>,
+}
+
+impl Library {
+    /// A Shared Library as Apple lists it now.
+    pub fn put_shared_library(&mut self, library: &SharedLibrary) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO shared_libraries (zone, database, owner, title) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(zone) DO UPDATE SET database = excluded.database,
+               owner = excluded.owner, title = excluded.title",
+            params![library.zone, library.database, library.owner, library.title],
+        )?;
+        Ok(())
+    }
+
+    /// Only these Shared Libraries are left: one this account left or that was ended goes,
+    /// with its photos and its read's place, so none of them lingers in the grid.
+    pub fn keep_shared_libraries(&mut self, kept: &[&str]) -> Result<()> {
+        let list = crate::id_list(kept);
+        let tx = self.conn.savepoint()?;
+        let gone: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT zone FROM shared_libraries WHERE zone NOT IN (SELECT value FROM json_each(?1))",
+            )?;
+            let rows = stmt.query_map(params![list], |r| r.get(0))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        for zone in &gone {
+            tx.execute("DELETE FROM photos WHERE zone = ?1", params![zone])?;
+            tx.execute(
+                "DELETE FROM sync_state WHERE service = ?1",
+                params![format!("photos:{zone}")],
+            )?;
+            tx.execute(
+                "DELETE FROM shared_libraries WHERE zone = ?1",
+                params![zone],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every Shared Library this account is in.
+    pub fn shared_libraries(&self) -> Result<Vec<SharedLibrary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT zone, database, owner, title FROM shared_libraries ORDER BY database, zone",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SharedLibrary {
+                zone: r.get(0)?,
+                database: r.get(1)?,
+                owner: r.get(2)?,
+                title: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Where a photo of a Shared Library lives in Apple's databases: none for a photo of the
+    /// personal library (or one not kept).
+    pub fn shared_library_of(&self, photo: &str) -> Result<Option<SharedLibrary>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT l.zone, l.database, l.owner, l.title
+                   FROM photos p JOIN shared_libraries l ON l.zone = p.zone
+                  WHERE p.id = ?1",
+                params![photo],
+                |r| {
+                    Ok(SharedLibrary {
+                        zone: r.get(0)?,
+                        database: r.get(1)?,
+                        owner: r.get(2)?,
+                        title: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A Shared Library left or ended goes with its photos and its place in the change feed;
+    /// the personal library's photos and the libraries kept stay.
+    #[test]
+    fn leaving_a_shared_library_lets_go_of_its_photos() {
+        use crate::photos::{Kind, Photo};
+        let shot = |id: &str| Photo {
+            id: id.into(),
+            master: format!("m-{id}"),
+            taken_at: 1,
+            added_at: None,
+            kind: Kind::Image,
+            width: 1,
+            height: 1,
+            duration: None,
+            filename: None,
+            size: None,
+            uti: None,
+            favorite: false,
+            hidden: false,
+            deleted: false,
+            deleted_at: None,
+            expunge_at: None,
+            title: None,
+            caption: None,
+            rating: 0,
+            keywords: Vec::new(),
+            latitude: None,
+            longitude: None,
+            rendered: 0,
+            subtype: 0,
+            burst: None,
+            burst_pick: false,
+            burst_count: 0,
+            live_size: None,
+            change_tag: None,
+        };
+        let mut lib = Library::in_memory().unwrap();
+        for zone in ["SharedSync-A", "SharedSync-B"] {
+            lib.put_shared_library(&SharedLibrary {
+                zone: zone.into(),
+                database: "shared".into(),
+                owner: Some("_owner".into()),
+                title: None,
+            })
+            .unwrap();
+        }
+        lib.put_photos_in(None, &[shot("mine")]).unwrap();
+        lib.put_photos_in(Some("SharedSync-A"), &[shot("a")])
+            .unwrap();
+        lib.put_photos_in(Some("SharedSync-B"), &[shot("b")])
+            .unwrap();
+        lib.mark_synced("photos:SharedSync-A", Some("t")).unwrap();
+        assert_eq!(
+            lib.shared_library_of("a")
+                .unwrap()
+                .map(|l| l.zone)
+                .as_deref(),
+            Some("SharedSync-A")
+        );
+        assert_eq!(lib.shared_library_of("mine").unwrap(), None);
+
+        lib.keep_shared_libraries(&["SharedSync-B"]).unwrap();
+        let ids = lib.photo_ids().unwrap();
+        assert!(ids.contains("mine") && ids.contains("b") && !ids.contains("a"));
+        assert_eq!(lib.sync_token("photos:SharedSync-A").unwrap(), None);
+        assert_eq!(lib.shared_libraries().unwrap().len(), 1);
+    }
     use super::*;
     use crate::photos::{Kind, View};
 

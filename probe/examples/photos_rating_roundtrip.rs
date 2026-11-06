@@ -25,11 +25,11 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("gone"))?;
     println!("before: {:?}", rating(&before));
     let tag = before.get("recordChangeTag").and_then(|t| t.as_str());
-    photos::set_rating(&http, &ck, p.clone(), &asset, tag, 3).await?;
+    photos::set_rating(&http, &ck, p.clone(), None, &asset, tag, 3).await?;
     let now = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("set:    {:?}", rating(&now));
     let tag = now.get("recordChangeTag").and_then(|t| t.as_str());
-    photos::set_rating(&http, &ck, p.clone(), &asset, tag, 0).await?;
+    photos::set_rating(&http, &ck, p.clone(), None, &asset, tag, 0).await?;
     let back = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("clear:  {:?}", rating(&back));
     Ok(())

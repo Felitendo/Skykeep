@@ -645,6 +645,14 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                                 report.changed = true;
                                 report.items = None;
                             }
+                            // The Shared Library's photos are the library's own rows: what
+                            // changed redraws Photos whole, as the albums' do.
+                            if report.outcome == Outcome::Ok
+                                && shared_library_pass(&ctx, root, data).await
+                            {
+                                report.changed = true;
+                                report.items = None;
+                            }
                             break report;
                         }
                     }
@@ -949,6 +957,94 @@ async fn shared_albums_pass(ctx: &Context, root: &str, data: &LibraryLock) -> bo
         || library
             .shared_albums()
             .map_or(true, |after| after.len() != before.len())
+}
+
+/// The Shared Libraries (family photo libraries) after the personal one: each read through its
+/// own change feed, from its own place, a few pages per refresh as the personal library is.
+/// Its photos join the library's own rows, marked with its zone. A library this account left
+/// or that was ended goes with its photos — but only when Apple's list of them was read: a
+/// list that failed lets nothing go. Answers whether anything changed.
+async fn shared_library_pass(ctx: &Context, root: &str, data: &LibraryLock) -> bool {
+    use quince_icloud::photos::{apply, fetch_in, service_of, shared_libraries, PASS_ROUNDS};
+    let found = match shared_libraries(&ctx.http, root, ctx.params.clone()).await {
+        Ok(found) => found,
+        Err(e) => {
+            quiet!("shared library: couldn't list them ({e})");
+            return false;
+        }
+    };
+    let same_account = |library: &Library| {
+        let owner = library.state(crate::ACCOUNT_KEY).ok().flatten();
+        ctx.account.is_some() && owner.as_deref() == ctx.account.as_deref()
+    };
+    let mut changed = false;
+    {
+        let mut library = data.lock_for_pass().await;
+        if !same_account(&library) {
+            return false;
+        }
+        let before = library.shared_libraries().unwrap_or_default().len();
+        let zones: Vec<&str> = found.iter().map(|p| p.zone.as_str()).collect();
+        let kept = tokio::task::block_in_place(|| {
+            library.atomically(|library| {
+                for place in &found {
+                    library.put_shared_library(&quince_core::shared::SharedLibrary {
+                        zone: place.zone.clone(),
+                        database: if place.owned() { "private" } else { "shared" }.into(),
+                        owner: place.owner.clone(),
+                        title: None,
+                    })?;
+                }
+                library.keep_shared_libraries(&zones)
+            })
+        });
+        if let Err(e) = kept {
+            quiet!("shared library: couldn't store the list ({e})");
+            return false;
+        }
+        changed |= before != found.len();
+    }
+    for place in &found {
+        let service = service_of(Some(&place.zone));
+        for _ in 0..PASS_ROUNDS {
+            let since = data.read(|l| l.sync_token(&service)).await.ok().flatten();
+            let fetched = match fetch_in(
+                &ctx.http,
+                root,
+                ctx.params.clone(),
+                Some(place),
+                since.as_deref(),
+            )
+            .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    quiet!("shared library: couldn't read {} ({e})", place.zone);
+                    break;
+                }
+            };
+            let more = !fetched.complete;
+            let brought = fetched.records.len();
+            let mut library = data.lock_for_pass().await;
+            if !same_account(&library) {
+                return changed;
+            }
+            match tokio::task::block_in_place(|| apply(&mut library, fetched)) {
+                Ok((n, links)) => {
+                    changed |= n > 0;
+                    crate::photos::remember(links);
+                }
+                Err(e) => {
+                    quiet!("shared library: couldn't store {} ({e})", place.zone);
+                    break;
+                }
+            }
+            if !more || brought == 0 {
+                break;
+            }
+        }
+    }
+    changed
 }
 
 /// What every pass writes whatever came back: where it got to, and when.

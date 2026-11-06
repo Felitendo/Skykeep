@@ -290,6 +290,31 @@ pub(crate) struct MonthsKept {
     months: Vec<PhotoMonth>,
 }
 
+/// Which photo library the views show, as Photos' library switcher chooses: both (the
+/// default), the personal library alone, or the Shared Library alone. Kept in the library's
+/// state, so it stays as chosen.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PhotoLibrary {
+    #[default]
+    Both,
+    Personal,
+    Shared,
+}
+
+impl PhotoLibrary {
+    const KEY: &'static str = "photos.library";
+
+    /// The condition on `photos` that keeps a view to this library.
+    fn clause(self) -> &'static str {
+        match self {
+            Self::Both => "1",
+            Self::Personal => "zone IS NULL",
+            Self::Shared => "zone IS NOT NULL",
+        }
+    }
+}
+
 impl Library {
     /// Photos written or replaced, by asset id.
     pub fn put_photos(&mut self, photos: &[Photo]) -> Result<()> {
@@ -399,7 +424,7 @@ impl Library {
 
     /// A view's photos, newest first.
     pub fn photos(&self, view: View) -> Result<Vec<Photo>> {
-        let (filter, order) = Self::view_query(view);
+        let (filter, order) = self.view_query_in(view)?;
         let bursts = if view == View::RecentlyDeleted {
             "1"
         } else {
@@ -462,6 +487,34 @@ impl Library {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(patterns.iter()), row_to_photo)?;
         self.with_bursts(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The library the views show, as last chosen.
+    pub fn photo_library(&self) -> Result<PhotoLibrary> {
+        Ok(match self.state(PhotoLibrary::KEY)?.as_deref() {
+            Some("personal") => PhotoLibrary::Personal,
+            Some("shared") => PhotoLibrary::Shared,
+            _ => PhotoLibrary::Both,
+        })
+    }
+
+    /// The library the views show from now on.
+    pub fn set_photo_library(&mut self, which: PhotoLibrary) -> Result<()> {
+        let value = match which {
+            PhotoLibrary::Both => "both",
+            PhotoLibrary::Personal => "personal",
+            PhotoLibrary::Shared => "shared",
+        };
+        self.set_state(PhotoLibrary::KEY, value)
+    }
+
+    /// Which photos a view holds of the library chosen (`photo_library`), and in what order.
+    fn view_query_in(&self, view: View) -> Result<(String, &'static str)> {
+        let (filter, order) = Self::view_query(view);
+        Ok((
+            format!("{filter} AND {}", self.photo_library()?.clause()),
+            order,
+        ))
     }
 
     /// Which photos a view holds, and in what order.
@@ -541,6 +594,10 @@ impl Library {
 
     /// How many photos each view holds.
     pub fn photo_counts(&self) -> Result<Vec<(View, i64)>> {
+        // One library of two: the kept counts are of both, so these are counted.
+        if self.photo_library()? != PhotoLibrary::Both {
+            return self.counted(true);
+        }
         // Kept by the photos' own triggers (migration 50): read, never counted. Less, for the
         // views that show a burst once, the burst's other photos — counted over the bursts'
         // own index, which holds bursts only.
@@ -569,6 +626,12 @@ impl Library {
     /// How many photos each view holds, each counted over the library: what the kept counts
     /// ([`Library::photo_counts`]) must always agree with.
     pub fn photo_counts_counted(&self) -> Result<Vec<(View, i64)>> {
+        self.counted(false)
+    }
+
+    /// Each view counted over the library: of both libraries, or (`chosen`) of the one the
+    /// views show.
+    fn counted(&self, chosen: bool) -> Result<Vec<(View, i64)>> {
         let mut out = Vec::new();
         for view in [
             View::Library,
@@ -583,7 +646,11 @@ impl Library {
         ] {
             // Counted where the rows are: a library of twenty thousand is not read seven times
             // over to say how many each view holds.
-            let (filter, _) = Self::view_query(view);
+            let filter = if chosen {
+                self.view_query_in(view)?.0
+            } else {
+                Self::view_query(view).0.to_string()
+            };
             let bursts = if view == View::RecentlyDeleted {
                 "1"
             } else {
@@ -954,7 +1021,7 @@ struct Query {
 }
 
 impl Library {
-    fn source_query(source: &Source, order: Option<Order>) -> Query {
+    fn source_query(&self, source: &Source, order: Option<Order>) -> Result<Query> {
         const TAKEN: &str = "taken_at";
         const ADDED: &str = "COALESCE(added_at, taken_at)";
         let plain = |filter: String, order: String, key, params, keyset| Query {
@@ -966,9 +1033,9 @@ impl Library {
             params,
             keyset,
         };
-        match source {
+        Ok(match source {
             Source::View(view) => {
-                let (filter, own) = Self::view_query(*view);
+                let (filter, own) = self.view_query_in(*view)?;
                 let bursts = if *view == View::RecentlyDeleted {
                     "1"
                 } else {
@@ -1024,7 +1091,7 @@ impl Library {
                 vec![burst.clone()],
                 Some(false),
             ),
-        }
+        })
     }
 
     /// Every photo a source shows, as a grid lays them out (see [`PhotoIndex`]).
@@ -1040,7 +1107,7 @@ impl Library {
             }
             return Ok(out);
         }
-        let q = Self::source_query(source, order);
+        let q = self.source_query(source, order)?;
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {p}id, {key}, {p}kind, {p}favorite, {p}rating, {p}taken_at FROM {from}
              WHERE {filter} ORDER BY {order}",
@@ -1088,7 +1155,7 @@ impl Library {
             });
             return Ok(all.into_iter().skip(from).take(limit.min(5_000)).collect());
         }
-        let q = Self::source_query(source, order);
+        let q = self.source_query(source, order)?;
         let columns = COLUMNS
             .split(", ")
             .map(|c| format!("{}{}", q.pre, c.trim()))
@@ -1292,7 +1359,7 @@ impl Library {
 
     fn months_worked_out(&self) -> Result<Vec<PhotoMonth>> {
         use jiff::{civil::Date, Span, Timestamp};
-        let (filter, _) = Self::view_query(View::Library);
+        let (filter, _) = self.view_query_in(View::Library)?;
         let shown = format!("{filter} AND {ONE_PER_BURST} AND taken_at >= ?1 AND taken_at < ?2");
         let (first, last): (Option<i64>, Option<i64>) = self.conn.query_row(
             &format!("SELECT MIN(taken_at), MAX(taken_at) FROM photos WHERE {filter}"),
@@ -1412,15 +1479,24 @@ pub struct PhotoMonth {
 /// whose master is in the next page, or a master whose asset is) are held until it comes.
 const WALK_TABLES: &str = "
     CREATE TABLE IF NOT EXISTS photo_walk (
+        zone TEXT NOT NULL DEFAULT '',
         kind TEXT NOT NULL,
         id   TEXT NOT NULL,
-        PRIMARY KEY (kind, id)
+        PRIMARY KEY (zone, kind, id)
     ) STRICT, WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS photo_walk_held (
-        id     TEXT PRIMARY KEY,
-        record TEXT NOT NULL
+        zone   TEXT NOT NULL DEFAULT '',
+        id     TEXT NOT NULL,
+        record TEXT NOT NULL,
+        UNIQUE (zone, id)
     ) STRICT;
 ";
+
+/// Which library a whole read is of, as the walk tables key it: `''` for the personal library,
+/// or a Shared Library's zone.
+fn walk_key(zone: Option<&str>) -> &str {
+    zone.unwrap_or("")
+}
 
 impl Library {
     fn walk_tables(&self) -> Result<()> {
@@ -1428,110 +1504,178 @@ impl Library {
         Ok(())
     }
 
-    /// A whole read starting from the beginning: anything an earlier one noted or held is
-    /// dropped.
-    pub fn begin_photo_walk(&mut self) -> Result<()> {
+    /// A whole read of one library (`zone`: none, the personal one) starting from the
+    /// beginning: anything an earlier read of it noted or held is dropped.
+    pub fn begin_photo_walk(&mut self, zone: Option<&str>) -> Result<()> {
         self.walk_tables()?;
+        let key = walk_key(zone);
         self.conn
-            .execute_batch("DELETE FROM photo_walk; DELETE FROM photo_walk_held;")?;
+            .execute("DELETE FROM photo_walk WHERE zone = ?1", params![key])?;
+        self.conn
+            .execute("DELETE FROM photo_walk_held WHERE zone = ?1", params![key])?;
         Ok(())
     }
 
-    /// Where the whole read underway carries on from, if one is.
-    pub fn photo_walk_cursor(&self) -> Result<Option<String>> {
+    /// Where the whole read of one library underway carries on from, if one is.
+    pub fn photo_walk_cursor(&self, zone: Option<&str>) -> Result<Option<String>> {
         self.walk_tables()?;
         Ok(self
             .conn
-            .query_row("SELECT id FROM photo_walk WHERE kind = 'cursor'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT id FROM photo_walk WHERE zone = ?1 AND kind = 'cursor'",
+                params![walk_key(zone)],
+                |r| r.get(0),
+            )
             .optional()?)
     }
 
-    /// The whole read underway, forgotten without letting anything go.
-    pub fn forget_photo_walk(&mut self) -> Result<()> {
+    /// The whole read of one library underway, forgotten without letting anything go.
+    pub fn forget_photo_walk(&mut self, zone: Option<&str>) -> Result<()> {
         self.walk_tables()?;
-        self.conn.execute("DELETE FROM photo_walk", [])?;
+        self.conn.execute(
+            "DELETE FROM photo_walk WHERE zone = ?1",
+            params![walk_key(zone)],
+        )?;
         Ok(())
     }
 
-    /// What a pass of the whole read stored, and where the next pass carries on from (none:
-    /// the read starts over).
+    /// What a pass of one library's whole read stored, and where the next pass carries on
+    /// from (none: the read starts over).
     pub fn note_photo_walk(
         &mut self,
+        zone: Option<&str>,
         photos: &[String],
         albums: &[String],
         items: &[(String, String)],
         cursor: Option<&str>,
     ) -> Result<()> {
         self.walk_tables()?;
+        let key = walk_key(zone);
         let tx = self.conn.savepoint()?;
         {
-            let mut stmt =
-                tx.prepare("INSERT OR IGNORE INTO photo_walk (kind, id) VALUES (?1, ?2)")?;
+            let mut stmt = tx
+                .prepare("INSERT OR IGNORE INTO photo_walk (zone, kind, id) VALUES (?1, ?2, ?3)")?;
             for id in photos {
-                stmt.execute(params!["photo", id])?;
+                stmt.execute(params![key, "photo", id])?;
             }
             for id in albums {
-                stmt.execute(params!["album", id])?;
+                stmt.execute(params![key, "album", id])?;
             }
             for (album, asset) in items {
-                stmt.execute(params!["item", format!("{album}\u{1f}{asset}")])?;
+                stmt.execute(params![key, "item", format!("{album}\u{1f}{asset}")])?;
             }
         }
-        tx.execute("DELETE FROM photo_walk WHERE kind = 'cursor'", [])?;
+        tx.execute(
+            "DELETE FROM photo_walk WHERE zone = ?1 AND kind = 'cursor'",
+            params![key],
+        )?;
         if let Some(cursor) = cursor {
             tx.execute(
-                "INSERT INTO photo_walk (kind, id) VALUES ('cursor', ?1)",
-                params![cursor],
+                "INSERT INTO photo_walk (zone, kind, id) VALUES (?1, 'cursor', ?2)",
+                params![key, cursor],
             )?;
         }
         tx.commit()?;
         Ok(())
     }
 
-    /// The whole read reached the end: every photo, album and album's photo it never saw is
-    /// gone from iCloud, and goes here.
-    pub fn finish_photo_walk(&mut self) -> Result<()> {
+    /// One library's whole read reached the end: every photo of that library it never saw is
+    /// gone from iCloud, and goes here — never another library's. Albums are the personal
+    /// library's alone (a Shared Library has none of its own), so only its read lets them go.
+    pub fn finish_photo_walk(&mut self, zone: Option<&str>) -> Result<()> {
         self.walk_tables()?;
+        let key = walk_key(zone);
         let tx = self.conn.savepoint()?;
-        tx.execute_batch(
+        tx.execute(
             "DELETE FROM photos
-               WHERE id NOT IN (SELECT id FROM photo_walk WHERE kind = 'photo');
-             DELETE FROM photo_albums
-               WHERE id NOT IN (SELECT id FROM photo_walk WHERE kind = 'album');
-             DELETE FROM photo_album_items
-               WHERE album || char(31) || asset
-                     NOT IN (SELECT id FROM photo_walk WHERE kind = 'item');
-             DELETE FROM photo_walk;",
+               WHERE zone IS ?1
+                 AND id NOT IN (SELECT id FROM photo_walk WHERE zone = ?2 AND kind = 'photo')",
+            params![zone, key],
         )?;
+        if zone.is_none() {
+            tx.execute_batch(
+                "DELETE FROM photo_albums
+                   WHERE id NOT IN (SELECT id FROM photo_walk WHERE zone = '' AND kind = 'album');
+                 DELETE FROM photo_album_items
+                   WHERE album || char(31) || asset
+                         NOT IN (SELECT id FROM photo_walk WHERE zone = '' AND kind = 'item');",
+            )?;
+        }
+        tx.execute("DELETE FROM photo_walk WHERE zone = ?1", params![key])?;
         tx.commit()?;
         Ok(())
     }
 
-    /// Records held from an unfinished pass, as JSON, for the next pass to read first.
-    pub fn photo_walk_held(&self) -> Result<Vec<String>> {
+    /// Records held from an unfinished pass of one library, as JSON, for its next pass to read
+    /// first.
+    pub fn photo_walk_held(&self, zone: Option<&str>) -> Result<Vec<String>> {
         self.walk_tables()?;
         let mut stmt = self
             .conn
-            .prepare("SELECT record FROM photo_walk_held ORDER BY rowid")?;
-        let rows = stmt.query_map([], |r| r.get(0))?;
+            .prepare("SELECT record FROM photo_walk_held WHERE zone = ?1 ORDER BY rowid")?;
+        let rows = stmt.query_map(params![walk_key(zone)], |r| r.get(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    /// The records held for the next pass, by record name, in place of those held before.
-    pub fn hold_for_photo_walk(&mut self, records: &[(String, String)]) -> Result<()> {
+    /// The records held for one library's next pass, by record name, in place of those held
+    /// before.
+    pub fn hold_for_photo_walk(
+        &mut self,
+        zone: Option<&str>,
+        records: &[(String, String)],
+    ) -> Result<()> {
         self.walk_tables()?;
+        let key = walk_key(zone);
         let tx = self.conn.savepoint()?;
-        tx.execute("DELETE FROM photo_walk_held", [])?;
+        tx.execute("DELETE FROM photo_walk_held WHERE zone = ?1", params![key])?;
         for (id, record) in records {
             tx.execute(
-                "INSERT OR REPLACE INTO photo_walk_held (id, record) VALUES (?1, ?2)",
-                params![id, record],
+                "INSERT OR REPLACE INTO photo_walk_held (zone, id, record) VALUES (?1, ?2, ?3)",
+                params![key, id, record],
             )?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Photos of one library written or replaced (`zone`: none, the personal library). A photo
+    /// already kept takes the zone it now arrives from.
+    pub fn put_photos_in(&mut self, zone: Option<&str>, photos: &[Photo]) -> Result<()> {
+        self.put_photos(photos)?;
+        if zone.is_some() {
+            let tx = self.conn.savepoint()?;
+            {
+                let mut stmt =
+                    tx.prepare("UPDATE photos SET zone = ?1 WHERE id = ?2 AND zone IS NOT ?1")?;
+                for p in photos {
+                    stmt.execute(params![zone, p.id])?;
+                }
+            }
+            tx.commit()?;
+        } else {
+            let tx = self.conn.savepoint()?;
+            {
+                let mut stmt =
+                    tx.prepare("UPDATE photos SET zone = NULL WHERE id = ?1 AND zone IS NOT NULL")?;
+                for p in photos {
+                    stmt.execute(params![p.id])?;
+                }
+            }
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
+    /// The library a photo is in: none for the personal library, else its Shared Library's
+    /// zone. What every write to it is addressed to.
+    pub fn photo_zone(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT zone FROM photos WHERE id = ?1", params![id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten())
     }
 }
 
@@ -1571,6 +1715,111 @@ mod tests {
             burst_count: 0,
             live_size: None,
         }
+    }
+
+    /// Two libraries read side by side: a whole read of the personal library that reaches its
+    /// end lets go of the personal photos it never saw, and none of the Shared Library's; the
+    /// Shared Library's own read lets go only of its own. Each read keeps its own place.
+    #[test]
+    fn a_whole_read_of_one_library_never_lets_go_of_the_others() {
+        let mut lib = Library::in_memory().unwrap();
+        let shared = Some("SharedSync-1");
+        lib.put_photos_in(None, &[photo("mine", 1), photo("mine-gone", 2)])
+            .unwrap();
+        lib.put_photos_in(shared, &[photo("family", 3), photo("family-gone", 4)])
+            .unwrap();
+        assert_eq!(lib.photo_zone("family").unwrap().as_deref(), shared);
+        assert_eq!(lib.photo_zone("mine").unwrap(), None);
+
+        // Both reads underway at once, each where it got to.
+        lib.begin_photo_walk(None).unwrap();
+        lib.begin_photo_walk(shared).unwrap();
+        lib.note_photo_walk(None, &["mine".into()], &[], &[], Some("p-1"))
+            .unwrap();
+        lib.note_photo_walk(shared, &["family".into()], &[], &[], Some("s-1"))
+            .unwrap();
+        assert_eq!(lib.photo_walk_cursor(None).unwrap().as_deref(), Some("p-1"));
+        assert_eq!(
+            lib.photo_walk_cursor(shared).unwrap().as_deref(),
+            Some("s-1")
+        );
+        lib.hold_for_photo_walk(shared, &[("x".into(), "{}".into())])
+            .unwrap();
+        assert!(lib.photo_walk_held(None).unwrap().is_empty());
+        assert_eq!(lib.photo_walk_held(shared).unwrap().len(), 1);
+
+        lib.finish_photo_walk(None).unwrap();
+        let ids = lib.photo_ids().unwrap();
+        assert!(ids.contains("mine") && !ids.contains("mine-gone"));
+        assert!(
+            ids.contains("family") && ids.contains("family-gone"),
+            "the personal read let go of Shared Library photos"
+        );
+        assert_eq!(
+            lib.photo_walk_cursor(shared).unwrap().as_deref(),
+            Some("s-1")
+        );
+
+        lib.finish_photo_walk(shared).unwrap();
+        let ids = lib.photo_ids().unwrap();
+        assert!(ids.contains("family") && !ids.contains("family-gone"));
+        assert!(ids.contains("mine"));
+    }
+
+    /// The library switcher: Both shows every photo; Personal and Shared each show only their
+    /// own in the views, their counts and the months; it stays as chosen.
+    #[test]
+    fn the_library_switcher_keeps_each_library_to_itself() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_photos_in(None, &[photo("mine", 1_700_000_000)])
+            .unwrap();
+        lib.put_photos_in(Some("SharedSync-1"), &[photo("ours", 1_600_000_000)])
+            .unwrap();
+        let shown = |lib: &Library| {
+            let mut ids = lib
+                .photo_index(&Source::View(View::Library), None)
+                .unwrap()
+                .ids;
+            ids.sort();
+            ids
+        };
+        let library_count = |lib: &Library| {
+            lib.photo_counts()
+                .unwrap()
+                .into_iter()
+                .find(|(v, _)| *v == View::Library)
+                .unwrap()
+                .1
+        };
+        assert_eq!(lib.photo_library().unwrap(), PhotoLibrary::Both);
+        assert_eq!(shown(&lib), vec!["mine", "ours"]);
+        assert_eq!(library_count(&lib), 2);
+        lib.set_photo_library(PhotoLibrary::Personal).unwrap();
+        assert_eq!(shown(&lib), vec!["mine"]);
+        assert_eq!(library_count(&lib), 1);
+        assert_eq!(lib.photo_months().unwrap().len(), 1);
+        lib.set_photo_library(PhotoLibrary::Shared).unwrap();
+        assert_eq!(shown(&lib), vec!["ours"]);
+        assert_eq!(lib.photos(View::Library).unwrap().len(), 1);
+        assert_eq!(lib.photo_library().unwrap(), PhotoLibrary::Shared);
+    }
+
+    /// A write's own update of a photo (`put_photos`) keeps the library it is in; a pass that
+    /// brings it from another library moves it there.
+    #[test]
+    fn a_photo_keeps_its_library_until_a_pass_says_otherwise() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_photos_in(Some("SharedSync-1"), &[photo("a", 1)])
+            .unwrap();
+        let mut favorite = photo("a", 1);
+        favorite.favorite = true;
+        lib.put_photos(&[favorite]).unwrap();
+        assert_eq!(
+            lib.photo_zone("a").unwrap().as_deref(),
+            Some("SharedSync-1")
+        );
+        lib.put_photos_in(None, &[photo("a", 1)]).unwrap();
+        assert_eq!(lib.photo_zone("a").unwrap(), None);
     }
 
     /// A burst shows as its chosen photo in every view and count, carrying how many it holds;

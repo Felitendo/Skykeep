@@ -48,6 +48,7 @@ async fn main() -> Result<()> {
         &http,
         &ck,
         p.clone(),
+        None,
         &asset,
         Some("Spring bloom"),
         Some("Quince test — a caption ✿"),
@@ -55,7 +56,7 @@ async fn main() -> Result<()> {
     .await?;
     let now = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("set:    {}", show(&now));
-    photos::set_title_and_caption(&http, &ck, p.clone(), &asset, Some(""), Some("")).await?;
+    photos::set_title_and_caption(&http, &ck, p.clone(), None, &asset, Some(""), Some("")).await?;
     let back = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("clear:  {}", show(&back));
     Ok(())

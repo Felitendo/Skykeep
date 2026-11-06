@@ -115,7 +115,8 @@ async fn main() -> Result<()> {
         let assets = tags(stale.clone()).await?;
         let t = std::time::Instant::now();
         let out =
-            quince_icloud::photos::set_flags(&http, &root, p.clone(), &assets, flag, on).await?;
+            quince_icloud::photos::set_flags(&http, &root, p.clone(), None, &assets, flag, on)
+                .await?;
         let refused: Vec<_> = out.iter().filter_map(|r| r.as_ref().err()).collect();
         println!(
             "{flag:?}={on}{}: one batch in {:?}, refused {refused:?}",

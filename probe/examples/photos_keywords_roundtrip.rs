@@ -40,10 +40,10 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("gone"))?;
     println!("before: {:?}", words(&before));
     let wanted: Vec<String> = vec!["spring".into(), "quince test ✿".into()];
-    photos::set_keywords(&http, &ck, p.clone(), &asset, &[], &wanted).await?;
+    photos::set_keywords(&http, &ck, p.clone(), None, &asset, &[], &wanted).await?;
     let now = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("set:    {:?}", words(&now));
-    photos::set_keywords(&http, &ck, p.clone(), &asset, &wanted, &[]).await?;
+    photos::set_keywords(&http, &ck, p.clone(), None, &asset, &wanted, &[]).await?;
     let back = zc.lookup_record(&zone, &asset).await?.unwrap();
     println!("clear:  {:?}", words(&back));
     Ok(())

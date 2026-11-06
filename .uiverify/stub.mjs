@@ -657,7 +657,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             P("p1", 1792500000, { favorite: true }), P("p2", 1792400000, { keywords: ["beach"], latitude: 17.7653751, longitude: 83.357605 }), P("p3", 1792300000, { kind: "video", duration: 12.4, uti: "public.mpeg-4", filename: "clip.mp4" }),
             P("p4", 1789900000, { addedAt: 1792700000 }), P("p5", 1789800000, { rating: 5 }), P("p6", 1789700000, { deleted: true, deletedAt: 1792600000, expungeAt: Math.floor(Date.now() / 1000) + 2 * 86400 + 600 }),
           ]);
-          const live = all.filter((p) => !p.deleted && !p.hidden);
+          // The library switcher, as the library keeps it: a photo with a `zone` is the Shared
+          // Library's.
+          const inLibrary = (p) => (window.__library === "personal" ? !p.zone : window.__library === "shared" ? !!p.zone : true);
+          const live = all.filter((p) => !p.deleted && !p.hidden && inLibrary(p));
           const views = {
             library: live, recents: live, favorites: live.filter((p) => p.favorite), videos: live.filter((p) => p.kind === "video"),
             screenshots: live.filter((p) => p.subtype === 3), panoramas: live.filter((p) => p.subtype === 1), portrait: live.filter((p) => p.rendered === 8), recentlyDeleted: all.filter((p) => p.deleted),
@@ -754,6 +757,9 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         // Shared albums as the library keeps them (`__shared`), and each one's photos by zone
         // (`__sharedPhotos`), made like the library's.
         case "photos_shared_albums": return [...(window.__shared ??= [])];
+        // The library switcher: a Shared Library when `__hasShared`; the choice kept in `__library`.
+        case "photos_library": return { showing: window.__library ?? "both", hasShared: !!window.__hasShared };
+        case "photos_set_library": window.__library = args.which; return null;
         case "photos_burst": {
           // Three shots; the library's own photo is the chosen one, in the middle.
           const pick = (window.__photos ?? []).find((p) => p.burst === args.burst);

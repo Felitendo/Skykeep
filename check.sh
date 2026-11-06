@@ -80,6 +80,7 @@ step "download options"  node .uiverify/photos-download.mjs
 step "adjust date"       node .uiverify/photos-date.mjs
 step "photo search"      node .uiverify/photos-search.mjs
 step "full quality"      node .uiverify/photos-quality.mjs
+step "library switcher"  node .uiverify/photos-library-switcher.mjs
 step "notes delete"      node .uiverify/notes-delete.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs

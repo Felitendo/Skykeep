@@ -47,7 +47,17 @@ async fn main() -> Result<()> {
             continue;
         }
         let tag = a.get("recordChangeTag").and_then(|t| t.as_str());
-        photos::set_flag(&http, &ck, p.clone(), &asset, tag, Flag::Expunged, true).await?;
+        photos::set_flag(
+            &http,
+            &ck,
+            p.clone(),
+            None,
+            &asset,
+            tag,
+            Flag::Expunged,
+            true,
+        )
+        .await?;
         let after = zc.lookup_record(&zone, &asset).await?;
         println!(
             "{asset} ({name}): after = {}",

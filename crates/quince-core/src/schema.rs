@@ -922,6 +922,49 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX shared_album_photos_by_taken ON shared_album_photos (zone, taken_at DESC, id);
     CREATE INDEX shared_album_photos_by_id ON shared_album_photos (id);
     "#,
+    // 52 — the Shared Library (iOS 16+): a second photo library, shared with family, in a
+    // `SharedSync-<id>` zone beside the personal one. Its photos are the library's own rows,
+    // each marked with the zone it lives in (none: the personal library, so no existing row is
+    // rewritten); where each Shared Library is in Apple's databases is kept beside them. A whole
+    // read is noted per zone, so finishing one library's read lets go only of that library's
+    // photos it never saw, never the other's.
+    r#"
+    ALTER TABLE photos ADD COLUMN zone TEXT;
+    CREATE INDEX photos_by_zone ON photos (zone) WHERE zone IS NOT NULL;
+    CREATE TABLE shared_libraries (
+        zone     TEXT PRIMARY KEY,
+        database TEXT NOT NULL,
+        owner    TEXT,
+        title    TEXT
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS photo_walk (
+        kind TEXT NOT NULL,
+        id   TEXT NOT NULL,
+        PRIMARY KEY (kind, id)
+    ) STRICT, WITHOUT ROWID;
+    CREATE TABLE photo_walk_by_zone (
+        zone TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        id   TEXT NOT NULL,
+        PRIMARY KEY (zone, kind, id)
+    ) STRICT, WITHOUT ROWID;
+    INSERT INTO photo_walk_by_zone (kind, id) SELECT kind, id FROM photo_walk;
+    DROP TABLE photo_walk;
+    ALTER TABLE photo_walk_by_zone RENAME TO photo_walk;
+    CREATE TABLE IF NOT EXISTS photo_walk_held (
+        id     TEXT PRIMARY KEY,
+        record TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE photo_walk_held_by_zone (
+        zone   TEXT NOT NULL DEFAULT '',
+        id     TEXT NOT NULL,
+        record TEXT NOT NULL,
+        UNIQUE (zone, id)
+    ) STRICT;
+    INSERT INTO photo_walk_held_by_zone (id, record) SELECT id, record FROM photo_walk_held ORDER BY rowid;
+    DROP TABLE photo_walk_held;
+    ALTER TABLE photo_walk_held_by_zone RENAME TO photo_walk_held;
+    "#,
 ];
 
 /// Migrations that need more than SQL, run in the same transaction as the one numbered.

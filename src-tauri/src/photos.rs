@@ -491,13 +491,26 @@ async fn any_photo(
     id: &str,
 ) -> Result<Option<(Photo, Option<quince_core::shared::SharedPlace>)>, String> {
     let data = app.state::<Data>();
-    if let Some(p) = data
+    if let Some(found) = data
         .0
-        .read(|l| l.photo(id))
+        .read(|l| {
+            let Some(p) = l.photo(id)? else {
+                return Ok(None);
+            };
+            // A Shared Library's photo is asked of its own zone, as a shared album's is.
+            let place = l
+                .shared_library_of(id)?
+                .map(|s| quince_core::shared::SharedPlace {
+                    zone: s.zone,
+                    database: s.database,
+                    owner: s.owner,
+                });
+            Ok(Some((p, place)))
+        })
         .await
         .map_err(|e| e.to_string())?
     {
-        return Ok(Some((p, None)));
+        return Ok(Some(found));
     }
     Ok(data
         .0
@@ -505,6 +518,27 @@ async fn any_photo(
         .await
         .map_err(|e| e.to_string())?
         .map(|(p, place)| (p, Some(place))))
+}
+
+/// Where a photo's library is in Apple's databases, for a write to it: none for the personal
+/// library, else its Shared Library's zone (in the shared database, under its owner, for one
+/// this account joined).
+fn library_place(
+    library: &quince_core::Library,
+    id: &str,
+) -> Result<Option<quince_icloud::shared_collections::Place>, String> {
+    Ok(library
+        .shared_library_of(id)
+        .map_err(|e| e.to_string())?
+        .map(|s| quince_icloud::shared_collections::Place {
+            database: if s.database == "shared" {
+                quince_icloud::cloudkit::Database::Shared
+            } else {
+                quince_icloud::cloudkit::Database::Private
+            },
+            zone: s.zone,
+            owner: s.owner,
+        }))
 }
 
 /// Whether a photo's original is HEIC (or another HEIF).
@@ -1041,7 +1075,9 @@ async fn new_link(
             )
             .await
         }
-        None => quince_icloud::photos::links(http, root, params, &photo.master, &photo.id).await,
+        None => {
+            quince_icloud::photos::links(http, root, params, None, &photo.master, &photo.id).await
+        }
     }
     .map_err(|e| e.to_string())?
     .ok_or("Apple no longer has that photo.")?;
@@ -1421,6 +1457,41 @@ pub async fn photos_shared_albums(
         .map_err(|e| e.to_string())
 }
 
+/// Which library the views show (Both, Personal or Shared), and whether there is a Shared
+/// Library to choose: the switcher shows only when there is.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryChoice {
+    pub showing: quince_core::photos::PhotoLibrary,
+    pub has_shared: bool,
+}
+
+#[tauri::command]
+pub async fn photos_library(data: State<'_, Data>) -> UiResult<LibraryChoice> {
+    data.0
+        .read(|l| {
+            Ok(LibraryChoice {
+                showing: l.photo_library()?,
+                has_shared: !l.shared_libraries()?.is_empty(),
+            })
+        })
+        .await
+        .map_err(|e: quince_core::Error| e.to_string())
+}
+
+/// The library the views show from now on, as Photos' library switcher sets it.
+#[tauri::command]
+pub async fn photos_set_library(
+    which: quince_core::photos::PhotoLibrary,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    data.0
+        .lock()
+        .await
+        .set_photo_library(which)
+        .map_err(|e| e.to_string())
+}
+
 /// Every photo of one burst, in the order they were shot — what "View all" shows.
 #[tauri::command]
 pub async fn photos_burst(burst: String, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
@@ -1700,11 +1771,13 @@ pub async fn photo_set_flag(
     if flag == quince_icloud::photos::Flag::Expunged && (!on || !photo.deleted) {
         return Err("Only a photo in Recently Deleted can be deleted for good.".into());
     }
+    let place = library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_flag(
         &http,
         &root,
         params,
+        place.as_ref(),
         &id,
         photo.change_tag.as_deref(),
         flag,
@@ -1811,14 +1884,73 @@ pub async fn photos_set_flag(
     // Then to Apple, with no sync pass between the two.
     let _one = crate::PHOTOS_PASS.lock().await;
     let sent = async {
+        // A selection can hold photos of both libraries: each library's are sent to its own
+        // zone, and the answers put back in the order the photos were given.
+        let places = {
+            let library = data.0.lock().await;
+            before
+                .iter()
+                .map(|p| library_place(&library, &p.id))
+                .collect::<Result<Vec<_>, String>>()?
+        };
         let (http, root, params) = crate::cloudkit_context(&auth).await?;
-        let assets: Vec<(String, Option<String>)> = before
-            .iter()
-            .map(|p| (p.id.clone(), p.change_tag.clone()))
-            .collect();
-        quince_icloud::photos::set_flags(&http, &root, params, &assets, flag, on)
+        let mut answers: Vec<Option<Result<serde_json::Value, String>>> =
+            (0..before.len()).map(|_| None).collect();
+        let mut zones: Vec<Option<&quince_icloud::shared_collections::Place>> = Vec::new();
+        for place in &places {
+            if !zones
+                .iter()
+                .any(|z| z.map(|z| &z.zone) == place.as_ref().map(|p| &p.zone))
+            {
+                zones.push(place.as_ref());
+            }
+        }
+        for zone in zones {
+            let wanted: Vec<usize> = (0..before.len())
+                .filter(|&i| places[i].as_ref().map(|p| &p.zone) == zone.map(|z| &z.zone))
+                .collect();
+            let assets: Vec<(String, Option<String>)> = wanted
+                .iter()
+                .map(|&i| (before[i].id.clone(), before[i].change_tag.clone()))
+                .collect();
+            // One library's batch failing leaves the other's answers as Apple gave them: only
+            // this library's photos are said not to have gone.
+            match quince_icloud::photos::set_flags(
+                &http,
+                &root,
+                params.clone(),
+                zone,
+                &assets,
+                flag,
+                on,
+            )
             .await
-            .map_err(|e| e.to_string())
+            {
+                Ok(got) => {
+                    for (&i, answer) in wanted.iter().zip(got) {
+                        answers[i] = Some(answer);
+                    }
+                }
+                Err(e)
+                    if places
+                        .iter()
+                        .all(|p| p.as_ref().map(|p| &p.zone) == zone.map(|z| &z.zone)) =>
+                {
+                    return Err(e.to_string());
+                }
+                Err(e) => {
+                    for &i in &wanted {
+                        answers[i] = Some(Err(e.to_string()));
+                    }
+                }
+            }
+        }
+        Ok::<_, String>(
+            answers
+                .into_iter()
+                .map(|a| a.unwrap_or_else(|| Err("Not sent.".into())))
+                .collect::<Vec<_>>(),
+        )
     }
     .await;
     let answers = match sent {
@@ -1928,11 +2060,13 @@ pub async fn photo_set_text(
     // Only what was changed here goes: the other field may have been changed on another device.
     let title_changed = photo.title.as_deref().unwrap_or("") != title;
     let caption_changed = photo.caption.as_deref().unwrap_or("") != caption;
+    let place = library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_title_and_caption(
         &http,
         &root,
         params,
+        place.as_ref(),
         &id,
         title_changed.then_some(title.as_str()),
         caption_changed.then_some(caption.as_str()),
@@ -1980,11 +2114,13 @@ pub async fn photo_set_rating(
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
+    let place = library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_rating(
         &http,
         &root,
         params,
+        place.as_ref(),
         &id,
         photo.change_tag.as_deref(),
         rating,
@@ -2119,11 +2255,19 @@ pub async fn photo_set_keywords(
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
+    let place = library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
-    let (answer, kept) =
-        quince_icloud::photos::set_keywords(&http, &root, params, &id, &photo.keywords, &words)
-            .await
-            .map_err(|e| e.to_string())?;
+    let (answer, kept) = quince_icloud::photos::set_keywords(
+        &http,
+        &root,
+        params,
+        place.as_ref(),
+        &id,
+        &photo.keywords,
+        &words,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     // Apple's list now: this change, and any word another device added meanwhile.
     photo.keywords = kept;
     photo.change_tag = answer
@@ -2160,11 +2304,13 @@ pub async fn photo_set_date(
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
+    let place = library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_date(
         &http,
         &root,
         params,
+        place.as_ref(),
         &id,
         photo.change_tag.as_deref(),
         taken_at * 1000,
@@ -2440,6 +2586,26 @@ pub async fn photo_download(
         .photo_to_view(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
+    // Asked of the zone the photo lives in: its Shared Library's, its shared album's, or the
+    // personal library's.
+    let place = {
+        let library = data.0.lock().await;
+        match library_place(&library, &id)? {
+            Some(p) => Some(p),
+            None => library
+                .shared_photo(&id)
+                .map_err(|e| e.to_string())?
+                .map(|(_, s)| quince_icloud::shared_collections::Place {
+                    database: if s.database == "shared" {
+                        quince_icloud::cloudkit::Database::Shared
+                    } else {
+                        quince_icloud::cloudkit::Database::Private
+                    },
+                    zone: s.zone,
+                    owner: s.owner,
+                }),
+        }
+    };
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let zc = quince_icloud::cloudkit::ZoneClient::new(
         &http,
@@ -2447,7 +2613,16 @@ pub async fn photo_download(
         quince_icloud::photos::CONTAINER,
         params,
     );
-    let zone = quince_icloud::photos::library_zone(&zc).await;
+    let (zc, zone) = match &place {
+        Some(p) => (
+            zc.in_database(p.database).owned_by(p.owner.clone()),
+            p.zone.clone(),
+        ),
+        None => {
+            let zone = quince_icloud::photos::library_zone(&zc).await;
+            (zc, zone)
+        }
+    };
     let asset = zc
         .lookup_record(&zone, &id)
         .await

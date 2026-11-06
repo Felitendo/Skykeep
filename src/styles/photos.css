@@ -30,6 +30,9 @@
 .px-side-gap { margin-top: var(--source-gap); }
 .px-side-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
 .px-side-row .px-side-heading { margin-bottom: 4px; }
+/* The library switcher, under the Photos heading, as wide as a row. */
+.px-library { display: flex; margin: 0 0 6px; }
+.px-library .picker-button { flex: 1; justify-content: space-between; }
 
 /* ---- the library ------------------------------------------------------------------------- */
 .px-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }

@@ -57,6 +57,7 @@ async fn main() -> Result<()> {
             &http,
             &ck,
             p.clone(),
+            None,
             &photo.id,
             tag.as_deref(),
             Flag::Favorite,

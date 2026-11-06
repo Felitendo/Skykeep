@@ -292,6 +292,11 @@ export const api = {
   /** What the window shows pictures at, so the app makes them before they are shown. */
   photosPrepare: (shown: { cell: number; fit: boolean; stageW: number; stageH: number; dpr: number; view?: PhotoView | null }) =>
     invoke<void>("photos_prepare", { shown }),
+  /** Which photo library the views show (the library switcher), and whether a Shared Library
+   *  exists to choose. */
+  photosLibrary: () => invoke<{ showing: PhotoLibrary; hasShared: boolean }>("photos_library"),
+  /** The library the views show from now on. */
+  photosSetLibrary: (which: PhotoLibrary) => invoke<void>("photos_set_library", { which }),
   /** Shared albums, made or joined, newest first — from Apple each time. */
   photosSharedAlbums: () => invoke<SharedAlbum[]>("photos_shared_albums"),
   /** The Hidden album unlocked with the Apple ID password; refused with why (wrong, or a wait). */
@@ -936,6 +941,9 @@ export type PhotoAlbum = {
 };
 
 /** Where a grid's photos come from (quince-core photos::Source). */
+/** Photos' library switcher: both libraries, the personal one, or the Shared Library. */
+export type PhotoLibrary = "both" | "personal" | "shared";
+
 export type PhotoSource = { view: PhotoView } | { album: string } | { query: string } | { burst: string } | { shared: string };
 /** How a sortable view is sorted; null keeps the source's own order. */
 export type PhotoOrder = { by: "taken" | "added"; oldest: boolean };

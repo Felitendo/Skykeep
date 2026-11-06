@@ -145,6 +145,7 @@ impl Remote for Photos {
                 &c.http,
                 &c.ck,
                 c.params.clone(),
+                None,
                 &asset,
                 rec["recordChangeTag"].as_str(),
                 Flag::Deleted,
