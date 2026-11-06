@@ -478,7 +478,7 @@ async fn signing_out_clears_a_cooldown() {
 /// rather than truncated into a cast or left to burn CPU.
 #[tokio::test]
 async fn an_implausible_work_factor_is_refused() {
-    for absurd in [u64::from(u32::MAX) + 1, 5_000_000_000, 3] {
+    for absurd in [u64::from(u32::MAX) + 1, 5_000_000_000, 1_000_001, 0] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/appleauth/auth/signin/init"))
@@ -503,6 +503,40 @@ async fn an_implausible_work_factor_is_refused() {
             "iteration={absurd} should be rejected, got {err}"
         );
     }
+}
+
+/// An older account's own count, as Apple sent it to one person (806, issue #8): taken, and the
+/// sign-in goes on to send its proof, rather than stopping at "implausible".
+#[tokio::test]
+async fn an_older_accounts_low_work_factor_is_taken() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/signin/init"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "salt": b64(&[0x77; 16]),
+            "b": b64(&[0x5e; 256]),
+            "c": "challenge-c",
+            "iteration": 806,
+            "protocol": "s2k",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/signin/complete"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    let err = client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap_err();
+    assert!(
+        !err.to_string().contains("implausible"),
+        "806 rounds was refused: {err}"
+    );
 }
 
 /// Apple's service endpoints authenticate by cookie. If the cookies are lost but the tokens

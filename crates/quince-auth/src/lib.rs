@@ -80,9 +80,12 @@ impl Endpoints {
 
 /// iCloud web's first-party OAuth widget key. Not a secret — it is public in the web client.
 const WIDGET_KEY: &str = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d";
-/// Bounds on Apple's PBKDF2 iteration count. Apple uses roughly 20k; anything far outside
-/// this is either a corrupted response or something trying to make us burn CPU.
-const MIN_PBKDF2_ITERATIONS: u32 = 1_000;
+/// Bounds on Apple's PBKDF2 iteration count. Apple sends each account's own: most see about
+/// 20,000, but older accounts far fewer (806 for one, issue #8), and every other client takes
+/// whatever comes. So any count is taken but none, which is no derivation at all; only the
+/// ceiling guards something, a response that would have us burn the CPU. Apple chose the count
+/// over TLS, so a low one is not something an attacker in the middle can ask for.
+const MIN_PBKDF2_ITERATIONS: u32 = 1;
 const MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
 
 /// Version strings the iCloud web client sends. Cosmetic to Apple in practice, but sending
