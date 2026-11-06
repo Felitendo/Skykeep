@@ -47,6 +47,7 @@ import { useReveal } from "../lib/reveal";
 import { instantIn, wallIn, zoneName, type Wall } from "./calendar/model";
 import { keepSame, same } from "../lib/same";
 import { useArrivals } from "../lib/arrival";
+import { carryLabel } from "../lib/dragPicture";
 
 /** Apple's built-in views, in Apple's order, each with the glyph and system colour its app uses. */
 const SMART: { kind: SmartList; title: string; glyph: GlyphName; colour: string }[] = [
@@ -2461,6 +2462,8 @@ const ReminderRow = memo(function ReminderRow({
         if (!canReorder) return;
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", reminder.guid);
+        // Its name under the pointer, not the whole row (lib/dragPicture).
+        carryLabel(e, reminder.title);
         act.current.startDrag(reminder.guid);
       }}
       onDragEnd={() => act.current.endDrag()}

@@ -49,6 +49,7 @@ import { Picker } from "../components/Picker";
 import { PAGE, PhotoList, PhotoStore } from "./photos/list";
 import { Periods, monthName, type Level, type Place } from "./photos/Periods";
 import { same } from "../lib/same";
+import { carryPicture } from "../lib/dragPicture";
 
 /** The library switcher's choices, named as Photos names them. */
 const LIBRARIES = [
@@ -2331,7 +2332,7 @@ export function PhotosView() {
     e.dataTransfer.setData("application/x-quince-photos", ids.join(","));
     // A stack of photos with how many, as Photos drags them.
     const img = e.currentTarget.querySelector("img");
-    if (img && typeof e.dataTransfer.setDragImage === "function") {
+    if (img) {
       const ghost = document.createElement("div");
       ghost.className = "px-ghost";
       const pic = img.cloneNode() as HTMLImageElement;
@@ -2341,9 +2342,7 @@ export function PhotosView() {
         n.textContent = String(ids.length);
         ghost.appendChild(n);
       }
-      document.body.appendChild(ghost);
-      e.dataTransfer.setDragImage(ghost, 36, 36);
-      window.setTimeout(() => ghost.remove(), 0);
+      carryPicture(e, ghost, 36, 36);
     }
   };
   const dropTarget = (a: PhotoAlbum) => (a.folder ? {} : {

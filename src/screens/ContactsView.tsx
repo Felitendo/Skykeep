@@ -39,6 +39,7 @@ import { keepSame } from "../lib/same";
 import { useChosen, useIsChosen, type Chosen } from "../lib/chosen";
 import { useArrivals } from "../lib/arrival";
 import { copyText } from "../lib/clipboard";
+import { carryLabel } from "../lib/dragPicture";
 
 /** The sidebar row that is every contact rather than a list. */
 const ALL = "";
@@ -892,7 +893,9 @@ export function ContactsView() {
         const { picked } = latest.current;
         e.dataTransfer.effectAllowed = "copy";
         e.dataTransfer.setData("text/plain", displayName(contact));
-        setDragging(picked.includes(contact.guid) ? picked : [contact.guid]);
+        const carried = picked.includes(contact.guid) ? picked : [contact.guid];
+        carryLabel(e, displayName(contact), carried.length);
+        setDragging(carried);
       },
       dragEnd: () => {
         setDragging(null);

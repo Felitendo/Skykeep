@@ -660,3 +660,38 @@ span.switch::after { content: ""; }
 }
 .receiving-line-text { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .receiving-line .progress { height: 2px; }
+
+/* ---- what a drag carries (lib/dragPicture) ------------------------------------------------ */
+
+/* Off-screen, for the moment the engine takes its picture; the pointer shows the picture. */
+.drag-picture { position: fixed; top: -400px; left: -400px; pointer-events: none; }
+/* A row's name in a capsule, as the Mac drags a reminder, a card or a file: never the row. */
+.drag-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 14px;
+  background: var(--sheet);
+  box-shadow: inset 0 0 0 1px var(--glass-edge);
+  color: var(--text);
+  font-size: var(--t-13);
+  font-weight: 500;
+  line-height: 28px;
+  white-space: nowrap;
+}
+.drag-label span { overflow: hidden; text-overflow: ellipsis; }
+.drag-label b {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--sys-red);
+  color: #fff;
+  font-size: var(--t-12);
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+}
