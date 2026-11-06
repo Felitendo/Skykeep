@@ -6114,6 +6114,57 @@ fn steady_drawing() {
     }
 }
 
+/// Who paints the page's pixels when there is no GPU to paint them. WebKitGTK paints on the GPU
+/// through OpenGL; with no GPU (a virtual machine's plain display, a computer whose driver gives
+/// no render node) Mesa answers OpenGL on the processor instead (llvmpipe), and every frame
+/// waits for it. WebKit's own painter on the processor (Skia, spread over every core) is far
+/// quicker there. Measured in a QEMU guest on llvmpipe, 1280×800, WebKitGTK 2.54, a mouse
+/// wheel spun over each list for 2.4 s, two runs each, frames per second and the slowest 5%:
+///
+/// - Photos: 29 → 47 fps, 183 → 63 ms;
+/// - Drive's list: 48 → 57 fps, 40 → 26 ms;
+/// - Reminders' list of 1,000: 39 → 43 fps, 52 → 47 ms; Notes' list: 59 fps either way.
+///
+/// GPU buffers (DMA-BUF) gain nothing there: with no GPU, they are drawn by llvmpipe too.
+/// Only where nothing draws on a GPU: with a render node, GPU painting stays (59 fps on the
+/// Iris Xe measured above). The person's own `WEBKIT_SKIA_ENABLE_CPU_RENDERING` is left
+/// alone: `=0` keeps GPU painting even here, `=1` uses the processor everywhere.
+#[cfg(target_os = "linux")]
+fn paint_without_gpu() {
+    if std::env::var_os("WEBKIT_SKIA_ENABLE_CPU_RENDERING").is_some() {
+        return;
+    }
+    let env = |k: &str| std::env::var(k).ok();
+    let render_node = std::fs::read_dir("/dev/dri").is_ok_and(|dir| {
+        dir.flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
+    });
+    if !gpu_to_paint_on(
+        render_node,
+        env("LIBGL_ALWAYS_SOFTWARE").as_deref(),
+        env("GALLIUM_DRIVER").as_deref(),
+    ) {
+        // Before any thread starts: nothing else can be reading the environment yet.
+        std::env::set_var("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn paint_without_gpu() {}
+
+/// Whether OpenGL here reaches a GPU: a DRM render node to open, and Mesa not told to answer
+/// on the processor (`LIBGL_ALWAYS_SOFTWARE`, or a software Gallium driver).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn gpu_to_paint_on(
+    render_node: bool,
+    always_software: Option<&str>,
+    gallium: Option<&str>,
+) -> bool {
+    let software = always_software.is_some_and(|v| !v.is_empty() && v != "0" && v != "false")
+        || gallium.is_some_and(|d| matches!(d, "llvmpipe" | "softpipe" | "swrast"));
+    render_node && !software
+}
+
 /// WebKitGTK's player on its older pipeline (playbin) buffers a video read over HTTP to disk
 /// and then stalls: "Pausing stream for buffering" after the whole file has arrived, the
 /// picture frozen on its first frame. Its newer pipeline (playbin3, WebKit's own switch) plays
@@ -6705,6 +6756,7 @@ fn main() {
     timing::start();
     login::note_launch();
     steady_drawing();
+    paint_without_gpu();
     smooth_video();
     // From an AppImage: HEIC photos through the HEVC decoder it carries (quince-media's
     // appimage.rs), set before libheif is first used and before any thread starts.
@@ -7445,6 +7497,21 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+
+    /// A render node and nothing saying otherwise is a GPU; no render node, or Mesa told to
+    /// answer on the processor, is not — and only then does the page paint on the processor.
+    #[test]
+    fn the_page_paints_on_the_processor_only_where_there_is_no_gpu() {
+        use super::gpu_to_paint_on as gpu;
+        assert!(gpu(true, None, None));
+        assert!(gpu(true, Some("0"), None));
+        assert!(gpu(true, Some(""), Some("iris")));
+        assert!(!gpu(false, None, None));
+        assert!(!gpu(true, Some("1"), None));
+        assert!(!gpu(true, Some("true"), None));
+        assert!(!gpu(true, None, Some("llvmpipe")));
+        assert!(!gpu(true, None, Some("softpipe")));
+    }
 
     /// Everything directly in the data folder is its owner's alone, whatever it was made with.
     #[cfg(unix)]
