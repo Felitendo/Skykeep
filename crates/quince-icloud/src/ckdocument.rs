@@ -15,9 +15,11 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 /// Where the readable text lives inside the document protobuf.
 const TEXT_PATH: &[u64] = &[2, 3, 2];
 
-/// A payload larger than this is not a reminder title or a note body; refuse it rather than
-/// decompress something hostile.
-const MAX_DECOMPRESSED: u64 = 8 * 1024 * 1024;
+/// The most a document may unpack to. It bounds a hostile payload (a few kilobytes that would
+/// inflate to gigabytes), and is far above any real note: 8 MB, the limit once guessed here,
+/// is a long journal or a pasted book, and such a note opened as nothing at all. A note's text
+/// is several bytes a character with its formatting, so this is tens of millions of characters.
+const MAX_DECOMPRESSED: u64 = 128 * 1024 * 1024;
 
 /// Wire types we can advance past. Anything else means the bytes are not what we expect.
 const WIRE_VARINT: u64 = 0;
@@ -2380,6 +2382,23 @@ fn looks_like_message(bytes: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A very long note, far past the 8 MB once refused, reads whole; a payload that would
+    /// unpack past the ceiling is still refused, not decompressed.
+    #[test]
+    fn a_very_long_note_reads_and_a_bomb_does_not() {
+        use std::io::Write as _;
+        let long = "All work and no play. ".repeat(600_000); // ~13 MB of text
+        let encoded = text_to_base64(&long);
+        assert_eq!(text_from_base64(&encoded).as_deref(), Some(long.as_str()));
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        gz.write_all(&vec![0u8; 200 * 1024 * 1024]).unwrap();
+        let bomb = gz.finish().unwrap();
+        assert!(
+            inflate(&bomb).is_none(),
+            "a payload past the ceiling was unpacked"
+        );
+    }
     use super::*;
     use std::io::Write;
 

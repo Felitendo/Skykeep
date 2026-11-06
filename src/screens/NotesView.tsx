@@ -569,6 +569,10 @@ export function NotesView() {
       .then(([text, runs]) => {
         if (cancelled) return;
         setLoadedRuns((cur) => (runs !== null ? { guid: openGuid, runs } : cur?.guid === openGuid ? cur : { guid: openGuid, runs: [] }));
+        // The library holds no text for it: not yet arrived, or a note Skykeep can't read.
+        // Said as such, never an "Opening…" that never ends; the next read after a sync
+        // replaces it the moment the text is there.
+        setNoText(text === null ? openGuid : null);
         if (text === null) return;
         // Never over what is being typed. A refresh follows every save, and adopting its
         // answer under someone's cursor is how a half-saved note replaced a whole one. Typing
@@ -1361,6 +1365,8 @@ export function NotesView() {
   // the spinner it used to show first was a flash on every note opened.
   const waiting = Boolean(open && !open.locked && (body === null || (open.editable && runs === null)));
   const [slow, setSlow] = useState(false);
+  /** The note whose read just came back with no text in the library. */
+  const [noText, setNoText] = useState<string | null>(null);
   useEffect(() => {
     setSlow(false);
     if (!waiting) return undefined;
@@ -1867,7 +1873,14 @@ export function NotesView() {
           /* Nothing to type into until the note's own text has arrived: an empty box over a
              note whose body had not loaded would write that emptiness back. Said only once it
              is slow in coming. */
-          slow && <EmptyState busy className="note-loading">Opening…</EmptyState>
+          open && noText === open.guid ? (
+            <EmptyState className="note-loading">
+              This note's text isn't here yet. If it doesn't appear after the next sync, Skykeep
+              can't read it, but it's safe in iCloud: open it on your iPhone, iPad or Mac.
+            </EmptyState>
+          ) : (
+            slow && <EmptyState busy className="note-loading">Opening…</EmptyState>
+          )
         ) : open ? (
           <div className="note-editor is-readonly">
             <h1 className="note-title">{splitTitle(body ?? "").title}</h1>

@@ -922,7 +922,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           window.__table[args.row][args.column] = args.text;
           return window.__table.map((r) => r.slice());
         }
-        case "note_body": return (noteList.find((n) => n.guid === args?.guid) ?? {}).body ?? null;
+        // `__noText`: a note the library holds no text for (not yet arrived, or unreadable).
+        case "note_body": return args?.guid === window.__noText ? null : (noteList.find((n) => n.guid === args?.guid) ?? {}).body ?? null;
         case "note_row": {
           const n = noteList.find((x) => x.guid === args?.guid);
           return n ? { ...n, body: null } : null;
