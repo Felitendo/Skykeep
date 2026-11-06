@@ -23,7 +23,8 @@ License:        GPL-3.0-only
 URL:            https://github.com/YashwanthKamireddi/Skykeep
 Source0:        %{url}/archive/v%{version}/Skykeep-%{version}.tar.gz
 
-ExclusiveArch:  x86_64
+# aarch64 for Fedora Asahi Remix on Apple Silicon Macs.
+ExclusiveArch:  x86_64 aarch64
 
 BuildRequires:  cargo
 BuildRequires:  rust

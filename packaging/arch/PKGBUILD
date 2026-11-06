@@ -10,7 +10,7 @@ pkgname=skykeep
 pkgver=0.1.9
 pkgrel=1
 pkgdesc="Your iCloud, on this computer — calendar, reminders, notes, contacts and Drive"
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url="https://github.com/YashwanthKamireddi/Skykeep"
 license=('GPL-3.0-only')
 

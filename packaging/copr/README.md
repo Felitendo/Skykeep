@@ -29,8 +29,8 @@ A Fedora Account (FAS), free at <https://accounts.fedoraproject.org>. Log in to
 ## Setting it up, once
 
 1. **New Project**, named `skykeep`.
-   - Chroots: `fedora-43-x86_64`, `fedora-44-x86_64` and every newer `fedora-*-x86_64` (and
-     `fedora-rawhide-x86_64` if you want it). x86_64 only.
+   - Chroots: `fedora-43-x86_64`, `fedora-44-x86_64` and every newer `fedora-*-x86_64`, and
+     the same Fedoras' `-aarch64` chroots (Fedora Asahi Remix on Apple Silicon Macs).
    - Check **Enable internet access during builds** (Other options). Without it npm and cargo
      cannot fetch and the build fails.
    - Description: "Your iCloud on Fedora: Notes, Reminders, Calendar, Contacts, Drive and
