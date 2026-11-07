@@ -4,7 +4,7 @@
 
 <h1 align="center">Skykeep</h1>
 
-<p align="center"><strong>Six apps. Your whole iCloud.</strong><br>Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as native apps for Linux and Windows.</p>
+<p align="center"><strong>Six apps. Your whole iCloud.</strong><br>Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as native desktop apps. Fast, light, and offline.</p>
 
 <p align="center">
   <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest"><strong>Download</strong></a> ·
@@ -23,7 +23,7 @@
 
 <p align="center"><a href="https://apps.microsoft.com/detail/9P6B042JNK54"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" height="48"></a>&nbsp;&nbsp;<a href="https://snapcraft.io/skykeep"><img src="https://snapcraft.io/static/images/badges/en/snap-store-black.svg" alt="Get it from the Snap Store" height="48"></a></p>
 
-Apple makes no Notes or Reminders app for Windows and no iCloud app at all for Linux, so most iPhone owners live with icloud.com in a browser tab. Skykeep keeps your whole iCloud on your computer instead. Every app opens straight from disk, works offline, and stays in sync with your iPhone, iPad and Mac: a change on your phone usually arrives within a second, over Apple's own push channel.
+Skykeep keeps your iCloud on your own computer and syncs it quietly in the background. Every app opens instantly, works with no connection at all, and stays in step with your iPhone, iPad and Mac as you use them. Underneath is a small Rust engine that idles at under 0.1% of a CPU core.
 
 <p align="center"><img src="docs/media/hero.webp" alt="Skykeep ticking off a reminder, switching to the week in Calendar, opening a note, then a contact card, an iCloud Drive folder and the photo library" width="880"></p>
 
@@ -61,12 +61,11 @@ Apple makes no Notes or Reminders app for Windows and no iCloud app at all for L
 Skykeep is a native engine written in Rust with a light Tauri window on top: one codebase for Linux and Windows, on x86 and ARM.
 
 - Every screen reads a local SQLite library, never the network. Apps open instantly and keep working offline.
-- Changes from your iPhone arrive over Apple's own push channel, usually within a second.
+- Changes from your iPhone arrive over Apple's own push channel, as they happen.
 - Edits go into an outbox: shown the moment you make them, sent in order, held while you're offline, and safe to send twice.
 - Notes merge through Apple's own CRDT, so typing on two devices at once keeps both edits.
 - Apple's sign-in, SRP with two-factor, is rebuilt in Rust. Your password is never sent.
 - The network lock lives in the engine's DNS resolver: it cannot look up a host that isn't Apple's.
-- Idle, it uses under 0.1% of one CPU core.
 - The photo grid stays smooth through 50,000 photos, keeping only what's near the screen in memory.
 - iCloud Drive and Photos are real folders in your file manager on Linux, through FUSE, and come to File Explorer next through Cloud Files, the system OneDrive is built on.
 - Each release passes over 1,300 Rust tests and is installed and launched on Ubuntu, Debian, Mint, Fedora, openSUSE, Arch and Windows before it's published.
