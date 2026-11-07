@@ -223,8 +223,10 @@ fn make(app: &AppHandle, key: &str, asking: &str) {
 }
 
 /// How long a closed window — an app's, or the whole-library one — is kept, put away, before
-/// its memory is given back.
-const KEPT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// its memory is given back. Reopened within it, a window is back at once; after it, it is made
+/// again in about half a second. A minute: in the tray Skykeep is its engine, not its windows
+/// (#11) — ten minutes kept each closed window's web view, 100 MB or more, long after use.
+const KEPT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// When each put-away app window was closed: shown again, it is taken off the list, so a
 /// window closed, reopened and closed again is kept the full while from its last close.

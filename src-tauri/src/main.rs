@@ -6271,8 +6271,10 @@ fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: 
     // Asked in this order: started any other way the answer is no, and the tray's question —
     // a call on the session bus — was asked on the main thread just before every launch's show.
     if login::stay_hidden(needs_you.unwrap_or(true), || tray_reachable(&app)) {
-        // Its page has done what a launch needs of it (the session taken up again): it waits,
-        // drawn and hidden, so the tray opens it at once.
+        // Its page has done what a launch needs of it (the session taken up again): put away,
+        // as a closed window is — opened from the tray soon, it is there at once; otherwise
+        // its web view is given back and the engine runs on behind the tray (#11).
+        apps::put_away(&window.as_ref().window());
         return;
     }
     show_window(&app);
@@ -6928,10 +6930,11 @@ fn main() {
                 }
                 if window.label() == "main" {
                     api.prevent_close();
-                    // Hidden, never given back: the tray's click shows it at once, already
-                    // drawn. Remade on demand it took about half a second, which the founder
-                    // asked to be gone; keeping its web view costs about 190 MB in the tray.
+                    // Put away as the apps' windows are (apps::KEPT): reopened soon it is back
+                    // at once, and after that its web view is given back. Kept for good, it
+                    // held about 190 MB in the tray all day (#11).
                     window.hide().ok();
+                    apps::put_away(window);
                     updates::put_away(window.app_handle(), window.label());
                 } else if window.label().starts_with("app-") {
                     api.prevent_close();
@@ -7268,21 +7271,13 @@ fn main() {
                 LAUNCHED_AS_APP.store(true, Ordering::SeqCst);
                 apps::open(app.handle(), key);
             }
-            // The whole-library window, unless this launch is one app's or one file's — then
-            // made a little later, hidden, once that app's window is up, so the tray still
-            // opens the whole library at once.
+            // The whole-library window, unless this launch is one app's or one file's: then it is
+            // made when it is first asked for (the tray, its launcher), about half a second the
+            // first time and at once after. Made hidden beside the app's window instead, it kept a
+            // second web view of about 115 MB all day for people who never opened it (#11);
+            // every window takes up the session itself (App.tsx), so nothing waited on it.
             if !LAUNCHED_AS_APP.load(Ordering::SeqCst) {
                 make_main(app.handle());
-            } else {
-                let app = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(4)).await;
-                    let warm = app.clone();
-                    app.run_on_main_thread(move || {
-                        make_main(&warm);
-                    })
-                    .ok();
-                });
             }
             show_when_ready(app.handle());
             timing::mark("setup done");

@@ -15,11 +15,12 @@ step() {
 # side: the Rust lane beside the web lane, and the browser checks in a pool. Run one by one they
 # took about forty minutes at a load of 1.5 on twelve cores. Each browser is several processes, so
 # the pool is half the cores; CHECK_JOBS changes it. Checks that measure time run alone at the
-# end, where a busy machine can't make them fail. Results print in this file's order.
+# end, where a busy machine can't make them fail (run six at a time, the scroll and paging
+# checks measured frames of 450–1000 ms that alone are 17–575 ms). Results print in this file's order.
 JOBS=${CHECK_JOBS:-$(( $(nproc) / 2 ))}; [ "$JOBS" -ge 1 ] || JOBS=1
 out=$(mktemp -d)
 names=() pids=() later=()
-timed() { case "$*" in *notes-long.mjs*|*photos-scale.mjs*) return 0 ;; esac; return 1; }
+timed() { case "$*" in *notes-long.mjs*|*photos-scale.mjs*|*photos-scroll.mjs*|*photos-paging.mjs*|*photos-levels-scale.mjs*) return 0 ;; esac; return 1; }
 pooled() {
   local name=$1; shift
   if timed "$@"; then later+=("$name"$'\x1f'"$(printf '%q ' "$@")"); return; fi
@@ -113,6 +114,12 @@ pooled "photos"            node .uiverify/photos.mjs
 pooled "photos preparing"  node .uiverify/photos-preparing.mjs
 pooled "photo albums"      node .uiverify/photos-albums.mjs
 pooled "photos at scale"   node .uiverify/photos-scale.mjs
+pooled "photos memory"     node .uiverify/photos-memory.mjs
+pooled "webkit: photos memory" env ENGINE=webkit node .uiverify/photos-memory.mjs
+pooled "photos scrolling"  node .uiverify/photos-scroll.mjs
+pooled "webkit: photos scrolling" env ENGINE=webkit node .uiverify/photos-scroll.mjs
+pooled "photos paging"     node .uiverify/photos-paging.mjs
+pooled "photos levels"     env ENGINE=webkit node .uiverify/photos-levels-scale.mjs
 pooled "photos drag"       node .uiverify/photos-drag.mjs
 pooled "drag pictures"     node .uiverify/drag-picture.mjs
 pooled "photos keys"       node .uiverify/photos-keys.mjs

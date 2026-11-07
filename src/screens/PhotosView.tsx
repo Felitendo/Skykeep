@@ -4,6 +4,7 @@
  * from the disk cache and are fetched once.
  */
 import { useActiveRef, useScreenActive } from "../lib/screen";
+import { putAway, watchNear } from "../lib/near";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -359,6 +360,7 @@ const Tile = memo(function Tile({
   soon,
   fit,
   cell,
+  pics,
   act,
 }: {
   photo: Photo;
@@ -370,6 +372,8 @@ const Tile = memo(function Tile({
   fit: boolean;
   /** A cell's width in device pixels. */
   cell: number;
+  /** Its month's: whether it is near the view, so its picture is drawn (see Month: pics). */
+  pics: { current: boolean };
   act: Acts;
 }) {
   const born = useRef(performance.now());
@@ -383,11 +387,22 @@ const Tile = memo(function Tile({
   // picture, decoded and then covered. Set on the element itself: no tile draws again for it.
   const pic = useRef<HTMLSpanElement | null>(null);
   const landed = useRef(false);
+  const img = useRef<HTMLImageElement | null>(null);
   const under = useCallback(() => {
-    if (!landed.current && pic.current) pic.current.style.backgroundImage = `url("${pictureSrc(photo.id, "thumb")}")`;
+    // Only under a picture that is drawn: a tile far from the view keeps neither (see Month).
+    if (!landed.current && pic.current && img.current?.hasAttribute("src"))
+      pic.current.style.backgroundImage = `url("${pictureSrc(photo.id, "thumb")}")`;
   }, [photo.id]);
   const src = tileSrc(photo, cell, fit);
   const first = useRef(true);
+  // Its picture drawn at once when its month is near as it is built, as every tile always was;
+  // a new size asked for (the window resized, zoomed) is drawn in its place. Drawn and let go
+  // otherwise by its month, on the element itself, so no tile draws again for it (see Month).
+  useLayoutEffect(() => {
+    const el = img.current;
+    if (!el) return;
+    if (el.hasAttribute("src") || pics.current) el.src = src;
+  }, [src, pics]);
   useEffect(() => {
     // A new size asked for (the window resized, zoomed): the thumbnail may be wanted again.
     if (!first.current) landed.current = false;
@@ -447,11 +462,12 @@ const Tile = memo(function Tile({
         // The thumbnail underneath while the picture made for this tile's size comes (see under).
         style={fit && photo.width && photo.height ? fitFrame(photo) : undefined}
       >
-        {/* Fetched as soon as its month is built, well ahead of the screen — not left to the
-            engine's own lazy margin, which a fast scroll outran — and made the size it is
-            drawn at, so the engine never shrinks it. */}
+        {/* Drawn once its month is within a screen of the view — not left to the engine's own
+            lazy margin, which a fast scroll outran — and made the size it is drawn at, so the
+            engine never shrinks it. Let go again two screens off (see Month: pics). */}
         <img
-          src={src}
+          ref={img}
+          data-src={src}
           alt=""
           decoding="async"
           draggable={false}
@@ -667,6 +683,77 @@ const Month = memo(function Month({
   useEffect(() => {
     if (eager && items.length) void list.need(items[0].index, items[items.length - 1].index);
   }, [eager, list, items]);
+  /*
+   * Its pictures, drawn only near the view: from a screen away, let go two screens away. Each
+   * picture drawn is decoded memory the engine keeps for as long as it is there: drawn as
+   * months were built, 4000px either side, and never let go, the grid held thirteen screens of
+   * them (2,300, about 400 MB) and kept them while another app was in front (#11).
+   *
+   * Drawn and let go on the elements themselves, never by drawing tiles again: a month's tiles
+   * all drawn again as it came near made a fling's longest frame 217 ms (33 ms before). Drawn a
+   * slice a frame (buildSoon), and let go only once the screen is idle, so neither ever costs a
+   * frame of a scroll. A tile built while its month is near draws its own at once, as before.
+   * While the screen is put away (another app in front), what was on and beside the screen
+   * stays, so coming back is drawn at once.
+   */
+  const pics = useRef(eager);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const root = el.closest(".px-scroll");
+    let gone = false;
+    let drawing = false;
+    let letting = 0;
+    const draw = () => {
+      if (drawing) return;
+      drawing = true;
+      buildSoon(() => {
+        if (gone || !pics.current) return (drawing = false), true;
+        const waiting = el.querySelectorAll<HTMLImageElement>("img[data-src]:not([src])");
+        for (let i = 0; i < Math.min(BUILD_TILES, waiting.length); i++) waiting[i].src = waiting[i].dataset.src!;
+        if (waiting.length > BUILD_TILES) return false;
+        drawing = false;
+        return true;
+      });
+    };
+    const letGo = () => {
+      if (letting) return;
+      const idle = (fn: () => void): number =>
+        typeof window.requestIdleCallback === "function" ? window.requestIdleCallback(fn, { timeout: 2000 }) : window.setTimeout(fn, 300);
+      letting = idle(() => {
+        letting = 0;
+        if (gone || pics.current) return;
+        for (const im of el.querySelectorAll<HTMLImageElement>("img[src]")) {
+          im.removeAttribute("src");
+          delete im.dataset.in;
+          const frame = im.parentElement;
+          if (frame) frame.style.backgroundImage = "";
+        }
+      });
+    };
+    if (pics.current) draw();
+    // Whether it was near the last time the screen was in sight.
+    let near = eager;
+    const stopNear = watchNear(el, root, "100% 0px", (on) => {
+      if (putAway(el)) return;
+      near = on;
+      if (!on) return;
+      pics.current = true;
+      draw();
+    });
+    const stopFar = watchNear(el, root, "200% 0px", (on) => {
+      if (on) return;
+      // Put away, everything reads as far: only what was not near the screen is let go.
+      if (putAway(el) && near) return;
+      pics.current = false;
+      letGo();
+    });
+    return () => {
+      gone = true;
+      stopNear();
+      stopFar();
+    };
+  }, [eager]);
   // One watcher: near the screen (within 4000px), its photos are asked for and it is built a few
   // rows a frame; gone far again before it was built, its building waits until it comes back —
   // a fling to the foot of the library builds the months it lands on, not every month it
@@ -749,6 +836,7 @@ const Month = memo(function Month({
                 soon={t?.soon ?? false}
                 fit={fit}
                 cell={cell}
+                pics={pics}
                 act={act}
               />
             );
