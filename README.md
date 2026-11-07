@@ -93,12 +93,6 @@ sudo snap install skykeep && sudo snap connect skykeep:password-manager-service
 The Snap's second command lets it keep you signed in through your keyring. On Ubuntu the AppImage needs `libfuse2t64` once (`libfuse2` on 22.04). Fedora and openSUSE leave out the decoder for iPhone photos (HEIC) for patent reasons: on Fedora, enable RPM Fusion and `sudo dnf install libheif-freeworld`; on openSUSE, add Packman and install `libheif1`. For Drive and Photos as folders on Arch, also `sudo pacman -S fuse3`.
 </details>
 
-<details>
-<summary>"Windows protected your PC"</summary>
-
-The Microsoft Store copy is checked by Microsoft and installs straight away. The installer on this page is new to SmartScreen, so Windows asks once: **More info**, then **Run anyway**.
-</details>
-
 ## Sign in
 
 1. Open Skykeep and sign in with your Apple Account.
