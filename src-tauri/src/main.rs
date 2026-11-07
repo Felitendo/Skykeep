@@ -6088,6 +6088,44 @@ fn adopt_writer(library: &mut Library) {
     quince_icloud::topotext::set_writer(*id.as_bytes());
 }
 
+/// Memory freed after work goes back to the system instead of staying with the process.
+///
+/// glibc gives each busy thread its own arena and keeps whatever an arena ever held. Preparing
+/// photos decodes each on a blocking thread, and a decoded photo is about 23 MB, so every one of
+/// the twelve threads on a 12-core machine kept one photo's worth after the work ended: measured
+/// (issue #11), the engine stood at 408 MB with 33 MB of it in use, and never came down.
+/// `malloc_trim` won't fix that after the fact: it gave back 19 of the 280 MB. Prevented instead:
+///
+/// - two arenas, so freed memory is reused rather than spread over a dozen;
+/// - anything of 4 MB or more (a decoded photo, a resize buffer) mapped on its own and given back
+///   the moment it is freed, never left in an arena; glibc's own threshold rises to 32 MB after
+///   the first such free, which put every later photo in an arena;
+/// - the top of the heap returned once 8 MB of it is free.
+///
+/// The same photo work then held 195 MB, and prepared 302 photos in two minutes against 275:
+/// the decode buffers a thread waited on before are mapped fresh, which is cheaper than it was.
+/// Set first in `main`, before any thread exists, since arenas are made as threads first
+/// allocate. A `MALLOC_*` setting of the person's own (glibc reads those before `main`) wins.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn return_freed_memory() {
+    let mine = |name: &str| std::env::var_os(name).is_some();
+    // SAFETY: mallopt only adjusts glibc's allocator settings; called before any other thread.
+    unsafe {
+        if !mine("MALLOC_ARENA_MAX") {
+            libc::mallopt(libc::M_ARENA_MAX, 2);
+        }
+        if !mine("MALLOC_MMAP_THRESHOLD_") {
+            libc::mallopt(libc::M_MMAP_THRESHOLD, 4 << 20);
+        }
+        if !mine("MALLOC_TRIM_THRESHOLD_") {
+            libc::mallopt(libc::M_TRIM_THRESHOLD, 8 << 20);
+        }
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn return_freed_memory() {}
+
 /// How WebKitGTK hands its frames to the window. Three ways, measured on his Iris Xe at his
 /// 1920×1080 (grid scroll / zoomed pan):
 ///
@@ -6750,6 +6788,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn main() {
+    // First, before any thread: how freed memory goes back to the system (#11).
+    return_freed_memory();
     // Started by an update: the version it replaced finishes exiting first, so this launch is
     // not handed to it as a second one (single instance, below).
     updates::after_update();
