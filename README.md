@@ -31,28 +31,14 @@ Skykeep keeps your iCloud on your own computer and syncs it quietly in the backg
 
 <table>
   <tr>
-    <td width="36%"><b>Notes</b><br>Rich text, checklists, tables, pictures and drawings, folders, pinned notes and #tags. Edits made on your iPhone at the same moment are merged, never lost.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/notes-dark.webp"><img src="docs/media/notes-light.webp" alt="Notes with folders, pinned notes and a trip note with a checklist and a table"></picture></td>
+    <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/notes-dark.webp"><img src="docs/media/notes-light.webp" alt="Notes with folders, pinned notes and a trip note"></picture><br><b>Notes</b><br><sub>Checklists, tables, drawings, #tags. Edits from two devices merge.</sub></td>
+    <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/reminders-dark.webp"><img src="docs/media/reminders-light.webp" alt="Reminders with lists, sections and subtasks"></picture><br><b>Reminders</b><br><sub>Smart lists, subtasks, tags. Alerts with Complete and Snooze.</sub></td>
+    <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/calendar-dark.webp"><img src="docs/media/calendar-light.webp" alt="Calendar in week view"></picture><br><b>Calendar</b><br><sub>Day to year views, drag to edit, time zones, video-call Join.</sub></td>
   </tr>
   <tr>
-    <td width="36%"><b>Reminders</b><br>Lists, sections, subtasks, smart lists and tags. Alerts ring on your desktop with Complete and Snooze, even with every window closed.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/reminders-dark.webp"><img src="docs/media/reminders-light.webp" alt="Reminders with lists, sections, subtasks, flags and tags"></picture></td>
-  </tr>
-  <tr>
-    <td width="36%"><b>Calendar</b><br>Day, week, month and year. Drag to create and move events, repeating events, time zones, birthdays, and a Join button for video calls.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/calendar-dark.webp"><img src="docs/media/calendar-light.webp" alt="Calendar in week view with events from four calendars"></picture></td>
-  </tr>
-  <tr>
-    <td width="36%"><b>Contacts</b><br>Every field with Apple's labels, photos, lists, My Card and duplicate merging. Imports vCard and Google or Outlook CSV.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/contacts-dark.webp"><img src="docs/media/contacts-light.webp" alt="Contacts with photos and a full contact card"></picture></td>
-  </tr>
-  <tr>
-    <td width="36%"><b>iCloud Drive</b><br>Thumbnails, upload, rename, move, Space to preview, and whole folders downloaded with resume. On Linux it's also a real folder in your file manager.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/drive-dark.webp"><img src="docs/media/drive-light.webp" alt="An iCloud Drive folder of pictures and documents in grid view"></picture></td>
-  </tr>
-  <tr>
-    <td width="36%"><b>Photos</b><br>Your library by month, albums, shared albums and your family's Shared Library, with Live Photos and videos that play, and original-quality downloads.</td>
-    <td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/photos-dark.webp"><img src="docs/media/photos-light.webp" alt="The photo library by month, with albums"></picture></td>
+    <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/contacts-dark.webp"><img src="docs/media/contacts-light.webp" alt="A full contact card"></picture><br><b>Contacts</b><br><sub>Every field, photos, lists, duplicate merging, vCard and CSV import.</sub></td>
+    <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/drive-dark.webp"><img src="docs/media/drive-light.webp" alt="An iCloud Drive folder in grid view"></picture><br><b>iCloud Drive</b><br><sub>Previews, uploads, resumable folder downloads, a real folder on Linux.</sub></td>
+    <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/photos-dark.webp"><img src="docs/media/photos-light.webp" alt="The photo library by month"></picture><br><b>Photos</b><br><sub>Library by month, albums, Shared Library, Live Photos and videos.</sub></td>
   </tr>
 </table>
 
