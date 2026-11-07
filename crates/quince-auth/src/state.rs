@@ -115,6 +115,17 @@ impl SignIn {
         matches!(self, SignIn::Code { sent: true, .. })
     }
 
+    /// The Apple ID and password in flight, if any: for signing in again elsewhere.
+    pub(crate) fn credentials(&self) -> Option<(String, String)> {
+        match self {
+            SignIn::Idle => None,
+            SignIn::Proving { apple_id, password }
+            | SignIn::Code {
+                apple_id, password, ..
+            } => Some((apple_id.clone(), password.clone())),
+        }
+    }
+
     /// The password in flight, if any.
     pub(crate) fn password(&self) -> Option<&str> {
         match self {

@@ -502,6 +502,16 @@ async fn listen(client: Arc<Mutex<Client>>, tx: mpsc::UnboundedSender<&'static s
     }
 }
 
+/// The push registry for this account: iCloud.com's, or Apple's regional one for an account
+/// Apple keeps there (issue #10). Where its tokens are registered follows where it is kept.
+fn registry() -> &'static str {
+    if quince_auth::web_origin() == "https://www.icloud.com" {
+        courier::REGISTRY
+    } else {
+        courier::REGIONAL_REGISTRY
+    }
+}
+
 /// Connect, get a token and register it.
 async fn open(
     http: &reqwest::Client,
@@ -509,11 +519,14 @@ async fn open(
     containers: &[&str],
     dsid: &str,
 ) -> Result<Courier, Failure> {
-    let mut channel = Courier::connect(courier::SERVER, identity, containers).await?;
-    if let Err(f) = channel
-        .register(http, courier::REGISTRY, identity, dsid)
-        .await
-    {
+    let mut channel = Courier::connect(
+        courier::SERVER,
+        quince_auth::web_origin(),
+        identity,
+        containers,
+    )
+    .await?;
+    if let Err(f) = channel.register(http, registry(), identity, dsid).await {
         channel.close().await;
         return Err(f);
     }
@@ -536,10 +549,7 @@ async fn run(
             return None;
         }
         if registered.elapsed() >= RENEW_REGISTRATION {
-            if let Err(f) = channel
-                .register(http, courier::REGISTRY, identity, dsid)
-                .await
-            {
+            if let Err(f) = channel.register(http, registry(), identity, dsid).await {
                 return Some(f);
             }
             registered = Instant::now();

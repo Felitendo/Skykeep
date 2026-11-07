@@ -42,6 +42,11 @@ pub const SERVER: &str = "websocket.push.apple.com";
 pub const REGISTRY: &str =
     "https://gatewayws.icloud.com/pds/WebObjects/pushregistry.woa/webBatchRegister/batchRegisterToken";
 
+/// The same registry at Apple's regional servers, for an account Apple keeps there (issue #10).
+/// The socket is the one push server for every account.
+pub const REGIONAL_REGISTRY: &str =
+    "https://gatewayws.icloud.com.cn/pds/WebObjects/pushregistry.woa/webBatchRegister/batchRegisterToken";
+
 /// How long a token asked for lives — the shell's own `86400`.
 const TOKEN_SECONDS: u32 = 86_400;
 
@@ -410,10 +415,11 @@ fn push_base(server: &str, loopback: bool) -> Option<String> {
 }
 
 impl Courier {
-    /// Connect to `server` (normally [`SERVER`]), get or keep a token, and filter the socket
-    /// to the containers' topics. Not yet registered: see [`Courier::register`].
+    /// Connect to `server` (normally [`SERVER`]) as the account's web site `origin` would, get or
+    /// keep a token, and filter the socket to the containers' topics. Not yet registered: see [`Courier::register`].
     pub async fn connect(
         server: &str,
+        origin: &'static str,
         identity: &mut Identity,
         containers: &[&str],
     ) -> std::result::Result<Self, Failure> {
@@ -435,7 +441,7 @@ impl Courier {
                 .map_err(|e| Failure::Transient(format!("bad push address: {e}")))?;
             request.headers_mut().insert(
                 "origin",
-                tungstenite::http::HeaderValue::from_static("https://www.icloud.com"),
+                tungstenite::http::HeaderValue::from_static(origin),
             );
             let (mut ws, _) =
                 tokio::time::timeout(ANSWER, tokio_tungstenite::connect_async(request))
@@ -970,6 +976,7 @@ mod tests {
         let mut id = Identity::new();
         let mut courier = Courier::connect(
             &format!("ws://{addr}"),
+            "https://www.icloud.com",
             &mut id,
             &["com.apple.notes", "com.apple.reminders"],
         )
@@ -988,7 +995,13 @@ mod tests {
     #[tokio::test]
     async fn only_apple_is_ever_dialled() {
         let mut id = Identity::new();
-        let got = Courier::connect("example.com", &mut id, &["com.apple.notes"]).await;
+        let got = Courier::connect(
+            "example.com",
+            "https://www.icloud.com",
+            &mut id,
+            &["com.apple.notes"],
+        )
+        .await;
         assert!(matches!(got, Err(Failure::Refused(_))));
     }
 

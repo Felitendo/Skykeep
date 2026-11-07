@@ -3572,13 +3572,9 @@ async fn post_json(
     let mut tries: u64 = 0;
     let (status, text) = loop {
         tries += 1;
-        let response = http
-            .post(url)
-            .query(params)
-            .header("Referer", "https://www.icloud.com/")
-            .json(body)
-            .send()
-            .await?;
+        // The account's client sends its web origin and referer on every request: iCloud.com's,
+        // or Apple's regional site's for an account kept there (issue #10).
+        let response = http.post(url).query(params).json(body).send().await?;
         let status = response.status();
         let wait = response
             .headers()

@@ -42,7 +42,7 @@ use std::sync::Arc;
 /// Base URLs for Apple's auth and setup services.
 ///
 /// Injectable so the sign-in flow can be exercised against a mock server.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoints {
     /// Origin for the SRP sign-in calls.
     pub auth_root: String,
@@ -65,7 +65,41 @@ impl Default for Endpoints {
     }
 }
 
+/// The domain Apple names for the accounts it keeps on its own servers apart from iCloud.com
+/// (`domainToUse` in its answer to `accountLogin`), as it writes it.
+pub const REGIONAL_DOMAIN: &str = "icloud.com.cn";
+
+/// iCloud.com's own domain, as Apple names it in `domainToUse`.
+const HOME_DOMAIN: &str = "icloud.com";
+
+/// Where Apple's answer says this account is kept, when it says (`domainToUse`).
+fn domain_to_use(text: &str) -> Option<String> {
+    serde_json::from_str::<Value>(text)
+        .ok()?
+        .get("domainToUse")?
+        .as_str()
+        .map(|d| d.trim().to_ascii_lowercase())
+        .filter(|d| !d.is_empty())
+}
+
 impl Endpoints {
+    /// Apple's servers for an account Apple keeps at `domain` (its `domainToUse`, kept in the
+    /// session): iCloud.com's for every account, unless Apple named its regional domain. The
+    /// same services and protocols, at Apple's own hosts there (icloudpd's `--domain cn`).
+    #[must_use]
+    pub fn for_domain(domain: Option<&str>) -> Self {
+        if domain.is_some_and(|d| d.eq_ignore_ascii_case(REGIONAL_DOMAIN)) {
+            Self {
+                auth_root: "https://idmsa.apple.com.cn".into(),
+                auth: "https://idmsa.apple.com.cn/appleauth/auth".into(),
+                setup: "https://setup.icloud.com.cn/setup/ws/1".into(),
+                home: "https://www.icloud.com.cn".into(),
+            }
+        } else {
+            Self::default()
+        }
+    }
+
     /// Point every service at one base URL. Test seam.
     pub fn at(base: &str) -> Self {
         let base = base.trim_end_matches('/');
@@ -124,6 +158,13 @@ pub enum Error {
     CoolingDown { seconds: u64 },
     #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
     ReauthRequired,
+    /// Apple keeps this account on its regional servers and this session has moved there, but
+    /// Apple wants a sign-in made there: whoever holds the password signs in again (issue #10).
+    #[error("Apple keeps this Apple Account on your region's iCloud servers. Sign in again to continue there.")]
+    Moved,
+    /// [`Error::Moved`] met after a code: signed in again there, and Apple sent a new code.
+    #[error("Apple keeps this Apple Account on your region's iCloud servers, and has sent a new code for them. Enter the new code.")]
+    CodeAgain,
     // Apple's 429 and its 503 on sign-in both mean "not now", whether from too many tries or
     // its own load: say what to do, not which of the two it was.
     #[error(
@@ -498,6 +539,9 @@ pub struct Client {
     store: Store,
     session: Session,
     endpoints: Endpoints,
+    /// iCloud.com's servers, and Apple's regional ones: where [`Client::switch_servers`] goes.
+    home_endpoints: Endpoints,
+    regional_endpoints: Endpoints,
     /// A sign-in in flight: its password, kept only once the sign-in completes, and the code
     /// Apple wants for it (see [`state::SignIn`]).
     sign: state::SignIn,
@@ -624,6 +668,44 @@ fn hash_of(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
+/// Apple's client for an account at `endpoints`: their web origin on every request (what
+/// setup.icloud.com and the service endpoints expect; the idmsa sign-in calls name their own),
+/// the cookie jar the session keeps, and the rest every connection to Apple gets.
+fn apple_client(endpoints: &Endpoints, jar: &Arc<CookieStoreMutex>) -> Result<HttpClient> {
+    // The account's web origin — what setup and the service endpoints expect. The idmsa SRP
+    // endpoints want their own origin and override it per request.
+    let mut defaults = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&endpoints.home) {
+        defaults.insert("origin", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&format!("{}/", endpoints.home)) {
+        defaults.insert("referer", v);
+    }
+    defaults.insert(
+        "accept-language",
+        HeaderValue::from_static("en-US,en;q=0.9"),
+    );
+
+    // Never waits for ever. After a sleep or a change of network a pooled connection can
+    // be dead without saying so, and a request on it hung until the kernel gave up — a
+    // quarter of an hour or more — holding the sign-in lock, so every screen waited too.
+    // A read that brings nothing for a minute is given up (a long download keeps going as
+    // long as bytes arrive); idle connections are let go of before they can go stale; and
+    // keep-alives notice a dead one.
+    apple_only()
+        // The jar itself, telling diagnostics (when the person turned them on) which
+        // cookies go out and come back, by name.
+        .cookie_provider(Arc::new(diag::Told(Arc::clone(jar))))
+        .user_agent(UA)
+        .default_headers(defaults)
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(60))
+        .pool_idle_timeout(std::time::Duration::from_secs(50))
+        .tcp_keepalive(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(Error::from)
+}
+
 impl Client {
     pub fn new(state_dir: &Path) -> Result<Self> {
         Self::with(state_dir, Endpoints::default(), Store::keyring(state_dir)?)
@@ -640,44 +722,36 @@ impl Client {
         let (jar, cookies) = read_jar(&store);
         let jar = Arc::new(CookieStoreMutex::new(jar));
 
-        // Default origin is icloud.com — what setup.icloud.com and the service endpoints
-        // expect. The idmsa SRP endpoints want their own origin and override it per request.
-        let mut defaults = HeaderMap::new();
-        if let Ok(v) = HeaderValue::from_str(&endpoints.home) {
-            defaults.insert("origin", v);
-        }
-        if let Ok(v) = HeaderValue::from_str(&format!("{}/", endpoints.home)) {
-            defaults.insert("referer", v);
-        }
-        defaults.insert(
-            "accept-language",
-            HeaderValue::from_static("en-US,en;q=0.9"),
-        );
+        // The account's own servers: iCloud.com's, or Apple's regional ones for an account
+        // Apple keeps there (issue #10), unless a test pointed the client somewhere itself.
+        let endpoints = if endpoints == Endpoints::default() {
+            Endpoints::for_domain(session.domain.as_deref())
+        } else {
+            endpoints
+        };
+        open_regional(endpoints == Endpoints::for_domain(Some(REGIONAL_DOMAIN)));
+        let http = apple_client(&endpoints, &jar)?;
 
-        // Never waits for ever. After a sleep or a change of network a pooled connection can
-        // be dead without saying so, and a request on it hung until the kernel gave up — a
-        // quarter of an hour or more — holding the sign-in lock, so every screen waited too.
-        // A read that brings nothing for a minute is given up (a long download keeps going as
-        // long as bytes arrive); idle connections are let go of before they can go stale; and
-        // keep-alives notice a dead one.
-        let http = apple_only()
-            // The jar itself, telling diagnostics (when the person turned them on) which
-            // cookies go out and come back, by name.
-            .cookie_provider(Arc::new(diag::Told(Arc::clone(&jar))))
-            .user_agent(UA)
-            .default_headers(defaults)
-            .connect_timeout(std::time::Duration::from_secs(15))
-            .read_timeout(std::time::Duration::from_secs(60))
-            .pool_idle_timeout(std::time::Duration::from_secs(50))
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .build()?;
-
+        // Where switch_servers goes: a test's mock for both, unless it names another for the
+        // regional servers; Apple's own otherwise.
+        let home_endpoints = if endpoints == Endpoints::for_domain(Some(REGIONAL_DOMAIN)) {
+            Endpoints::default()
+        } else {
+            endpoints.clone()
+        };
+        let regional_endpoints = if home_endpoints == Endpoints::default() {
+            Endpoints::for_domain(Some(REGIONAL_DOMAIN))
+        } else {
+            home_endpoints.clone()
+        };
         Ok(Self {
             http,
             jar,
             store,
             session,
             endpoints,
+            home_endpoints,
+            regional_endpoints,
             sign: state::SignIn::Idle,
             keyring_error,
             unsaved: None,
@@ -836,6 +910,8 @@ impl Client {
     /// Forget this account entirely.
     pub fn sign_out(&mut self) -> Result<()> {
         self.session = Session::default();
+        // The next account starts at iCloud.com, and the regional domains close again.
+        self.switch_servers(None)?;
         self.data_access_forget();
         if let Ok(mut jar) = self.jar.lock() {
             jar.clear();
@@ -1062,7 +1138,13 @@ impl Client {
 
         // Kept only once Apple has accepted it all the way: see `absorb`.
         self.sign.start(apple_id, password);
-        let outcome = self.sign_in_inner(apple_id, password, code).await;
+        let mut outcome = self.sign_in_inner(apple_id, password, code).await;
+        // Apple keeps the account on its regional servers and wants the sign-in made there:
+        // made again there, once — this session now starts at Apple's servers for it.
+        if matches!(outcome, Err(Error::Moved)) {
+            self.sign.start(apple_id, password);
+            outcome = self.sign_in_inner(apple_id, password, code).await;
+        }
         if outcome.is_err() {
             self.sign.fail();
         }
@@ -1081,7 +1163,9 @@ impl Client {
                 | Error::Keyring(_)
                 | Error::Io(_)
                 | Error::Json(_)
-                | Error::RepairNeeded,
+                | Error::RepairNeeded
+                | Error::Moved
+                | Error::CodeAgain,
             ) => {}
             Err(e) => {
                 self.session.consecutive_failures =
@@ -1419,19 +1503,13 @@ impl Client {
                 return Err(err);
             }
             if self.trust().await.is_ok() {
-                let data = self.account_login().await?;
-                self.absorb(&data);
-                self.keep();
-                return Ok(());
+                return self.open_after_code().await;
             }
             return Err(err);
         }
         self.escrow_if_asked(escrow).await?;
         self.trust().await?;
-        let data = self.account_login().await?;
-        self.absorb(&data);
-        self.keep();
-        Ok(())
+        self.open_after_code().await
     }
 
     /// Submit the six-digit code, then ask Apple to trust this install.
@@ -1468,20 +1546,14 @@ impl Client {
             // accepted. The status alone is not evidence, so ask whether the session became
             // usable before reporting a failure.
             if self.trust().await.is_ok() {
-                let data = self.account_login().await?;
-                self.absorb(&data);
-                self.keep();
-                return Ok(());
+                return self.open_after_code().await;
             }
             return Err(err);
         }
 
         self.escrow_if_asked(escrow).await?;
         self.trust().await?;
-        let data = self.account_login().await?;
-        self.absorb(&data);
-        self.keep();
-        Ok(())
+        self.open_after_code().await
     }
 
     /// Whether `password` is this account's Apple ID password: what the Hidden album asks for,
@@ -1730,6 +1802,32 @@ impl Client {
         self.capture(&r);
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
+        // An account Apple keeps on its regional servers: answered `302` with only
+        // `{"domainToUse": "iCloud.com.cn"}` (issue #10; rclone#8257). Asked again there, with
+        // the sign-in this session has; an answer naming where it already is goes on below.
+        if let Some(to) = domain_to_use(&text) {
+            let here = self.session.domain.as_deref().unwrap_or(HOME_DOMAIN);
+            if !to.eq_ignore_ascii_case(here) {
+                if !to.eq_ignore_ascii_case(REGIONAL_DOMAIN)
+                    && !to.eq_ignore_ascii_case(HOME_DOMAIN)
+                {
+                    return Err(Error::Protocol(format!(
+                        "Apple keeps this Apple Account at {to}, which Skykeep can't open yet"
+                    )));
+                }
+                quiet!("quince: Apple keeps this account at {to}; asking there");
+                self.switch_servers(Some(&to))?;
+                return match Box::pin(self.account_login()).await {
+                    Ok(data) => Ok(data),
+                    // Not there to ask: said as it is, and asked again later.
+                    Err(e @ (Error::Network(_) | Error::Unavailable(_) | Error::RateLimited)) => {
+                        Err(e)
+                    }
+                    // A sign-in made at iCloud.com that Apple won't take there: made again.
+                    Err(_) => Err(Error::Moved),
+                };
+            }
+        }
         if !status.is_success() {
             return Err(transient(status).unwrap_or_else(|| {
                 Error::Protocol(format!("couldn't open the account ({status})"))
@@ -1743,6 +1841,57 @@ impl Client {
         // failed attempt — and `absorb` keeps `termsUpdateNeeded`, which the window says and
         // every pass asks again until the person has agreed at icloud.com.
         Ok(data)
+    }
+
+    /// This account's servers, from now on: Apple's at `domain` (its `domainToUse`) — iCloud.com's
+    /// for `None` — with a client of their own (their web origin on every request), the lock
+    /// opened to Apple's regional domains only for an account kept there, and the choice kept
+    /// in the session so every later launch starts there. The cookies stay: each belongs to
+    /// the host that set it.
+    fn switch_servers(&mut self, domain: Option<&str>) -> Result<()> {
+        let regional = domain.is_some_and(|d| d.eq_ignore_ascii_case(REGIONAL_DOMAIN));
+        let endpoints = if regional {
+            self.regional_endpoints.clone()
+        } else {
+            self.home_endpoints.clone()
+        };
+        if endpoints != self.endpoints {
+            self.http = apple_client(&endpoints, &self.jar)?;
+            self.endpoints = endpoints;
+        }
+        open_regional(regional);
+        self.session.domain = regional.then(|| REGIONAL_DOMAIN.to_string());
+        let _ = self.persist();
+        Ok(())
+    }
+
+    /// Where a test's regional servers are (its mock), instead of Apple's. Test seam.
+    pub fn regional_endpoints_at(&mut self, endpoints: Endpoints) {
+        self.regional_endpoints = endpoints;
+    }
+
+    /// The account opened after a code was taken. An account Apple then names as kept on its
+    /// regional servers, where this sign-in isn't taken, is signed in again there with the
+    /// password still in flight: Apple sends a new code for them, and the code screen, where
+    /// the person is, says to enter it (issue #10).
+    async fn open_after_code(&mut self) -> Result<()> {
+        match self.account_login().await {
+            Ok(data) => {
+                self.absorb(&data);
+                self.keep();
+                Ok(())
+            }
+            Err(Error::Moved) => {
+                let Some((apple_id, password)) = self.sign.credentials() else {
+                    return Err(Error::Moved);
+                };
+                match Box::pin(self.sign_in_as(&apple_id, &password, Code::Send)).await? {
+                    SignInOutcome::Complete => Ok(()),
+                    SignInOutcome::NeedsTwoFactor => Err(Error::CodeAgain),
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn absorb(&mut self, data: &Value) {
@@ -1853,6 +2002,42 @@ impl Client {
 /// lists as what Skykeep talks to, read from here so the list is the lock itself.
 pub const APPLE_DOMAINS: [&str; 3] = ["apple.com", "icloud.com", "icloud-content.com"];
 
+/// Apple's own domains for the accounts it keeps at [`REGIONAL_DOMAIN`]: its sign-in, iCloud's
+/// services and their files there, each served under Apple's certificate. Reachable only once
+/// this computer's account is one of them ([`open_regional`]), so every other account's
+/// client reaches exactly [`APPLE_DOMAINS`], and Settings lists exactly what can be reached.
+pub const REGIONAL_DOMAINS: [&str; 3] = ["apple.com.cn", "icloud.com.cn", "icloud-content.com.cn"];
+
+/// Whether [`REGIONAL_DOMAINS`] are open: set when the signed-in account is kept there.
+static REGIONAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Open (or close) Apple's regional domains, for an account Apple keeps there (or no longer).
+pub fn open_regional(open: bool) {
+    REGIONAL.store(open, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Every domain Apple's client can reach right now: [`APPLE_DOMAINS`], and [`REGIONAL_DOMAINS`]
+/// while the account is kept there. What Settings lists, read from the lock itself.
+#[must_use]
+pub fn reachable_domains() -> Vec<&'static str> {
+    let mut all = APPLE_DOMAINS.to_vec();
+    if REGIONAL.load(std::sync::atomic::Ordering::SeqCst) {
+        all.extend(REGIONAL_DOMAINS);
+    }
+    all
+}
+
+/// The web origin Apple's services expect from this account: iCloud.com's, or its regional
+/// site's while the account is kept there. For requests that name it themselves (push, Drive).
+#[must_use]
+pub fn web_origin() -> &'static str {
+    if REGIONAL.load(std::sync::atomic::Ordering::SeqCst) {
+        "https://www.icloud.com.cn"
+    } else {
+        "https://www.icloud.com"
+    }
+}
+
 /// Whether this computer counts as Apple's: in this crate's tests, and in a build made with the
 /// `loopback` feature (the other crates' tests, whose mock servers run here) — never in the
 /// app. A shipped client that reached `localhost` could be pointed, by an address in Apple's
@@ -1863,15 +2048,19 @@ const LOOPBACK: bool = cfg!(any(test, feature = "loopback"));
 /// reason to reach. Loopback too, which is this computer, only in tests (see `LOOPBACK`).
 #[must_use]
 pub fn is_apple_host(host: &str) -> bool {
-    apple_host(host, LOOPBACK)
+    apple_host(
+        host,
+        LOOPBACK,
+        REGIONAL.load(std::sync::atomic::Ordering::SeqCst),
+    )
 }
 
-fn apple_host(host: &str, loopback: bool) -> bool {
+fn apple_host(host: &str, loopback: bool, regional: bool) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let under = |d: &&str| host == *d || host.ends_with(&format!(".{d}"));
     (loopback && host == "localhost")
-        || APPLE_DOMAINS
-            .iter()
-            .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+        || APPLE_DOMAINS.iter().any(under)
+        || (regional && REGIONAL_DOMAINS.iter().any(under))
 }
 
 /// Every HTTP client Skykeep makes for iCloud starts here: Apple's servers, and nothing else,
@@ -2055,7 +2244,12 @@ fn url_apples(url: &reqwest::Url, loopback: bool) -> bool {
         // can read them (pyicloud#356, #401). This computer, in tests, is the one exception.
         Err(_) => {
             let secure = matches!(url.scheme(), "https" | "wss");
-            (secure || (loopback && host == "localhost")) && apple_host(host, loopback)
+            (secure || (loopback && host == "localhost"))
+                && apple_host(
+                    host,
+                    loopback,
+                    REGIONAL.load(std::sync::atomic::Ordering::SeqCst),
+                )
         }
     }
 }
@@ -2090,7 +2284,8 @@ mod release_tests {
     #[test]
     fn a_release_client_never_reaches_this_computer() {
         for host in ["localhost", "LOCALHOST.", "127.0.0.1", "[::1]"] {
-            assert!(!apple_host(host, false), "{host}");
+            assert!(!apple_host(host, false, false), "{host}");
+            assert!(!apple_host(host, false, true), "{host}");
         }
         for url in [
             "http://localhost:8080/",

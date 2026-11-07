@@ -112,6 +112,11 @@ pub struct Session {
     /// Advanced Data Protection, which Apple calls iCloud Data Protection (`iCDPEnabled`).
     #[serde(default)]
     pub data_protection: Option<bool>,
+    /// Where Apple keeps this account when it is not iCloud.com: the `domainToUse` it answered
+    /// `accountLogin` with (issue #10), so every later launch goes straight to Apple's servers
+    /// there. None for every other account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
     /// Under Advanced Data Protection, until when (unix seconds) each service's key — by its
     /// `requestPCS` name — was released to this session (see `pcs`). Kept for the services
     /// whose key cookie is not known by name; the rest are read from the cookies themselves.

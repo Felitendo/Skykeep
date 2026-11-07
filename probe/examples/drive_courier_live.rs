@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
     let mut id = quince_icloud::courier::Identity::new();
     let mut courier = quince_icloud::courier::Courier::connect(
         quince_icloud::courier::SERVER,
+        "https://www.icloud.com",
         &mut id,
         &containers,
     )

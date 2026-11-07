@@ -2618,7 +2618,8 @@ fn save_subscriptions(
 }
 
 /// What Skykeep can reach, for Settings: Apple's domains as the network lock holds them
-/// (`quince_auth::APPLE_DOMAINS`, the list the resolver checks), the host of each calendar
+/// (`quince_auth::reachable_domains`, the list the resolver checks — Apple's regional ones too
+/// only for an account kept there), the host of each calendar
 /// subscribed to, which only its own client can reach, and GitHub's release servers, which
 /// only the updater's client can reach (`quince_auth::releases::RELEASE_HOSTS`) — listed only
 /// for a copy that updates itself, since no other ever contacts them.
@@ -2641,7 +2642,7 @@ async fn network_reach(app: tauri::AppHandle, feeds: State<'_, Feeds>) -> UiResu
     subscribed.sort();
     subscribed.dedup();
     Ok(Reach {
-        apple: quince_auth::APPLE_DOMAINS.to_vec(),
+        apple: quince_auth::reachable_domains(),
         subscribed,
         updates: if updates::this_install(&app) == updates::Install::Here {
             quince_auth::releases::RELEASE_HOSTS.to_vec()
