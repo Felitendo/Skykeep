@@ -4,7 +4,7 @@
 
 <h1 align="center">Skykeep</h1>
 
-<p align="center"><strong>Six apps. Your whole iCloud.</strong><br>Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as native desktop apps. Fast, light, and offline.</p>
+<p align="center"><strong>Six apps. Your whole iCloud.</strong><br>Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as native apps for Windows and Linux. Fast, light, and offline.</p>
 
 <p align="center">
   <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest"><strong>Download</strong></a> ·
@@ -39,7 +39,7 @@ Skykeep keeps your iCloud on your own computer and syncs it quietly in the backg
   </tr>
   <tr>
     <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/contacts-dark.webp"><img src="docs/media/contacts-light.webp" alt="A full contact card"></picture><br><b>Contacts</b><br><sub>Every field, photos, lists, duplicate merging, vCard and CSV import.</sub></td>
-    <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/drive-dark.webp"><img src="docs/media/drive-light.webp" alt="An iCloud Drive folder in grid view"></picture><br><b>iCloud Drive</b><br><sub>Previews, uploads, resumable folder downloads, a real folder on Linux.</sub></td>
+    <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/drive-dark.webp"><img src="docs/media/drive-light.webp" alt="An iCloud Drive folder in grid view"></picture><br><b>iCloud Drive</b><br><sub>Previews, uploads, resumable downloads, and a real folder in File Explorer or Files.</sub></td>
     <td width="33%" align="center" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/photos-dark.webp"><img src="docs/media/photos-light.webp" alt="The photo library by month"></picture><br><b>Photos</b><br><sub>Library by month, albums, Shared Library, Live Photos and videos.</sub></td>
   </tr>
 </table>
@@ -55,7 +55,7 @@ Skykeep is a native engine written in Rust with a light Tauri window on top: one
 - Apple's sign-in, SRP with two-factor, is rebuilt in Rust. Your password is never sent.
 - The network lock lives in the engine's DNS resolver: it cannot look up a host that isn't Apple's.
 - The photo grid stays smooth through 50,000 photos, keeping only what's near the screen in memory.
-- iCloud Drive and Photos are real folders in your file manager on Linux, through FUSE, and come to File Explorer next through Cloud Files, the system OneDrive is built on.
+- iCloud Drive and Photos are real folders in File Explorer, through Cloud Files, the system OneDrive is built on, with Free up space and Always keep on this device. On Linux they're folders in your file manager, through FUSE.
 - Each release passes over 1,300 Rust tests and is installed and launched on Ubuntu, Debian, Mint, Fedora, openSUSE, Arch and Windows before it's published.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the full tour.
