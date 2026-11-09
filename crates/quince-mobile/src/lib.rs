@@ -11,14 +11,15 @@ uniffi::setup_scaffolding!();
 
 /// Why a call failed, in words the app can show.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
+/// (`reason`, not `message`: Kotlin exceptions already have a `message`.)
 pub enum EngineError {
-    #[error("{message}")]
-    Failed { message: String },
+    #[error("{reason}")]
+    Failed { reason: String },
 }
 
 impl From<uniffi::UnexpectedUniFFICallbackError> for EngineError {
     fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
-        EngineError::Failed { message: e.reason }
+        EngineError::Failed { reason: e.reason }
     }
 }
 
@@ -76,7 +77,7 @@ pub fn engine_version() -> String {
 #[uniffi::export]
 pub fn start(secrets: std::sync::Arc<dyn SecretStore>) -> Result<(), EngineError> {
     quince_auth::use_platform_secrets(Box::new(Bridged(secrets)))
-        .map_err(|message| EngineError::Failed { message })
+        .map_err(|reason| EngineError::Failed { reason })
 }
 
 /// Whether Apple's sign-in service can be reached from this phone, through the engine's own
@@ -87,7 +88,7 @@ pub fn apple_reachable() -> Result<bool, EngineError> {
         let http = quince_auth::apple_only()
             .build()
             .map_err(|e| EngineError::Failed {
-                message: e.to_string(),
+                reason: e.to_string(),
             })?;
         Ok(http
             .get("https://setup.icloud.com/setup/ws/1/validate")
