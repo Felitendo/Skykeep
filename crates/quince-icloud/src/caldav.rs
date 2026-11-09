@@ -649,11 +649,10 @@ fn is_public(ip: std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
         IpAddr::V4(v4) => {
-            let [a, b, ..] = v4.octets();
-            !(v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || (a == 100 && (64..128).contains(&b)))
+            // Shared address space (100.64.0.0/10) is not among them: tailnets use it, but so
+            // does carrier-grade NAT at many providers, where a password in the clear would
+            // cross the provider's network. A tailnet's server is reached over HTTPS.
+            !(v4.is_private() || v4.is_loopback() || v4.is_link_local())
         }
         IpAddr::V6(v6) => {
             let first = v6.segments()[0];
@@ -840,6 +839,16 @@ mod tests {
             .build()?)
     }
 
+    /// The header a client signs a request with, built from the test's own name and password
+    /// rather than written out, so no encoded credential sits in the code.
+    fn basic(user: &str, password: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))
+        )
+    }
+
     fn remote() -> Remote {
         Remote::new(client(&[]).unwrap(), "felix", "app-password")
     }
@@ -850,7 +859,10 @@ mod tests {
         Mock::given(verb("PROPFIND"))
             .and(path("/remote.php/dav/calendars/felix/"))
             .and(header("Depth", "1"))
-            .and(header("Authorization", "Basic ZmVsaXg6YXBwLXBhc3N3b3Jk"))
+            .and(header(
+                "Authorization",
+                basic("felix", "app-password").as_str(),
+            ))
             .respond_with(ResponseTemplate::new(207).set_body_string(HOME))
             .mount(&server)
             .await;
@@ -959,7 +971,7 @@ mod tests {
             .await;
         Mock::given(verb("PROPFIND"))
             .and(path("/dav/"))
-            .and(header("Authorization", "Basic dTpw"))
+            .and(header("Authorization", basic("u", "p").as_str()))
             .respond_with(ResponseTemplate::new(207).set_body_string(
                 r#"<multistatus xmlns="DAV:"><response><href>/dav/</href><propstat><prop><current-user-principal><href>/dav/principals/u/</href></current-user-principal></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>"#,
             ))
@@ -1014,7 +1026,11 @@ mod tests {
         let ok = |s: &str| safe_for_a_password(&Url::parse(s).unwrap());
         assert!(ok("https://cloud.example.org/"));
         assert!(ok("http://192.168.1.20/"), "at home, by address");
-        assert!(ok("http://100.100.1.1/"), "on a tailnet");
+        assert!(
+            !ok("http://100.100.1.1/"),
+            "shared address space: a tailnet, or a provider's NAT"
+        );
+        assert!(ok("https://100.100.1.1/"), "a tailnet, over HTTPS");
         assert!(!ok("http://cloud.example.org/"), "a name can lead anywhere");
         assert!(!ok("http://8.8.8.8/"), "the open internet");
     }
