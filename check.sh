@@ -112,6 +112,7 @@ pooled "pinning a note"   node .uiverify/notes-pin.mjs
 pooled "a long note"      node .uiverify/notes-long.mjs
 pooled "uploading"        node .uiverify/drive-upload.mjs
 pooled "calendar grids"   node .uiverify/calendar.mjs
+pooled "calendar accounts" node .uiverify/calendar-accounts.mjs
 pooled "every size"       node .uiverify/sizes.mjs
 pooled "narrow windows"   node .uiverify/compact.mjs
 pooled "a screen failing"  node .uiverify/boundary.mjs

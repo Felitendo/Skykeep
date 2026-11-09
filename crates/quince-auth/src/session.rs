@@ -13,6 +13,9 @@ const KEYRING_ENTRY: &str = "session";
 /// The cookie key's entry: the session's name with this after it (`session:cookie-key`).
 const COOKIE_KEY: &str = ":cookie-key";
 
+/// Between the session's entry and a calendar account's id: that account's app password.
+const ACCOUNT_SECRET: &str = ":account:";
+
 /// Identifiers the app was published under before, newest first: the keyring services its
 /// session may still be under, and the folders `src-tauri/src/migrate.rs` moves. The current
 /// identifier is never written here — it is tauri.conf.json's. Renaming the app means adding
@@ -850,6 +853,49 @@ impl Store {
         self.with_key_store(|k, name| {
             cookie_key_in(k, name, true)?.ok_or_else(|| "no cookie key was made".to_string())
         })
+    }
+
+    /// Where a calendar account's password is kept, asked of `f`.
+    fn with_account_store<T>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&dyn Secrets, &str) -> Result<T, String>,
+    ) -> Result<T, crate::Error> {
+        let name = format!("{}{ACCOUNT_SECRET}{id}", self.name());
+        match &self.backend {
+            Backend::Keyring(_) => {
+                let now = current().map_err(crate::Error::Keyring)?;
+                f(&now, &name)
+            }
+            Backend::File(path) => f(
+                &KeyFile(path.with_file_name(format!("account-{id}"))),
+                &name,
+            ),
+        }
+        .map_err(crate::Error::Keyring)
+    }
+
+    /// The password of the calendar account `id`, as the keyring holds it.
+    pub fn account_secret(&self, id: &str) -> Result<Option<String>, crate::Error> {
+        self.with_account_store(id, read_secret)
+    }
+
+    /// Keep the password of the calendar account `id`, read back before it is relied on: a
+    /// keyring that said yes and kept nothing would lose the account on the next start.
+    pub fn set_account_secret(&self, id: &str, secret: &str) -> Result<(), crate::Error> {
+        self.with_account_store(id, |k, name| {
+            write_secret(k, name, secret, part_size())?;
+            if read_secret(k, name)?.as_deref() == Some(secret) {
+                Ok(())
+            } else {
+                Err("the system keyring accepted the password but did not keep it".into())
+            }
+        })
+    }
+
+    /// Let go of the password of the calendar account `id`.
+    pub fn forget_account_secret(&self, id: &str) -> Result<(), crate::Error> {
+        self.with_account_store(id, delete_secret)
     }
 
     /// Load the stored session. A missing entry is normal (first run), not an error.

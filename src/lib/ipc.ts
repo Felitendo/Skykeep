@@ -210,7 +210,7 @@ export const api = {
   /** What waits to reach Apple, and what Apple turned down. */
   outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
   /** What the network lock lets Skykeep reach: Apple's domains, and each subscribed calendar's host. */
-  networkReach: () => invoke<{ apple: string[]; subscribed: string[]; updates: string[] }>("network_reach"),
+  networkReach: () => invoke<{ accounts: string[]; apple: string[]; subscribed: string[]; updates: string[] }>("network_reach"),
   /** Skykeep's own updates, as this window shows them (updates.rs). */
   updateStatus: () => invoke<UpdateStatus>("update_status"),
   /** Check for Updates, from Settings: a failure is said. */
@@ -1503,4 +1503,43 @@ export const calendarFeedsApi = {
     }),
   unsubscribe: (id: string) => invoke<void>("calendar_unsubscribe", { id }),
   refresh: (id: string) => invoke<CalendarSubscription>("calendar_subscription_refresh", { id }),
+};
+
+/* ---- Calendar: accounts other than iCloud ---------------------------------------------- */
+
+/** A Nextcloud or CalDAV account. Its password is in the system keyring, and never comes here. */
+export type DavAccount = {
+  id: string;
+  kind: "nextcloud" | "caldav";
+  title: string;
+  server: string;
+  username: string;
+  home: string;
+  hosts: string[];
+  syncedAt: number | null;
+  /** Why the last pass did not land, when it did not. */
+  problem: string | null;
+  /** The server refused the password; nothing is asked of it until the person signs in. */
+  needsSignIn: boolean;
+};
+
+/** Where such an account's calendar and event guids begin. */
+export const DAV_PREFIX = "quince:dav:";
+
+/** The account a calendar or event guid belongs to, if it belongs to one. */
+export const davAccountOf = (guid: string): string | null =>
+  guid.startsWith(DAV_PREFIX) ? guid.slice(DAV_PREFIX.length).split(":")[0] : null;
+
+export const davApi = {
+  list: () => invoke<DavAccount[]>("dav_accounts"),
+  refresh: (id: string) => invoke<void>("dav_refresh", { id }),
+  remove: (id: string) => invoke<void>("dav_remove", { id }),
+  /** Starts a sign-in: the server's own page opens in the browser. */
+  nextcloudBegin: (server: string) => invoke<string>("nextcloud_begin", { server }),
+  nextcloudReopen: () => invoke<void>("nextcloud_reopen"),
+  /** Answers once the person has approved Skykeep in the browser. */
+  nextcloudFinish: () => invoke<DavAccount>("nextcloud_finish"),
+  nextcloudCancel: () => invoke<void>("nextcloud_cancel"),
+  caldavAdd: (server: string, username: string, password: string) =>
+    invoke<DavAccount>("caldav_add", { server, username, password }),
 };

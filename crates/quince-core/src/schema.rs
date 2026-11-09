@@ -989,6 +989,41 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE photo_uploads ADD COLUMN job TEXT;
     "#,
+    // 55 — calendar accounts other than iCloud: Nextcloud, or any CalDAV server. Each event's
+    // iCalendar text is kept as the server holds it (`dav_resources`), so a change here is
+    // made to that text and nothing the server knows and Skykeep doesn't is lost. What the
+    // screens read is still `calendars` and `events`, laid out from it. The password is in
+    // the system keyring, never here. `needs_sign_in`: the server refused the password, so it
+    // is not asked again until the person signs in — asked on every poll, a server's
+    // protection against guessing would lock them out of their own account.
+    r#"
+    CREATE TABLE dav_accounts (
+        id            TEXT PRIMARY KEY,
+        kind          TEXT NOT NULL,
+        title         TEXT NOT NULL,
+        server        TEXT NOT NULL,
+        username      TEXT NOT NULL,
+        home          TEXT NOT NULL,
+        hosts         TEXT NOT NULL,
+        synced_at     INTEGER,
+        problem       TEXT,
+        needs_sign_in INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE TABLE dav_calendars (
+        guid    TEXT PRIMARY KEY REFERENCES calendars(guid) ON DELETE CASCADE,
+        account TEXT NOT NULL REFERENCES dav_accounts(id) ON DELETE CASCADE,
+        url     TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX dav_calendars_by_account ON dav_calendars (account);
+    CREATE TABLE dav_resources (
+        guid     TEXT PRIMARY KEY,
+        calendar TEXT NOT NULL REFERENCES dav_calendars(guid) ON DELETE CASCADE,
+        href     TEXT NOT NULL,
+        etag     TEXT,
+        ics      TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX dav_resources_by_calendar ON dav_resources (calendar);
+    "#,
 ];
 
 /// Migrations that need more than SQL, run in the same transaction as the one numbered.

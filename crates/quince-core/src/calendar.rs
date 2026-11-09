@@ -171,14 +171,23 @@ impl Library {
                 ])?;
             }
 
-            // Anything Apple stopped reporting was deleted elsewhere.
+            // Anything Apple stopped reporting was deleted elsewhere. A calendar of another
+            // account was never Apple's to report (dav.rs).
             let keep: Vec<&str> = calendars.iter().map(|c| c.guid.as_str()).collect();
             if keep.is_empty() {
-                tx.execute("DELETE FROM calendars", [])?;
+                tx.execute(
+                    "DELETE FROM calendars WHERE substr(guid, 1, ?1) != ?2",
+                    params![crate::dav::PREFIX.len(), crate::dav::PREFIX],
+                )?;
             } else {
                 tx.execute(
-                    "DELETE FROM calendars WHERE guid NOT IN (SELECT value FROM json_each(?1))",
-                    params![crate::id_list(&keep)],
+                    "DELETE FROM calendars WHERE guid NOT IN (SELECT value FROM json_each(?1))
+                       AND substr(guid, 1, ?2) != ?3",
+                    params![
+                        crate::id_list(&keep),
+                        crate::dav::PREFIX.len(),
+                        crate::dav::PREFIX
+                    ],
                 )?;
             }
         }

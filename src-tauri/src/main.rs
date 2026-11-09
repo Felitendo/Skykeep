@@ -21,6 +21,7 @@ mod contacts_cmds;
 mod contacts_merge;
 mod cpu;
 mod data_access;
+mod dav;
 mod diagnostics;
 mod drive_watch;
 mod export;
@@ -2061,6 +2062,8 @@ async fn auth_sign_out(keep: bool, app: tauri::AppHandle, auth: State<'_, Auth>)
     if !keep {
         let data = app.state::<Data>();
         let mut library = data.0.lock().await;
+        // The passwords of its calendar accounts go with it.
+        dav::forget_secrets(&app, &library);
         // The screens' readers let go of the file before it is deleted.
         data.0.forget_readers();
         let removed = remove_account(&mut library, &state_dir(&app));
@@ -2235,9 +2238,11 @@ async fn calendar_sync(
     from: String,
     to: String,
     timezone: String,
+    app: tauri::AppHandle,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<quince_icloud::sync::SyncSummary> {
+    dav::widen_window(&app, &from, &to).await;
     // Take what the sync needs and release the auth lock before the network work, so a slow
     // refresh cannot block the heartbeat or a sign-out.
     let account = account_now(&auth).await;
@@ -2341,6 +2346,9 @@ async fn event_alerts(
     let Some(event) = event else {
         return Ok(Vec::new());
     };
+    if dav::is_account_event(&event) {
+        return Ok(dav::alerts_of(&data, &event).await);
+    }
     let (http, root, params) = calendar_context(&auth).await?;
     quince_icloud::calendar::CalendarClient::new(&http, &root, params)
         .alerts(&event)
@@ -2362,6 +2370,9 @@ async fn event_guests(
     let Some(event) = event else {
         return Ok(Vec::new());
     };
+    if dav::is_account_event(&event) {
+        return Ok(dav::guests_of(&data, &event).await);
+    }
     let (http, root, params) = calendar_context(&auth).await?;
     quince_icloud::calendar::CalendarClient::new(&http, &root, params)
         .guests(&event)
@@ -2381,6 +2392,9 @@ async fn event_repeat(
         library.event(&guid).map_err(|e| e.to_string())?
     };
     let Some(event) = event else { return Ok(None) };
+    if dav::is_account_event(&event) {
+        return Ok(dav::repeat_of(&data, &event).await);
+    }
     let (http, root, params) = calendar_context(&auth).await?;
     quince_icloud::calendar::CalendarClient::new(&http, &root, params)
         .repeat_of(&event)
@@ -2403,9 +2417,13 @@ async fn event_save(draft: EventDraft, data: State<'_, Data>) -> UiResult<String
     }
     // Apple's guids are uppercase UUIDs; a new event needs one before it can be addressed.
     let was_saved = draft.guid.is_some();
-    let guid = draft
-        .guid
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string().to_uppercase());
+    let guid = draft.guid.unwrap_or_else(|| {
+        if quince_core::dav::is_dav(&draft.calendar_guid) {
+            dav::new_event_guid(&draft.calendar_guid)
+        } else {
+            uuid::Uuid::new_v4().to_string().to_uppercase()
+        }
+    });
     {
         let mut library = data.0.lock().await;
         let existing = library.event(&guid).map_err(|e| e.to_string())?;
@@ -2637,13 +2655,18 @@ fn save_subscriptions(
 /// for a copy that updates itself, since no other ever contacts them.
 #[derive(serde::Serialize)]
 struct Reach {
+    accounts: Vec<String>,
     apple: Vec<&'static str>,
     subscribed: Vec<String>,
     updates: Vec<&'static str>,
 }
 
 #[tauri::command]
-async fn network_reach(app: tauri::AppHandle, feeds: State<'_, Feeds>) -> UiResult<Reach> {
+async fn network_reach(
+    app: tauri::AppHandle,
+    data: State<'_, Data>,
+    feeds: State<'_, Feeds>,
+) -> UiResult<Reach> {
     let mut subscribed: Vec<String> = feeds
         .subs
         .lock()
@@ -2653,7 +2676,13 @@ async fn network_reach(app: tauri::AppHandle, feeds: State<'_, Feeds>) -> UiResu
         .collect();
     subscribed.sort();
     subscribed.dedup();
+    let accounts = data
+        .0
+        .read(|l| Ok(dav::hosts_of(l)))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(Reach {
+        accounts,
         apple: quince_auth::reachable_domains(),
         subscribed,
         updates: if updates::this_install(&app) == updates::Install::Here {
@@ -2994,9 +3023,13 @@ async fn calendar_update(
     guid: String,
     title: Option<String>,
     colour: Option<String>,
+    app: tauri::AppHandle,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
+    if quince_core::dav::is_dav(&guid) {
+        return dav::update_calendar(&app, &data, &guid, title.as_deref(), colour.as_deref()).await;
+    }
     let _one = CALENDAR_PASS.lock().await;
     let (http, root, params) = calendar_context(&auth).await?;
     let client = quince_icloud::calendar::CalendarClient::new(&http, &root, params);
@@ -3012,9 +3045,13 @@ async fn calendar_update(
 #[tauri::command]
 async fn calendar_delete(
     guid: String,
+    app: tauri::AppHandle,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
+    if quince_core::dav::is_dav(&guid) {
+        return dav::delete_calendar(&app, &data, &guid).await;
+    }
     let _one = CALENDAR_PASS.lock().await;
     let (http, root, params) = calendar_context(&auth).await?;
     let client = quince_icloud::calendar::CalendarClient::new(&http, &root, params);
@@ -7278,6 +7315,7 @@ fn main() {
                 subs: Mutex::new(Vec::new()),
             });
             spawn_subscriptions(app.handle().clone());
+            dav::spawn(app.handle().clone());
             spawn_heartbeat(Arc::clone(&client));
             push::spawn(app.handle().clone(), Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
@@ -7407,6 +7445,14 @@ fn main() {
             calendar_subscribe,
             calendar_subscription_update,
             calendar_unsubscribe,
+            dav::dav_accounts,
+            dav::dav_refresh,
+            dav::dav_remove,
+            dav::nextcloud_begin,
+            dav::nextcloud_reopen,
+            dav::nextcloud_finish,
+            dav::nextcloud_cancel,
+            dav::caldav_add,
             calendar_subscription_refresh,
             reminder_lists,
             reminder_groups,

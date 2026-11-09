@@ -142,7 +142,7 @@ The crates keep the `quince-` prefix from the project's working name.
 
 ## Ground rules
 
-- **Privacy is the product.** Never add a network host, telemetry, analytics or crash reporting. Every client is built by one of three locks in `quince-auth`: `apple_only()` for iCloud, `listed_only()` for calendar subscriptions, and `releases::releases_only()` for Skykeep's own updates (GitHub's release servers only). `crates/quince-auth/tests/apple_only.rs` must keep passing.
+- **Privacy is the product.** Never add a network host, telemetry, analytics or crash reporting. Every client is built by one of four locks in `quince-auth`: `apple_only()` for iCloud, `listed_only()` for calendar subscriptions, `account_only()` for a calendar account the person added, and `releases::releases_only()` for Skykeep's own updates (GitHub's release servers only). `crates/quince-auth/tests/apple_only.rs` must keep passing.
 - **No personal data** in code, tests, fixtures, logs or screenshots: no real names, emails, phone numbers, note contents, account IDs or tokens. A pre-commit secret scan is a good idea; CI-safe test vectors use `example.invalid`.
 - **Instant everywhere.** Every write shows immediately and rolls back with a reason on failure. Never block a redraw on the network.
 - **Never lose data.** Merges keep both sides; deletes go to Recently Deleted where Apple has one.
