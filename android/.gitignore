@@ -1,0 +1,19 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+# Built from crates/quince-mobile, never committed: the engine for each ABI and its Kotlin side.
+app/src/main/jniLibs/
+app/src/main/kotlin/uniffi/
+.kotlin/
