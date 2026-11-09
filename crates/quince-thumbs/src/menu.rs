@@ -44,8 +44,18 @@ impl IExplorerCommand_Impl for SendToIphone_Impl {
 
     fn GetIcon(&self, _items: Ref<IShellItemArray>) -> windows_core::Result<PWSTR> {
         let exe = skykeep_exe().ok_or(E_FAIL)?;
+        // Send to iPhone's own icon beside the program (bundle-windows.json, msix/pack.ps1);
+        // the program's own where an install has none.
+        let icon = Some(exe.with_file_name("icons").join("send.ico"))
+            .filter(|p| p.is_file())
+            .unwrap_or(exe);
         // SAFETY: a string alive for the call, copied into memory the caller frees.
-        unsafe { SHStrDupW(&windows_core::HSTRING::from(format!("{},0", exe.display()))) }
+        unsafe {
+            SHStrDupW(&windows_core::HSTRING::from(format!(
+                "{},0",
+                icon.display()
+            )))
+        }
     }
 
     fn GetToolTip(&self, _items: Ref<IShellItemArray>) -> windows_core::Result<PWSTR> {

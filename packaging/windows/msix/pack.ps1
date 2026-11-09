@@ -44,6 +44,9 @@ New-Item -ItemType Directory $stage | Out-Null
 try {
   # 1. The program and what lies beside it.
   Get-ChildItem $Payload -File | Where-Object { $_.Extension -ne ".msi" } | Copy-Item -Destination $stage
+  # Send to iPhone's icon, where the menu entry looks for it: icons\send.ico beside skykeep.exe.
+  New-Item -ItemType Directory -Force (Join-Path $stage "icons") | Out-Null
+  Copy-Item (Join-Path $here "..\..\icons\apps\send.ico" | Resolve-Path) (Join-Path $stage "icons\send.ico")
   $exe = Join-Path $stage "skykeep.exe"
   if (-not (Test-Path $exe)) { throw "no skykeep.exe in $Payload" }
   $bytes = [System.IO.File]::ReadAllBytes($exe)

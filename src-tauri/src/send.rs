@@ -572,6 +572,11 @@ fn make_send_to() -> windows::core::Result<()> {
     use windows::Win32::System::Com::*;
     use windows::Win32::UI::Shell::*;
     let exe = std::env::current_exe().map_err(|_| windows::core::Error::from_thread())?;
+    // Send to iPhone's own icon, installed beside the program (packaging/windows/bundle-windows.json,
+    // msix/pack.ps1); the program's own where an older install has none.
+    let icon = Some(exe.with_file_name("icons").join("send.ico"))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| exe.clone());
     // SAFETY: COM on this thread of our own; every object released before it is uninitialized.
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
@@ -583,18 +588,25 @@ fn make_send_to() -> windows::core::Result<()> {
             let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
             let file: IPersistFile = link.cast()?;
             if file.Load(&at, STGM_READ).is_ok() {
-                let mut target = [0u16; 1024];
-                if link.GetPath(&mut target, std::ptr::null_mut(), 0).is_ok() {
-                    let end = target.iter().position(|&u| u == 0).unwrap_or(target.len());
-                    if Path::new(&String::from_utf16_lossy(&target[..end])) == exe {
-                        return Ok(());
-                    }
+                // Kept as it is only while it still opens this program with this icon: an
+                // update that brings the icon rewrites it.
+                let text = |buf: &[u16]| {
+                    let end = buf.iter().position(|&u| u == 0).unwrap_or(buf.len());
+                    PathBuf::from(String::from_utf16_lossy(&buf[..end]))
+                };
+                let (mut target, mut shown, mut index) = ([0u16; 1024], [0u16; 1024], 0i32);
+                if link.GetPath(&mut target, std::ptr::null_mut(), 0).is_ok()
+                    && link.GetIconLocation(&mut shown, &mut index).is_ok()
+                    && text(&target) == exe
+                    && text(&shown) == icon
+                {
+                    return Ok(());
                 }
             }
             let program = HSTRING::from(exe.as_os_str());
             link.SetPath(&program)?;
             link.SetArguments(&HSTRING::from(ASK))?;
-            link.SetIconLocation(&program, 0)?;
+            link.SetIconLocation(&HSTRING::from(icon.as_os_str()), 0)?;
             link.SetDescription(&HSTRING::from(
                 "Send to your iPhone through iCloud, with Skykeep",
             ))?;

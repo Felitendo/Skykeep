@@ -1,6 +1,8 @@
 # The six app icons (packaging/icons/apps/<app>.svg), made from two sources so they never drift:
 # each app's mark in the sidebar (Lucide, ISC: src/components/AppIcon.tsx), drawn in the logo's
 # style (ink with a light outline, round ends) on the logo's cumulus cloud, in the app's colour.
+# A seventh, send.svg, is Send to iPhone's in the file managers' menus: rings spreading from a
+# point, open at the foot, in teal, a colour none of the apps has.
 # Run from the repository: python3 packaging/icons/apps/make.py
 #   node_modules/lucide-react/dist/esm/icons packaging/icons/skykeep.svg packaging/icons/apps
 import re, sys
@@ -15,8 +17,19 @@ APPS = {  # app: (lucide icon, cloud body, base edge, elements left out at this 
   "contacts": ("contact-round", "#7C8798", "#626D7E", set()),
   "drive": ("folder-closed", "#2F9BFF", "#1F7FE6", set()),
   "photos": ("image", "#B65CE0", "#9A43C6", set()),
+  "send": (None, "#1FC7C0", "#10A7A1", set()),
 }
+import math
+def ring(r, a0, a1, cx=12, cy=12.5):
+    """An arc of radius r round (cx, cy), clockwise from angle a0 to a1 (degrees, 0 = right)."""
+    x0, y0 = cx + r * math.cos(math.radians(a0)), cy + r * math.sin(math.radians(a0))
+    x1, y1 = cx + r * math.cos(math.radians(a1)), cy + r * math.sin(math.radians(a1))
+    return f'<path d="M{x0:.2f} {y0:.2f} A{r} {r} 0 {1 if (a1 - a0) % 360 > 180 else 0} 1 {x1:.2f} {y1:.2f}"/>'
+# Send to iPhone's mark, drawn here: no Lucide icon says it.
+SEND = ('<circle cx="12" cy="12.5" r="1.3"/>' + ring(4.6, 115, 65) + ring(8.2, 115, 65) + ring(11.4, 125, 55))
 def nodes(name, drop):
+    if name is None:
+        return SEND
     src = open(f"{ICONS}/{name}.mjs").read()
     out = []
     for tag, attrs in re.findall(r'"(path|rect|circle)",\s*\{(.*?)\}', src, re.S):

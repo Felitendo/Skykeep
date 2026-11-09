@@ -7,7 +7,8 @@
       "../packaging/icons/apps/calendar.ico": "icons/calendar.ico",
       "../packaging/icons/apps/contacts.ico": "icons/contacts.ico",
       "../packaging/icons/apps/drive.ico": "icons/drive.ico",
-      "../packaging/icons/apps/photos.ico": "icons/photos.ico"
+      "../packaging/icons/apps/photos.ico": "icons/photos.ico",
+      "../packaging/icons/apps/send.ico": "icons/send.ico"
     }
   }
 }

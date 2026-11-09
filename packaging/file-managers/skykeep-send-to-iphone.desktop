@@ -14,5 +14,5 @@ X-KDE-Priority=TopLevel
 
 [Desktop Action sendToIphone]
 Name=Send to iPhone
-Icon=io.github.yashwanthkamireddi.Skykeep
+Icon=io.github.yashwanthkamireddi.Skykeep.Send
 Exec=skykeep --send-to-iphone %F

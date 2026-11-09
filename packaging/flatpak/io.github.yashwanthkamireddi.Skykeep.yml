@@ -108,7 +108,7 @@ modules:
         done
         test "$(ls ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}*.desktop | wc -l)" -eq 8
         # Each app's own icon, named under this app ID so Flatpak exports it with its launcher.
-        for app in Notes Reminders Calendar Contacts Drive Photos; do
+        for app in Notes Reminders Calendar Contacts Drive Photos Send; do
           install -Dm644 packaging/icons/apps/${app,,}.svg \
             "${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.$app.svg"
         done

@@ -94,8 +94,8 @@ install -Dm644 %{appid}.desktop %{buildroot}%{_datadir}/applications/%{appid}.de
 for entry in packaging/apps/*.desktop; do
   install -Dm644 "$entry" %{buildroot}%{_datadir}/applications/$(basename "$entry")
 done
-# Each app's own icon (packaging/icons/apps), named for its launcher.
-for app in Notes Reminders Calendar Contacts Drive Photos; do
+# Each app's own icon (packaging/icons/apps), named for its launcher; and Send to iPhone's.
+for app in Notes Reminders Calendar Contacts Drive Photos Send; do
   install -Dm644 packaging/icons/apps/${app,,}.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/%{appid}.$app.svg
 done
