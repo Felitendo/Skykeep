@@ -42,7 +42,11 @@ class MainActivity : ComponentActivity() {
               val kept = secrets.get("proof", "check") == "sealed"
               secrets.delete("proof", "check")
               val gone = secrets.get("proof", "check") == null
-              (if (kept && gone) "Keystore: sealed, read, deleted\n" else "Keystore: FAILED\n") +
+              val synced = runCatching {
+                val account = io.github.yashwanthkamireddi.skykeep.sync.ensureAccount(applicationContext, "proof@example.com")
+                io.github.yashwanthkamireddi.skykeep.sync.Proof.run(applicationContext, account)
+              }.getOrElse { "Contacts/Calendar: ${it.message}" }
+              synced + "\n" + (if (kept && gone) "Keystore: sealed, read, deleted\n" else "Keystore: FAILED\n") +
               runCatching { if (appleReachable()) "iCloud reachable" else "iCloud not reachable" }
                 .getOrElse { "Engine error: ${it.message}" }
             }

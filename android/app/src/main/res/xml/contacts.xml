@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets the Contacts app show and edit this account's contacts as its own. -->
+<ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android" />
