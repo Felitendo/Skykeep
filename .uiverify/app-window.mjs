@@ -30,7 +30,9 @@ for (const [app, side] of APPS) {
   ok((await page.locator("nav.sidebar").count()) === 0, `${app}: no switcher of the six`);
   if (side) {
     const foot = page.locator(`${side} .app-foot`);
-    ok(await foot.isVisible(), `${app}: the account sits at the foot of the app's own sidebar`);
+    // Waited for, not timed: whether it is there, not how fast (under the gate's pool it once
+    // drew a moment after the window's content).
+    ok(await foot.waitFor({ state: "visible", timeout: 3000 }).then(() => true, () => false), `${app}: the account sits at the foot of the app's own sidebar`);
     // The card reaches 8px from the window's top and foot, as the main window's sidebar does.
     const box = await page.locator(side).boundingBox();
     ok(box && Math.abs(box.y - 8) <= 1 && Math.abs(760 - (box.y + box.height) - 8) <= 1, `${app}: its sidebar is a card 8px in (${box && `${box.y}, ${760 - box.y - box.height}`})`);
