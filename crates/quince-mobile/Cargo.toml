@@ -1,0 +1,26 @@
+[package]
+name = "quince-mobile"
+version = "0.1.17"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Skykeep's engine for Android: the Kotlin app's one door into it, through UniFFI."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+# Writes the Kotlin side of the bindings from the built library (uniffi-bindgen generate).
+name = "uniffi-bindgen"
+path = "src/bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+quince-auth = { path = "../quince-auth" }
+uniffi = "0.32"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread"] }
