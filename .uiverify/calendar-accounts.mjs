@@ -1,6 +1,6 @@
-// Calendar accounts other than iCloud: a Nextcloud added with nothing but its address and the
-// person's approval in their browser, a CalDAV server by address and password; each listed under
-// its own heading, its events kept to its own calendars, and let go with Remove Account.
+// Calendar accounts other than iCloud: one Add CalDAV Account, by address and password, with a
+// Nextcloud server preconfigured under it, from nothing but its address and the person's approval
+// in their browser; each listed under its own heading, and let go with Remove Account.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const BASE = process.env.BASE ?? "http://localhost:4173";
@@ -25,9 +25,22 @@ ok(await side.getByRole("button", { name: "Nextcloud" }).count() === 0, "no Next
 
 // A wrong address is said in the panel.
 await page.evaluate(() => { window.__davFails = "There’s no Nextcloud at that address. Check it and try again."; });
-await addMenu(/Add Nextcloud Account/);
-const form = page.getByRole("form", { name: "Add Nextcloud Account" });
-ok(await form.isVisible(), "the menu opens the Nextcloud panel");
+await side.getByRole("button", { name: "Add Calendar" }).click();
+ok(await page.getByRole("menuitem", { name: /Nextcloud/ }).count() === 0 && await page.getByRole("menuitem", { name: /Add CalDAV Account/ }).count() === 1,
+  "the menu offers one way to add an account: CalDAV");
+await page.getByRole("menuitem", { name: /Add CalDAV Account/ }).click();
+const caldav = page.getByRole("form", { name: "Add CalDAV Account" });
+const form = page.getByRole("form", { name: "Set Up Nextcloud Server" });
+const preset = caldav.getByRole("button", { name: "Nextcloud Server" });
+ok(await caldav.isVisible() && await preset.isVisible(), "the CalDAV panel offers a Nextcloud server under it");
+await preset.click();
+await page.waitForTimeout(100);
+ok(await form.isVisible() && await caldav.count() === 0, "the preset opens the Nextcloud panel in its place");
+await form.getByRole("button", { name: "Back" }).click();
+await page.waitForTimeout(100);
+ok(await caldav.isVisible() && await form.count() === 0, "Back returns to the CalDAV panel");
+await preset.click();
+await page.waitForTimeout(100);
 ok(await form.getByRole("textbox").count() === 1 && await form.locator('input[type="password"]').count() === 0,
   "only the server is asked for: no username, no password");
 await form.getByRole("textbox").fill("nope.example.org");
@@ -58,7 +71,9 @@ const listed = await side.locator(".cx-cals").innerText();
 ok(listed.indexOf("Team (shared)") < listed.indexOf("Other"), "a read-only shared calendar is under its account, not Other");
 
 // Cancelling a sign-in leaves nothing.
-await addMenu(/Add Nextcloud Account/);
+await addMenu(/Add CalDAV Account/);
+await preset.click();
+await page.waitForTimeout(100);
 await form.getByRole("textbox").fill("other.example.org");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(200);
@@ -68,7 +83,6 @@ ok(await form.count() === 0 && (await writes()).some((w) => w.cancel), "Cancel s
 
 // A CalDAV server, by address and password.
 await addMenu(/Add CalDAV Account/);
-const caldav = page.getByRole("form", { name: "Add CalDAV Account" });
 ok(await caldav.isVisible(), "the menu opens the CalDAV panel");
 ok(await caldav.getByRole("button", { name: "Add" }).isDisabled(), "nothing to add until all three are given");
 await caldav.getByRole("textbox", { name: "Server" }).fill("dav.example.net");
@@ -97,6 +111,8 @@ await page.getByRole("menuitem", { name: "Sign In Again" }).click();
 await page.waitForTimeout(150);
 ok(await form.getByRole("textbox").inputValue() === "https://cloud.example.org", "the panel opens on that server");
 await form.getByRole("button", { name: "Cancel" }).click();
+await page.waitForTimeout(100);
+ok(await form.count() === 0 && await caldav.count() === 0, "signing in again, Cancel just closes it");
 
 // An event in such a calendar stays in it; a new one can be made in it.
 const calendarsOffered = await page.evaluate(() => (window.__cals ?? []).filter((c) => c.writable).map((c) => c.title));

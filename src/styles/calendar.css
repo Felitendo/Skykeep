@@ -826,6 +826,10 @@
 .cx-subscribe .field { width: 100%; min-width: 0; }
 .cx-subscribe-note { margin: 0; color: var(--text-3); font-size: var(--t-11); line-height: 1.35; }
 .cx-subscribe-note.is-problem { color: var(--danger); }
+.cx-subscribe-presets {
+  display: flex; flex-direction: column; gap: 6px; padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+}
 .cx-subscribe-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
 /* ---- Quick Event --------------------------------------------------------------------- */

@@ -17,8 +17,8 @@ and GitHub's release servers for Skykeep's own updates:
 - `calendars.icloud.com` — Apple's public holiday calendars.
 - The host of each calendar you subscribe to by address (Calendar ▸ + ▸ New Subscription),
   and only once you have: a `webcal://` or `https://` address of a public calendar file.
-- The server of each calendar account you add (Calendar ▸ + ▸ Add Nextcloud Account, or Add
-  CalDAV Account), and only once you have.
+- The server of each calendar account you add (Calendar ▸ + ▸ Add CalDAV Account, with
+  Nextcloud Server under it for a Nextcloud), and only once you have.
 - `github.com`, then `release-assets.githubusercontent.com` (or
   `objects.githubusercontent.com`), where GitHub serves release files — only in a copy
   installed from the AppImage, the Windows installer or the `.msi`, to check for a new version

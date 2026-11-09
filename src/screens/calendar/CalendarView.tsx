@@ -1550,11 +1550,14 @@ export function CalendarView() {
                 toast(`Added \u201c${a.title}\u201d`);
                 void read();
               }}
-              onCancel={() => setAdding(null)}
+              // Reached from the CalDAV panel, it goes back there; to sign in again, it just closes.
+              leaving={adding.server === undefined ? "Back" : "Cancel"}
+              onCancel={() => setAdding(adding.server === undefined ? { kind: "caldav" } : null)}
             />
           )}
           {adding?.kind === "caldav" && (
             <CalDavForm
+              onNextcloud={() => setAdding({ kind: "nextcloud" })}
               onDone={(a) => {
                 setAdding(null);
                 toast(`Added \u201c${a.title}\u201d`);
@@ -1791,7 +1794,6 @@ export function CalendarView() {
               { label: "New Calendar", run: () => { if (folded.has("icloud")) fold("icloud"); setNaming("new"); } },
               { label: "New Subscription", run: () => setSubscribing(true) },
               null,
-              { label: "Add Nextcloud Account", run: () => setAdding({ kind: "nextcloud" }) },
               { label: "Add CalDAV Account", run: () => setAdding({ kind: "caldav" }) },
             ]}
           />
@@ -1825,7 +1827,6 @@ export function CalendarView() {
               { label: "Show Week Numbers", checked: weekNumbers, run: () => setWeekNumbers(!weekNumbers) },
               null,
               { label: "New Subscription", run: () => setSubscribing(true) },
-              { label: "Add Nextcloud Account", run: () => setAdding({ kind: "nextcloud" }) },
               { label: "Add CalDAV Account", run: () => setAdding({ kind: "caldav" }) },
             ]}
           />
@@ -4043,12 +4044,15 @@ function QuickEvent({ calendar, onAdd, onClose }: {
 }
 
 /**
- * Add Nextcloud Account: only the server's address. Nextcloud's own page opens in the browser,
+ * Set Up Nextcloud Server, the preset under Add CalDAV Account: only the server's address.
+ * Nextcloud's own page opens in the browser,
  * where the person approves Skykeep behind whatever sign-in they have set up; the rest is found
  * by asking the server. Skykeep never sees their password, only an app password for itself.
  */
-function NextcloudForm({ initial, onDone, onCancel }: {
+function NextcloudForm({ initial, leaving, onDone, onCancel }: {
   initial?: string;
+  /** What the button that leaves this panel says. */
+  leaving: string;
   onDone: (account: DavAccount) => void;
   onCancel: () => void;
 }) {
@@ -4093,7 +4097,7 @@ function NextcloudForm({ initial, onDone, onCancel }: {
   return (
     <form
       className="cx-subscribe"
-      aria-label="Add Nextcloud Account"
+      aria-label="Set Up Nextcloud Server"
       onSubmit={(e) => { e.preventDefault(); begin(); }}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
@@ -4102,7 +4106,7 @@ function NextcloudForm({ initial, onDone, onCancel }: {
         }
       }}
     >
-      <label className="cx-subscribe-label" htmlFor="cx-nextcloud-server">Add your Nextcloud</label>
+      <label className="cx-subscribe-label" htmlFor="cx-nextcloud-server">Set up a Nextcloud server</label>
       {waiting ? (
         <p className="cx-subscribe-note" role="status">
           Approve Skykeep in the page that opened in your browser. It finishes here by itself.
@@ -4130,7 +4134,7 @@ function NextcloudForm({ initial, onDone, onCancel }: {
         </>
       )}
       <div className="cx-subscribe-actions">
-        <button type="button" className="quiet" onClick={cancel}>Cancel</button>
+        <button type="button" className="quiet" onClick={cancel}>{waiting ? "Cancel" : leaving}</button>
         {waiting ? (
           <button type="button" className="quiet" onClick={() => { void davApi.nextcloudReopen().catch((err) => setProblem(messageOf(err))); }}>Open Page Again</button>
         ) : (
@@ -4141,8 +4145,12 @@ function NextcloudForm({ initial, onDone, onCancel }: {
   );
 }
 
-/** Add CalDAV Account: any other calendar server, by its address, username and password. */
-function CalDavForm({ onDone, onCancel }: {
+/**
+ * Add CalDAV Account: a calendar server by its address, username and password. Under it, the
+ * servers Skykeep can set up by itself, from less than that.
+ */
+function CalDavForm({ onNextcloud, onDone, onCancel }: {
+  onNextcloud: () => void;
   onDone: (account: DavAccount) => void;
   onCancel: () => void;
 }) {
@@ -4188,6 +4196,10 @@ function CalDavForm({ onDone, onCancel }: {
       <div className="cx-subscribe-actions">
         <button type="button" className="quiet" onClick={onCancel}>Cancel</button>
         <button type="submit" className="primary" disabled={!ready} aria-busy={busy}>Add</button>
+      </div>
+      <div className="cx-subscribe-presets" role="group" aria-label="Preconfigured servers">
+        <span className="cx-subscribe-note">Preconfigured</span>
+        <button type="button" className="quiet" disabled={busy} onClick={onNextcloud}>Nextcloud Server</button>
       </div>
     </form>
   );
