@@ -20,7 +20,10 @@ step() {
 JOBS=${CHECK_JOBS:-$(( $(nproc) / 2 ))}; [ "$JOBS" -ge 1 ] || JOBS=1
 out=$(mktemp -d)
 names=() pids=() later=()
-timed() { case "$*" in *notes-long.mjs*|*photos-scale.mjs*|*photos-scroll.mjs*|*photos-paging.mjs*|*photos-levels-scale.mjs*) return 0 ;; esac; return 1; }
+# Also alone: photos-strip opens a 2,000-photo library (under six browsers its window took past
+# 30 s to appear), and contacts-lists in Windows mode times "at once" (9 Nov, both failed only
+# in the pool and passed 3 of 3 alone).
+timed() { case "$*" in *notes-long.mjs*|*photos-scale.mjs*|*photos-scroll.mjs*|*photos-paging.mjs*|*photos-levels-scale.mjs*|*photos-strip.mjs*|*WEBVIEW2=1*contacts-lists.mjs*) return 0 ;; esac; return 1; }
 pooled() {
   local name=$1; shift
   if timed "$@"; then later+=("$name"$'\x1f'"$(printf '%q ' "$@")"); return; fi
