@@ -2127,6 +2127,26 @@ pub fn listed_only(hosts: &[String]) -> reqwest::ClientBuilder {
     with_system_proxies(builder)
 }
 
+/// The client for a calendar account the person signed in to themselves: Nextcloud, or any
+/// CalDAV server. It reaches exactly `hosts`, by the same two locks as [`listed_only`]. Unlike a
+/// subscription, whose address anyone can hand the person, this is the person's own server, so
+/// one at home or on a tailnet is reached. Redirects are not followed here: a redirect keeps
+/// neither the password nor the method, so the CalDAV discovery reads them itself.
+pub fn account_only(hosts: &[String]) -> reqwest::ClientBuilder {
+    let listed: Arc<Vec<String>> = Arc::new(hosts.iter().map(|h| normal_host(h)).collect());
+    let check = Arc::clone(&listed);
+    let builder = HttpClient::builder()
+        .dns_resolver(Arc::new(AccountOnly(Arc::clone(&listed))))
+        .redirect(reqwest::redirect::Policy::none())
+        .proxy(reqwest::Proxy::custom(move |url| {
+            let named = url
+                .host_str()
+                .is_some_and(|h| check.contains(&normal_host(h)));
+            (!named).then(|| REFUSED.to_string())
+        }));
+    with_system_proxies(builder)
+}
+
 fn normal_host(host: &str) -> String {
     host.trim_end_matches('.')
         .trim_start_matches('[')
@@ -2215,6 +2235,27 @@ impl reqwest::dns::Resolve for ListedOnly {
                     format!("{host} is not on the internet").into();
                 return Err(refused);
             }
+            let addrs: reqwest::dns::Addrs = Box::new(found.into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
+/// A calendar account's resolver: its own hosts are looked up as the system looks up any name,
+/// wherever they lead; any other is never looked up at all.
+struct AccountOnly(Arc<Vec<String>>);
+
+impl reqwest::dns::Resolve for AccountOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = normal_host(name.as_str());
+        let allowed = self.0.contains(&host);
+        Box::pin(async move {
+            if !allowed {
+                let refused: Box<dyn std::error::Error + Send + Sync> =
+                    format!("{host} is not a calendar account of yours").into();
+                return Err(refused);
+            }
+            let found: Vec<_> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
             let addrs: reqwest::dns::Addrs = Box::new(found.into_iter());
             Ok(addrs)
         })
@@ -2339,6 +2380,35 @@ mod listed_tests {
         assert!(!ok("https://evil.calendar.example.org/a.ics"));
         assert!(!ok("https://example.org/a.ics"));
         assert!(!ok("https://calendar.example.org.evil.net/a.ics"));
+    }
+
+    /// A calendar account's client reaches its own server, at home too, and nothing else.
+    #[tokio::test]
+    async fn an_account_client_reaches_its_own_server_and_no_other() {
+        let http = account_only(&["127.0.0.1".into()]).build().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let answered = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let own = http
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(own.status(), 204, "its own server, on this computer");
+        answered.await.unwrap();
+        let other = http.get("https://example.org/").send().await;
+        let text = format!("{:?}", other.unwrap_err());
+        assert!(
+            text.contains("not a calendar account of yours") || text.contains("refused"),
+            "{text}"
+        );
     }
 
     /// A subscription never reaches this computer or the local network: not by an address in

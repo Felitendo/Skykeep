@@ -819,7 +819,7 @@ function WeekStartRow() {
   );
 }
 
-type Reach = { apple: string[]; subscribed: string[]; updates: string[] };
+type Reach = { accounts: string[]; apple: string[]; subscribed: string[]; updates: string[] };
 
 /** What Skykeep can reach, as its network locks hold it (`network_reach`). */
 function useReach(): Reach | null {
@@ -862,6 +862,12 @@ function ReachGroup() {
           <span className="settings-label">Apple</span>
           <span className="settings-hint settings-hint-wrap">
             <Hosts hosts={apple} /> and every address under them, for your iCloud. These connections can reach nothing else.
+          </span>
+        </div>
+        <div className="settings-row is-stacked">
+          <span className="settings-label">Calendar Accounts</span>
+          <span className="settings-hint settings-hint-wrap">
+            {reach.accounts.length === 0 ? "None. A Nextcloud or CalDAV account you add adds its own server here." : <Hosts hosts={reach.accounts} />}
           </span>
         </div>
         <div className="settings-row is-stacked">

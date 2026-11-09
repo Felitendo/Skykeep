@@ -411,7 +411,9 @@ pub fn spawn_events(app: AppHandle) {
                     .events_starting_between(coming_from(at), at + 8 * 86_400)
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|(guid, _)| !guid.starts_with("quince:"))
+                    .filter(|(guid, _)| {
+                        !guid.starts_with("quince:") || quince_core::dav::is_dav(guid)
+                    })
                     .filter_map(|(guid, _)| library.event(&guid).ok().flatten())
                     .collect()
             };
@@ -424,6 +426,13 @@ pub fn spawn_events(app: AppHandle) {
                 .filter(|e| known.get(&e.guid).is_none_or(|(tag, _)| *tag != e.etag))
                 .cloned()
                 .collect();
+            // A calendar account's alerts are in the text kept here; only iCloud's are asked for.
+            let (accounts, stale): (Vec<_>, Vec<_>) =
+                stale.into_iter().partition(crate::dav::is_account_event);
+            for e in &accounts {
+                let alerts = crate::dav::alerts_of(&app.state::<Data>(), e).await;
+                known.insert(e.guid.clone(), (e.etag.clone(), alerts));
+            }
             if !stale.is_empty() {
                 let session = {
                     let auth = app.state::<Auth>();

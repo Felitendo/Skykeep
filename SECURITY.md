@@ -7,8 +7,8 @@ serious one.
 
 ## What Skykeep talks to
 
-Apple for your iCloud, the calendars you subscribe to, and GitHub's release servers for
-Skykeep's own updates:
+Apple for your iCloud, the calendars you subscribe to, the calendar accounts you add yourself,
+and GitHub's release servers for Skykeep's own updates:
 
 - `idmsa.apple.com` — signing in (Apple's own SRP sign-in and two-factor codes).
 - `setup.icloud.com`, `www.icloud.com` — opening the session and finding your services.
@@ -17,6 +17,8 @@ Skykeep's own updates:
 - `calendars.icloud.com` — Apple's public holiday calendars.
 - The host of each calendar you subscribe to by address (Calendar ▸ + ▸ New Subscription),
   and only once you have: a `webcal://` or `https://` address of a public calendar file.
+- The server of each calendar account you add (Calendar ▸ + ▸ Add Nextcloud Account, or Add
+  CalDAV Account), and only once you have.
 - `github.com`, then `release-assets.githubusercontent.com` (or
   `objects.githubusercontent.com`), where GitHub serves release files — only in a copy
   installed from the AppImage, the Windows installer or the `.msi`, to check for a new version
@@ -38,6 +40,18 @@ enforced in code rather than promised:
   locks — so it can reach those hosts and nothing else (`listed_tests` in
   `crates/quince-auth/src/lib.rs`). A subscription is read-only: nothing is sent to it but the
   request for its file, and no Apple data goes with that request.
+- **Calendar accounts.** A Nextcloud or CalDAV account is reached by
+  `quince_auth::account_only()`, built with exactly that account's hosts and the same two locks,
+  so it can reach that server and nothing else (`crates/quince-auth/src/lib.rs`). Unlike a
+  subscription, whose address anyone can hand you, it is your own server, so one at home or on
+  a tailnet is reached. The password travels only over HTTPS, or in the clear to an address
+  named as a private one (`192.168.…`, a tailnet's). It is kept in the system keyring, never in
+  a file. A Nextcloud is signed in to on its own page in your browser (Login Flow v2): Skykeep
+  never sees your password, only an app password made for it, which you can revoke in
+  Nextcloud's settings and which **Remove Account** revokes itself. A password the server
+  refuses is not tried again until you sign in again, so Skykeep cannot trip a server's
+  protection against guessing. Nothing of your iCloud is sent to these servers, except an event
+  you put in one of their calendars yourself.
 - **Updates.** The updater's client is locked by `quince_auth::releases::releases_only()` to
   the three GitHub hosts above, exactly (not `api.github.com`, not any other host under
   them), over HTTPS only, by the same two locks (`crates/quince-auth/src/releases.rs`). It

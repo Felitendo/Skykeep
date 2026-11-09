@@ -19,6 +19,7 @@ Five crates sit under the app:
 - **quince-auth** signs in (Apple's SRP and two-factor), keeps the session in the system keyring,
   and builds every HTTP client. `apple_only()` refuses any host outside Apple's domains before a
   connection exists; `listed_only()` reaches only the calendars you subscribed to;
+  `account_only()` only the servers of calendar accounts you added;
   `releases::releases_only()` reaches only GitHub's release servers, for Skykeep's own updates
   (`src-tauri/src/updates.rs`).
 - **quince-icloud** speaks each service: CloudKit records for Notes, Reminders and Photos,
@@ -54,6 +55,16 @@ A write is recorded and shown in one transaction, then sent behind the window:
 Card addresses, reminder ticks, note moves, event edits with their repeat scope: each is its
 own kind of change in the queue, with its own `lay` and `send`.
 
+## Calendar accounts other than iCloud
+
+A Nextcloud or CalDAV account (`src-tauri/src/dav.rs`) is read into the same `calendars` and
+`events` tables, so every screen, search, alerts and the outbox work as they do for iCloud. Its
+guids begin `quince:dav:`. Beside them, `dav_resources` keeps each event's iCalendar text as
+the server holds it. A change is made to that text, a line at a time
+(`crates/quince-icloud/src/ical_edit.rs`), so nothing Skykeep has no field for is lost, and
+sent with `If-Match`. Each account has its own outbox queue, so a server that is down holds up
+only its own changes. `caldav.rs` speaks the protocol; `nextcloud.rs` is the browser sign-in.
+
 ## Windows and apps
 
 One process, one library. The whole-library window and each app's own window (Notes, Reminders,
@@ -65,6 +76,7 @@ once opened is kept mounted and inert while another is in front, so coming back 
 | To change | Start in |
 |---|---|
 | What Apple sends or accepts | `crates/quince-icloud/src/<service>.rs` |
+| Calendar accounts other than iCloud | `src-tauri/src/dav.rs`, `crates/quince-icloud/src/caldav.rs` |
 | What is stored | `crates/quince-core/src/schema.rs`, then the service's file there |
 | How a write behaves offline | `src-tauri/src/outbox.rs` |
 | When syncing happens | `src-tauri/src/push.rs`, `refresh.rs` |

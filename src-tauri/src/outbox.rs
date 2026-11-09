@@ -49,6 +49,30 @@ pub const NOTES: &str = "notes";
 pub const CONTACTS: &str = "contacts";
 pub const CALENDAR: &str = "calendar";
 
+/// Where a calendar account's queue is named: one each, so a server that is down holds up only
+/// its own changes, never iCloud's or another account's.
+const ACCOUNT_QUEUE: &str = "caldav:";
+
+/// The queue of the calendar account `id`.
+pub fn account_queue(id: &str) -> String {
+    format!("{ACCOUNT_QUEUE}{id}")
+}
+
+/// The queue a change to this calendar waits in.
+fn queue_of(calendar_guid: &str) -> String {
+    quince_core::dav::account_of(calendar_guid).map_or_else(|| CALENDAR.to_string(), account_queue)
+}
+
+/// What a queue is to the window, which knows a change as the Calendar's whichever account it
+/// goes to.
+fn service_shown(service: &str) -> &str {
+    if service.starts_with(ACCOUNT_QUEUE) {
+        CALENDAR
+    } else {
+        service
+    }
+}
+
 /// What a waiting change does to a reminder: ticked (`at` the moment) or not, over the copy of
 /// Apple's record it was made from (`base`: what tells a change made elsewhere since from one
 /// sent from here). A tick queued before there was a base has none, and is sent unless Apple
@@ -906,8 +930,9 @@ fn lay_contact_address(l: &mut Library, guid: &str, a: &ContactAddress) -> quinc
 /// way is followed by the next, made from what it sends.
 pub fn record_event_save(library: &mut Library, save: EventSave) -> quince_core::Result<()> {
     let guid = save.event.guid.clone();
+    let queue = queue_of(&save.event.calendar_guid);
     library.atomically(|l| {
-        let waiting = last_word(l, CALENDAR, &guid, "save")?.and_then(|p| {
+        let waiting = last_word(l, &queue, &guid, "save")?.and_then(|p| {
             serde_json::from_str::<EventSave>(&p.payload)
                 .ok()
                 .map(|s| (p, s))
@@ -916,7 +941,7 @@ pub fn record_event_save(library: &mut Library, save: EventSave) -> quince_core:
             Some((p, before)) if p.tries == 0 && before.scope == save.scope => {
                 let merged = before.then(save);
                 if !l.outbox_amend(p.id, &json(&merged)?)? {
-                    l.outbox_append(CALENDAR, &guid, "save", &json(&merged)?)?;
+                    l.outbox_append(&queue, &guid, "save", &json(&merged)?)?;
                 }
                 // Over the one it joins, which the library already shows: what the form
                 // holds now is the whole of it, a field put back as it was included.
@@ -928,11 +953,11 @@ pub fn record_event_save(library: &mut Library, save: EventSave) -> quince_core:
                     create: false,
                     ..save
                 };
-                l.outbox_append(CALENDAR, &guid, "save", &json(&after)?)?;
+                l.outbox_append(&queue, &guid, "save", &json(&after)?)?;
                 (after, false)
             }
             None => {
-                l.outbox_append(CALENDAR, &guid, "save", &json(&save)?)?;
+                l.outbox_append(&queue, &guid, "save", &json(&save)?)?;
                 (save, false)
             }
         };
@@ -996,7 +1021,12 @@ pub fn record_event_delete(
             event: event.clone(),
             scope,
         };
-        l.outbox_append(CALENDAR, &event.guid, "delete", &json(&d)?)?;
+        l.outbox_append(
+            &queue_of(&event.calendar_guid),
+            &event.guid,
+            "delete",
+            &json(&d)?,
+        )?;
         lay_event_delete(l, &d)
     })
 }
@@ -1029,7 +1059,7 @@ fn lay_event_delete(l: &mut Library, d: &EventDelete) -> quince_core::Result<()>
 
 /// Lay one waiting change over the library.
 fn lay(l: &mut Library, p: &Pending) -> quince_core::Result<()> {
-    match (p.service.as_str(), p.kind.as_str()) {
+    match (service_shown(&p.service), p.kind.as_str()) {
         (REMINDERS, "done") => {
             if let Ok(d) = serde_json::from_str::<Done>(&p.payload) {
                 l.set_reminder_completed(&p.record, d.done.then_some(d.at))?;
@@ -1127,7 +1157,7 @@ pub fn replay(library: &mut Library, service: &str) -> quince_core::Result<()> {
 
 /// Every change still waiting for `service` but `except`, laid over the library: what Apple
 /// answered for one just sent is stored, and what still waits behind it stays as made.
-fn replay_except(library: &mut Library, service: &str, except: i64) -> quince_core::Result<()> {
+pub fn replay_except(library: &mut Library, service: &str, except: i64) -> quince_core::Result<()> {
     for p in library.outbox_pending(service)? {
         if p.id != except {
             lay(library, &p)?;
@@ -1178,7 +1208,10 @@ pub fn start(app: AppHandle) {
                     },
                 ),
                 (CONTACTS, drain_contacts(&app).await),
-                (CALENDAR, drain_calendar(&app).await),
+                (
+                    CALENDAR,
+                    either(drain_calendar(&app).await, drain_accounts(&app).await),
+                ),
             ];
             // Said once, after the pass, and only to the services it touched. Told before and
             // after every pass with no service named, each kept-mounted screen read its whole
@@ -1966,6 +1999,53 @@ async fn send_contact_from(
     .await
 }
 
+/// What two queues of one service come to together.
+fn either(a: Outcome, b: Outcome) -> Outcome {
+    match (a, b) {
+        (Outcome::Later, _) | (_, Outcome::Later) => Outcome::Later,
+        (Outcome::Clear, _) | (_, Outcome::Clear) => Outcome::Clear,
+        _ => Outcome::Idle,
+    }
+}
+
+/// Each calendar account's queue, on its own server.
+async fn drain_accounts(app: &AppHandle) -> Outcome {
+    let data = app.state::<Data>();
+    let (accounts, owner) = {
+        let l = data.0.lock().await;
+        (
+            l.dav_accounts().unwrap_or_default(),
+            l.state(crate::ACCOUNT_KEY).ok().flatten(),
+        )
+    };
+    let mut outcome = Outcome::Idle;
+    for account in accounts {
+        let queue = account_queue(&account.id);
+        if waiting(&data, &queue).await.is_clear() {
+            continue;
+        }
+        // A refused password asked again looks like someone guessing it: kept for the sign-in.
+        let ready = !crate::dav::waiting_for_sign_in(&account) && crate::same_account(app).await;
+        let remote = ready
+            .then(|| crate::dav::remote_of(app, &account).ok())
+            .flatten();
+        let (Some(remote), Some(owner)) = (remote, owner.as_deref()) else {
+            outcome = either(outcome, Outcome::Later);
+            continue;
+        };
+        let report = drain_as(&data.0, &queue, &crate::dav::PASS, owner, |p| {
+            crate::dav::send(app, &data.0, &remote, &account, p)
+        })
+        .await;
+        tell_refused(app, CALENDAR, &report);
+        if report.sent || !report.refused.is_empty() {
+            let _ = app.emit("quince://calendar-synced", ());
+        }
+        outcome = either(outcome, report.outcome);
+    }
+    outcome
+}
+
 async fn drain_calendar(app: &AppHandle) -> Outcome {
     let auth = app.state::<Auth>();
     let data = app.state::<Data>();
@@ -2228,7 +2308,7 @@ pub struct Status {
 fn content_of(p: &Pending) -> String {
     let v: serde_json::Value = serde_json::from_str(&p.payload).unwrap_or_default();
     let s = |ptr: &str| v.pointer(ptr).and_then(|x| x.as_str()).map(str::to_string);
-    match (p.service.as_str(), p.kind.as_str()) {
+    match (service_shown(&p.service), p.kind.as_str()) {
         (NOTES, "delete") => s("/title"),
         (NOTES, "create" | "save") => s("/body"),
         (REMINDERS, "create") => s("/title"),
@@ -2259,7 +2339,7 @@ pub fn status(library: &Library) -> quince_core::Result<Status> {
             .outbox_all_pending()?
             .into_iter()
             .map(|p| WaitingView {
-                service: p.service,
+                service: service_shown(&p.service).to_string(),
                 record: p.record,
                 kind: p.kind,
             })
@@ -2270,7 +2350,7 @@ pub fn status(library: &Library) -> quince_core::Result<Status> {
             .map(|r| RefusedView {
                 id: r.change.id,
                 content: content_of(&r.change),
-                service: r.change.service,
+                service: service_shown(&r.change.service).to_string(),
                 record: r.change.record,
                 kind: r.change.kind,
                 reason: r.reason,
@@ -2314,11 +2394,32 @@ pub async fn outbox_resend(id: i64, app: AppHandle, data: State<'_, Data>) -> Re
 /// A refused change let go of: Apple's version stands.
 #[tauri::command]
 pub async fn outbox_discard(id: i64, app: AppHandle, data: State<'_, Data>) -> Result<(), String> {
-    data.0
+    let account = data
+        .0
         .lock()
         .await
-        .outbox_discard(id)
+        .atomically(|l| {
+            let queue = l
+                .outbox_refused()?
+                .into_iter()
+                .find(|r| r.change.id == id)
+                .map(|r| r.change.service);
+            l.outbox_discard(id)?;
+            // A pass finds nothing new to lay over a calendar whose tag has not moved, so what
+            // was given up on is taken back off it here.
+            let account = queue
+                .as_deref()
+                .and_then(|q| q.strip_prefix(ACCOUNT_QUEUE))
+                .map(ToString::to_string);
+            if let Some(account) = &account {
+                crate::dav::lay_account(l, account)?;
+            }
+            Ok::<_, quince_core::Error>(account)
+        })
         .map_err(|e| e.to_string())?;
+    if account.is_some() {
+        let _ = app.emit("quince://calendar-synced", ());
+    }
     let _ = app.emit(CHANGED, ());
     Ok(())
 }
