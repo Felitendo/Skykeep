@@ -3150,6 +3150,43 @@ const YearView = memo(function YearView({
   );
 });
 
+/**
+ * Where a popover sits: beside what was clicked, and always wholly on screen. Placed when it
+ * opens, and again whenever its own size or the window's changes: a popover that grows (an
+ * alert's second row, notes being written) was left where it opened, its foot and its Add
+ * button off the bottom of the window (#21).
+ */
+function usePlacedBeside(box: React.RefObject<HTMLElement | null>, at: Anchor) {
+  const [pos, setPos] = useState<{ left: number; top: number }>({ left: at.x, top: at.y });
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const place = () => {
+      // Its own size, not as drawn: it grows in from 96% as it appears (lib/fade.ts), and
+      // measured mid-way it was placed a twentieth too low, its foot off the window after.
+      const width = el.offsetWidth;
+      const height = el.offsetHeight;
+      const gap = 12;
+      let left = at.x + gap;
+      if (left + width > window.innerWidth - 8) left = (at.left ?? at.x) - width - gap;
+      // Neither side free (a block as wide as Day's column): over its far end, clear of its
+      // title, which begins at the other.
+      if (left < 8) left = Math.max(8, window.innerWidth - width - 8);
+      const top = Math.max(8, Math.min(at.y - 24, window.innerHeight - height - 8));
+      setPos((p) => (p.left === left && p.top === top ? p : { left, top }));
+    };
+    place();
+    const grown = new ResizeObserver(place);
+    grown.observe(el);
+    window.addEventListener("resize", place);
+    return () => {
+      grown.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [box, at]);
+  return pos;
+}
+
 /* ---- the event popover ---------------------------------------------------------------- */
 
 /** A date and, unless it is all day, a time — two compact fields, as Calendar lays them out —
@@ -3304,19 +3341,8 @@ function ReminderCard({ reminder, at, list, onClose }: {
   const ctx = useContext(TickContext);
   const listColour = useListColour();
   useReturnFocus(() => null);
-  const [pos, setPos] = useState<{ left: number; top: number }>({ left: at.x, top: at.y });
-  // Beside what was clicked, and always wholly on screen — as an event's popover is placed.
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    const { width, height } = el.getBoundingClientRect();
-    const gap = 12;
-    let left = at.x + gap;
-    if (left + width > window.innerWidth - 8) left = (at.left ?? at.x) - width - gap;
-    if (left < 8) left = Math.max(8, window.innerWidth - width - 8);
-    const top = Math.min(Math.max(8, at.y - 24), window.innerHeight - height - 8);
-    setPos({ left, top });
-  }, [at]);
+  // Beside what was clicked, and always wholly on screen, as an event's popover is placed.
+  const pos = usePlacedBeside(box, at);
   const live = useActiveRef();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -3422,25 +3448,10 @@ function EventPopover({
     (draft.guid ? document.querySelector<HTMLElement>(`[data-event="${CSS.escape(draft.guid)}"]`) : null) ??
     document.querySelector<HTMLElement>('.cx-day-hit[tabindex="0"], .cal-col-head[tabindex="0"]'),
   );
-  const [pos, setPos] = useState<{ left: number; top: number }>({ left: at.x, top: at.y });
+  const pos = usePlacedBeside(box, at);
   const calendar = calendars.find((c) => c.guid === draft.calendarGuid);
   const editable = !draft.guid || (calendar?.writable ?? false);
   const choices = calendars.filter((c) => c.writable || c.guid === draft.calendarGuid);
-
-  // Beside what was clicked, and always wholly on screen.
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    const { width, height } = el.getBoundingClientRect();
-    const gap = 12;
-    let left = at.x + gap;
-    if (left + width > window.innerWidth - 8) left = (at.left ?? at.x) - width - gap;
-    // Neither side free — a block as wide as Day's column — so over its far end, clear of
-    // its title, which begins at the other.
-    if (left < 8) left = Math.max(8, window.innerWidth - width - 8);
-    const top = Math.min(Math.max(8, at.y - 24), window.innerHeight - height - 8);
-    setPos({ left, top });
-  }, [at]);
 
   const live = useActiveRef();
   useEffect(() => {
