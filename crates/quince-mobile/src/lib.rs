@@ -97,3 +97,122 @@ pub fn apple_reachable() -> Result<bool, EngineError> {
             .is_ok())
     })
 }
+
+/// What signing in decided.
+#[derive(uniffi::Enum)]
+pub enum SignIn {
+    /// Signed in: Apple already trusted this phone.
+    Complete,
+    /// Apple wants a six-digit code (see [`Account::code_options`]).
+    NeedsCode,
+}
+
+/// A phone number Apple will send a code to, already masked by Apple.
+#[derive(uniffi::Record)]
+pub struct TrustedPhone {
+    pub id: u64,
+    pub masked_number: String,
+}
+
+/// Where Apple is willing to send a code.
+#[derive(uniffi::Record)]
+pub struct CodeOptions {
+    /// Devices Apple pushed the code to; zero means nothing arrives on its own.
+    pub trusted_devices: u64,
+    pub phones: Vec<TrustedPhone>,
+    /// Apple refuses more codes for a while.
+    pub too_many_codes_sent: bool,
+    /// The account signs in with security keys, which Skykeep cannot answer yet.
+    pub security_key: bool,
+}
+
+fn failed(e: impl std::fmt::Display) -> EngineError {
+    EngineError::Failed {
+        reason: e.to_string(),
+    }
+}
+
+/// One Apple Account, signed in or being signed in: the desktop app's own sign-in (SRP,
+/// two-factor, the session sealed in the Keystore through [`start`]), unchanged.
+#[derive(uniffi::Object)]
+pub struct Account {
+    client: std::sync::Mutex<quince_auth::Client>,
+}
+
+#[uniffi::export]
+impl Account {
+    /// The account whose state lives in `state_dir` (the app's private files).
+    #[uniffi::constructor]
+    pub fn new(state_dir: String) -> Result<std::sync::Arc<Self>, EngineError> {
+        let client = quince_auth::Client::new(std::path::Path::new(&state_dir)).map_err(failed)?;
+        Ok(std::sync::Arc::new(Self {
+            client: std::sync::Mutex::new(client),
+        }))
+    }
+
+    /// Signs in again with the session kept from last time; false when there is none to use.
+    pub fn resume(&self) -> Result<bool, EngineError> {
+        let mut c = self.client.lock().map_err(failed)?;
+        runtime().block_on(c.resume()).map_err(failed)
+    }
+
+    pub fn sign_in(&self, apple_id: String, password: String) -> Result<SignIn, EngineError> {
+        let mut c = self.client.lock().map_err(failed)?;
+        match runtime()
+            .block_on(c.sign_in(&apple_id, &password))
+            .map_err(failed)?
+        {
+            quince_auth::SignInOutcome::Complete => Ok(SignIn::Complete),
+            quince_auth::SignInOutcome::NeedsTwoFactor => Ok(SignIn::NeedsCode),
+        }
+    }
+
+    pub fn code_options(&self) -> Result<CodeOptions, EngineError> {
+        let mut c = self.client.lock().map_err(failed)?;
+        let o = runtime().block_on(c.two_factor_options()).map_err(failed)?;
+        Ok(CodeOptions {
+            trusted_devices: o.trusted_device_count,
+            phones: o
+                .phones
+                .into_iter()
+                .map(|p| TrustedPhone {
+                    id: p.id,
+                    masked_number: p.masked_number,
+                })
+                .collect(),
+            too_many_codes_sent: o.too_many_codes_sent,
+            security_key: o.security_key,
+        })
+    }
+
+    /// The code shown on a trusted device.
+    pub fn submit_code(&self, code: String) -> Result<(), EngineError> {
+        let mut c = self.client.lock().map_err(failed)?;
+        runtime()
+            .block_on(c.submit_two_factor(&code))
+            .map_err(failed)
+    }
+
+    pub fn resend_to_devices(&self) -> Result<(), EngineError> {
+        let mut c = self.client.lock().map_err(failed)?;
+        runtime().block_on(c.resend_to_devices()).map_err(failed)
+    }
+
+    pub fn send_sms(&self, phone_id: u64) -> Result<(), EngineError> {
+        let mut c = self.client.lock().map_err(failed)?;
+        runtime().block_on(c.send_sms(phone_id)).map_err(failed)
+    }
+
+    pub fn submit_sms_code(&self, phone_id: u64, code: String) -> Result<(), EngineError> {
+        let mut c = self.client.lock().map_err(failed)?;
+        runtime()
+            .block_on(c.submit_sms_code(phone_id, &code))
+            .map_err(failed)
+    }
+
+    /// Signs out here: the session forgotten on this phone, its secrets deleted.
+    pub fn sign_out(&self) -> Result<(), EngineError> {
+        let mut c = self.client.lock().map_err(failed)?;
+        c.sign_out().map_err(failed)
+    }
+}
