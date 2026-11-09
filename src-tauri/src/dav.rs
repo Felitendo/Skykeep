@@ -12,11 +12,11 @@ use quince_core::calendar::{Calendar, Event};
 use quince_core::dav::{is_dav, DavAccount, DavCalendar, DavResource};
 use quince_core::outbox::Pending;
 use quince_core::Library;
-use quince_icloud::caldav::{self, Remote, RemoteCalendar, Resource};
+use quince_icloud::caldav::{self, Remote, RemoteCalendar, Resource, Sign};
 use quince_icloud::calendar::series_of;
 use quince_icloud::calendar_feeds as feeds;
 use quince_icloud::ical_edit::{self, Change, Removal, Written};
-use quince_icloud::{nextcloud, Error};
+use quince_icloud::{google, nextcloud, Error};
 use reqwest::{Client, Url};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -38,10 +38,84 @@ static SECRETS: StdMutex<Option<HashMap<String, String>>> = StdMutex::new(None);
 static SIGNING: StdMutex<Option<Arc<Signing>>> = StdMutex::new(None);
 
 struct Signing {
-    flow: nextcloud::Flow,
-    server: Url,
-    http: Client,
+    /// The page the person approves Skykeep on.
+    login: String,
+    how: How,
     cancelled: Notify,
+}
+
+enum How {
+    Nextcloud {
+        flow: nextcloud::Flow,
+        server: Url,
+        http: Client,
+    },
+    Google {
+        flow: google::Flow,
+        client: google::OAuthClient,
+    },
+}
+
+/// A new sign-in is the one under way; any before it stops waiting.
+fn start_signing(login: String, how: How) {
+    let earlier = SIGNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(Arc::new(Signing {
+            login,
+            how,
+            cancelled: Notify::new(),
+        }));
+    if let Some(earlier) = earlier {
+        earlier.cancelled.notify_one();
+    }
+}
+
+fn signing_now() -> UiResult<Arc<Signing>> {
+    SIGNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or_else(|| "That sign-in has ended.".to_string())
+}
+
+fn end_signing(signing: &Arc<Signing>) {
+    let mut slot = SIGNING.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|s| Arc::ptr_eq(s, signing)) {
+        *slot = None;
+    }
+}
+
+/// Access tokens already got this run, with when each lapses: a Google account's "password"
+/// lasts an hour, and is renewed only when it has to be.
+static TOKENS: StdMutex<Option<HashMap<String, (String, i64)>>> = StdMutex::new(None);
+
+fn forget_token(id: &str) {
+    if let Some(map) = TOKENS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        map.remove(id);
+    }
+}
+
+/// A token for a Google account that will last the pass, renewed if it wouldn't.
+async fn token_of(http: &Client, token_url: &str, id: &str, secret: &str) -> Result<String, Error> {
+    let now = unix_now();
+    let held = TOKENS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(id).cloned())
+        .filter(|(_, lapses)| *lapses > now + 120);
+    if let Some((token, _)) = held {
+        return Ok(token);
+    }
+    let kept: google::Kept = serde_json::from_str(secret).map_err(|_| Error::ReauthRequired)?;
+    let (token, lasts) = google::refresh(http, token_url, &kept).await?;
+    TOKENS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(id.to_string(), (token.clone(), now + lasts));
+    Ok(token)
 }
 
 /// How long the server keeps a sign-in open.
@@ -86,6 +160,15 @@ fn host_named(server: &str) -> String {
     Url::parse(server).map_or_else(|_| server.to_string(), |u| host_of(&u))
 }
 
+/// What an account is called in a sentence about reaching it.
+fn place_of(a: &DavAccount) -> String {
+    if a.kind == "google" {
+        "Google".to_string()
+    } else {
+        host_named(&a.server)
+    }
+}
+
 /// An error in words for this account: `Error`'s own speak of iCloud.
 fn words(e: &Error, host: &str) -> String {
     match e {
@@ -118,6 +201,7 @@ fn forget_remembered(id: &str) {
     if let Some(map) = SECRETS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         map.remove(id);
     }
+    forget_token(id);
 }
 
 fn secret_of(app: &AppHandle, id: &str) -> Result<String, Error> {
@@ -144,9 +228,15 @@ fn secret_of(app: &AppHandle, id: &str) -> Result<String, Error> {
 }
 
 /// The connection to an account.
-pub fn remote_of(app: &AppHandle, a: &DavAccount) -> Result<Remote, Error> {
+pub async fn remote_of(app: &AppHandle, a: &DavAccount) -> Result<Remote, Error> {
     let secret = secret_of(app, &a.id)?;
-    Ok(Remote::new(client_for(&a.hosts)?, &a.username, &secret))
+    let http = client_for(&a.hosts)?;
+    let sign = if a.kind == "google" {
+        Sign::Token(token_of(&http, google::TOKEN_URL, &a.id, &secret).await?)
+    } else {
+        Sign::password(&a.username, &secret)
+    };
+    Ok(Remote::new(http, sign))
 }
 
 fn window(l: &Library) -> (i64, i64) {
@@ -224,7 +314,7 @@ fn as_stored(account: &str, c: &RemoteCalendar, rank: i64) -> DavCalendar {
 
 /// Bring the library in step with the server. Answers whether anything on screen moved.
 async fn pass(app: &AppHandle, a: &DavAccount) -> Result<bool, Error> {
-    let remote = remote_of(app, a)?;
+    let remote = remote_of(app, a).await?;
     pass_with(&app.state::<Data>().0, &remote, a).await
 }
 
@@ -338,8 +428,12 @@ fn store_found(
 /// A pass, and what came of it told to the account's row and the window.
 async fn pass_and_record(app: &AppHandle, a: &DavAccount) -> Result<(), String> {
     let data = app.state::<Data>();
-    let host = host_named(&a.server);
-    let (result, state) = match pass(app, a).await {
+    let host = place_of(a);
+    let outcome = pass(app, a).await;
+    if outcome.is_err() {
+        forget_token(&a.id);
+    }
+    let (result, state) = match outcome {
         Ok(moved) => (Ok(moved), (Some(unix_now()), None, false)),
         Err(Error::ReauthRequired) => (
             Err(SIGN_IN_AGAIN.to_string()),
@@ -458,6 +552,9 @@ pub async fn send(
     p: Pending,
 ) -> Result<(), Error> {
     let sent = send_change(library, remote, account, &p).await;
+    if sent.is_err() {
+        forget_token(&account.id);
+    }
     if matches!(sent, Err(Error::ReauthRequired)) {
         let _ = library.lock().await.set_dav_account_state(
             &account.id,
@@ -717,7 +814,9 @@ async fn account_of_calendar(
     let (Some(account), Some(url)) = (account, url) else {
         return Err("That calendar is no longer here.".into());
     };
-    let remote = remote_of(app, &account).map_err(|e| words(&e, &host_named(&account.server)))?;
+    let remote = remote_of(app, &account)
+        .await
+        .map_err(|e| words(&e, &place_of(&account)))?;
     Ok((account, remote, url))
 }
 
@@ -733,7 +832,7 @@ pub async fn update_calendar(
     remote
         .set_calendar(&url, title, colour)
         .await
-        .map_err(|e| words(&e, &host_named(&account.server)))?;
+        .map_err(|e| words(&e, &place_of(&account)))?;
     pass_and_record(app, &account).await
 }
 
@@ -743,7 +842,7 @@ pub async fn delete_calendar(app: &AppHandle, data: &Data, guid: &str) -> UiResu
     remote
         .delete_calendar(&url)
         .await
-        .map_err(|e| words(&e, &host_named(&account.server)))?;
+        .map_err(|e| words(&e, &place_of(&account)))?;
     pass_and_record(app, &account).await
 }
 
@@ -785,14 +884,10 @@ async fn keep_account(
     kind: &str,
     server: &Url,
     username: &str,
-    password: &str,
-    starts: &[Url],
+    secret: &str,
+    found: caldav::Found,
 ) -> UiResult<DavAccount> {
     let host = host_of(server);
-    let finder: caldav::ClientFor<'_> = &client_for;
-    let found = caldav::discover(finder, starts, username, password)
-        .await
-        .map_err(|e| words(&e, &host))?;
     let data = app.state::<Data>();
     let accounts = data
         .0
@@ -806,10 +901,10 @@ async fn keep_account(
         .find(|a| a.server == server_text && a.username == username)
         .cloned();
     let id = same.as_ref().map_or_else(new_id, |a| a.id.clone());
-    let wanted = if kind == "nextcloud" {
-        "Nextcloud".to_string()
-    } else {
-        host.clone()
+    let wanted = match kind {
+        "nextcloud" => "Nextcloud".to_string(),
+        "google" => "Google".to_string(),
+        _ => host.clone(),
     };
     let taken = accounts.iter().any(|a| a.id != id && a.title == wanted);
     let title = if taken {
@@ -819,13 +914,14 @@ async fn keep_account(
     };
     tokio::task::block_in_place(|| {
         store(app).and_then(|s| {
-            s.set_account_secret(&id, password).map_err(|_| {
+            s.set_account_secret(&id, secret).map_err(|_| {
                 "Skykeep couldn’t keep the password in your system keyring. Check that it is running and unlocked."
                     .to_string()
             })
         })
     })?;
-    remember(&id, password);
+    remember(&id, secret);
+    forget_token(&id);
     let account = DavAccount {
         id,
         kind: kind.to_string(),
@@ -878,6 +974,19 @@ fn open_in_browser(app: &AppHandle, url: &str) -> UiResult<()> {
         .map_err(|_| "Skykeep couldn’t open your browser.".to_string())
 }
 
+/// Find an account's calendars by address and password.
+async fn found_with_password(
+    host: &str,
+    starts: &[Url],
+    username: &str,
+    password: &str,
+) -> UiResult<caldav::Found> {
+    let finder: caldav::ClientFor<'_> = &client_for;
+    caldav::discover(finder, starts, &Sign::password(username, password))
+        .await
+        .map_err(|e| words(&e, host))
+}
+
 /// Start signing in to a Nextcloud: its page opens in the browser, where the person approves
 /// Skykeep. Answers that page's address.
 #[tauri::command]
@@ -889,44 +998,36 @@ pub async fn nextcloud_begin(server: String, app: AppHandle) -> UiResult<String>
         .await
         .map_err(|e| words(&e, &host))?;
     let login = flow.login.clone();
-    let signing = Arc::new(Signing {
-        flow,
-        server,
-        http,
-        cancelled: Notify::new(),
-    });
-    let earlier = SIGNING
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .replace(signing);
-    if let Some(earlier) = earlier {
-        earlier.cancelled.notify_one();
-    }
+    start_signing(login.clone(), How::Nextcloud { flow, server, http });
     open_in_browser(&app, &login)?;
     Ok(login)
 }
 
 /// The sign-in page again, for a browser closed too soon.
 #[tauri::command]
-pub async fn nextcloud_reopen(app: AppHandle) -> UiResult<()> {
-    let login = SIGNING
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .map(|s| s.flow.login.clone())
-        .ok_or("That sign-in has ended.")?;
+pub async fn dav_sign_in_reopen(app: AppHandle) -> UiResult<()> {
+    let login = signing_now()?.login.clone();
     open_in_browser(&app, &login)
+}
+
+/// The person gave up on signing in.
+#[tauri::command]
+pub async fn dav_sign_in_cancel() -> UiResult<()> {
+    let earlier = SIGNING.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(earlier) = earlier {
+        earlier.cancelled.notify_one();
+    }
+    Ok(())
 }
 
 /// Wait for the person to approve Skykeep, then keep the account and read its calendars.
 #[tauri::command]
 pub async fn nextcloud_finish(app: AppHandle) -> UiResult<DavAccount> {
-    let signing = SIGNING
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .ok_or("That sign-in has ended.")?;
-    let host = host_of(&signing.server);
+    let signing = signing_now()?;
+    let How::Nextcloud { flow, server, http } = &signing.how else {
+        return Err("That sign-in has ended.".into());
+    };
+    let host = host_of(server);
     let began = Instant::now();
     let granted = loop {
         tokio::select! {
@@ -936,39 +1037,99 @@ pub async fn nextcloud_finish(app: AppHandle) -> UiResult<DavAccount> {
         if began.elapsed() > SIGN_IN_LASTS {
             return Err("The sign-in timed out. Try again.".into());
         }
-        match nextcloud::poll(&signing.http, &signing.flow).await {
+        match nextcloud::poll(http, flow).await {
             Ok(Some(granted)) => break granted,
             // Not approved yet; or the network came and went while the person was signing in.
             Ok(None) | Err(Error::Network(_)) => {}
             Err(e) => return Err(words(&e, &host)),
         }
     };
-    {
-        let mut slot = SIGNING.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.as_ref().is_some_and(|s| Arc::ptr_eq(s, &signing)) {
-            *slot = None;
-        }
-    }
-    let root = nextcloud::dav_root(&signing.server).map_err(|e| e.to_string())?;
+    end_signing(&signing);
+    let root = nextcloud::dav_root(server).map_err(|e| e.to_string())?;
+    let found =
+        found_with_password(&host, &[root], &granted.login_name, &granted.app_password).await?;
     keep_account(
         &app,
         "nextcloud",
-        &signing.server,
+        server,
         &granted.login_name,
         &granted.app_password,
-        &[root],
+        found,
     )
     .await
 }
 
-/// The person gave up on signing in.
+/// The OAuth client of a Google account already here: one per person, so a second account or
+/// a new sign-in needs nothing typed again.
+async fn known_google_client(app: &AppHandle) -> Option<google::OAuthClient> {
+    let accounts = app
+        .state::<Data>()
+        .0
+        .read(Library::dav_accounts)
+        .await
+        .ok()?;
+    let a = accounts.iter().find(|a| a.kind == "google")?;
+    let secret = secret_of(app, &a.id).ok()?;
+    serde_json::from_str::<google::Kept>(&secret)
+        .ok()
+        .map(|k| k.client)
+}
+
+/// Start signing in to Google: its own page opens in the browser. `client_id` is the person's
+/// OAuth client, or nothing to use the one a Google account here already has.
 #[tauri::command]
-pub async fn nextcloud_cancel() -> UiResult<()> {
-    let earlier = SIGNING.lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(earlier) = earlier {
-        earlier.cancelled.notify_one();
-    }
-    Ok(())
+pub async fn google_begin(
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    app: AppHandle,
+) -> UiResult<()> {
+    let client = match client_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        Some(id) => google::client_from(id, client_secret.as_deref()).map_err(|e| e.to_string())?,
+        None => known_google_client(&app)
+            .await
+            .ok_or("Enter your OAuth client ID.")?,
+    };
+    let flow = google::begin(&client).await.map_err(|e| e.to_string())?;
+    let login = flow.login.clone();
+    start_signing(login.clone(), How::Google { flow, client });
+    open_in_browser(&app, &login)
+}
+
+/// Wait for Google to send the browser back, then keep the account and read its calendars.
+#[tauri::command]
+pub async fn google_finish(app: AppHandle) -> UiResult<DavAccount> {
+    let signing = signing_now()?;
+    let How::Google { flow, client } = &signing.how else {
+        return Err("That sign-in has ended.".into());
+    };
+    let code = tokio::select! {
+        () = signing.cancelled.notified() => return Err("cancelled".into()),
+        () = tokio::time::sleep(SIGN_IN_LASTS) => return Err("The sign-in timed out. Try again.".into()),
+        code = google::wait(flow) => code.map_err(|e| e.to_string())?,
+    };
+    end_signing(&signing);
+    let hosts: Vec<String> = google::HOSTS.iter().map(ToString::to_string).collect();
+    let http = client_for(&hosts).map_err(|e| e.to_string())?;
+    let signed = google::exchange(&http, google::TOKEN_URL, flow, client, &code)
+        .await
+        .map_err(|e| words(&e, "Google"))?;
+    let starts = google::starts(&signed.email).map_err(|e| e.to_string())?;
+    let finder: caldav::ClientFor<'_> = &client_for;
+    let mut found = caldav::discover(finder, &starts, &Sign::Token(signed.access_token))
+        .await
+        .map_err(|e| match e {
+            Error::Network(_) => words(&e, "Google"),
+            // What a project without the API turned on gets.
+            _ => "Google didn’t give access to your calendars. Check that the CalDAV API is turned on in your Google Cloud project.".to_string(),
+        })?;
+    found.hosts = hosts;
+    let kept = serde_json::to_string(&google::Kept {
+        client: client.clone(),
+        refresh_token: signed.refresh_token,
+    })
+    .map_err(|e| e.to_string())?;
+    let server = Url::parse(google::SERVER).map_err(|e| e.to_string())?;
+    keep_account(&app, "google", &server, &signed.email, &kept, found).await
 }
 
 /// Where a CalDAV server's calendars may be found from the address given: that address, then
@@ -999,15 +1160,9 @@ pub async fn caldav_add(
     if username.is_empty() || password.is_empty() {
         return Err("Enter a username and password.".into());
     }
-    keep_account(
-        &app,
-        "caldav",
-        &url,
-        username,
-        &password,
-        &caldav_starts(&url),
-    )
-    .await
+    let found =
+        found_with_password(&host_of(&url), &caldav_starts(&url), username, &password).await?;
+    keep_account(&app, "caldav", &url, username, &password, found).await
 }
 
 /// Refresh one account now, including one that needs no longer wait for a sign-in.
@@ -1026,7 +1181,7 @@ pub async fn dav_refresh(id: String, app: AppHandle, data: State<'_, Data>) -> U
 }
 
 /// Let an account go: its calendars leave this computer, nothing is deleted on the server, and
-/// a Nextcloud is asked to forget the app password made for Skykeep.
+/// a Nextcloud or Google is asked to forget the sign-in made for Skykeep.
 #[tauri::command]
 pub async fn dav_remove(id: String, app: AppHandle, data: State<'_, Data>) -> UiResult<()> {
     let wanted = id.clone();
@@ -1036,10 +1191,20 @@ pub async fn dav_remove(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
         .await
         .map_err(|e| e.to_string())?
         .ok_or("That account is no longer here.")?;
-    if account.kind == "nextcloud" {
-        if let (Ok(secret), Ok(http)) = (secret_of(&app, &id), client_for(&account.hosts)) {
-            let asked = nextcloud::revoke(&http, &account.server, &account.username, &secret);
-            let _ = tokio::time::timeout(Duration::from_secs(10), asked).await;
+    if let (Ok(secret), Ok(http)) = (secret_of(&app, &id), client_for(&account.hosts)) {
+        let wait = Duration::from_secs(10);
+        match account.kind.as_str() {
+            "nextcloud" => {
+                let asked = nextcloud::revoke(&http, &account.server, &account.username, &secret);
+                let _ = tokio::time::timeout(wait, asked).await;
+            }
+            "google" => {
+                if let Ok(kept) = serde_json::from_str::<google::Kept>(&secret) {
+                    let asked = google::revoke(&http, google::REVOKE_URL, &kept.refresh_token);
+                    let _ = tokio::time::timeout(wait, asked).await;
+                }
+            }
+            _ => {}
         }
     }
     {
@@ -1221,7 +1386,10 @@ mod tests {
         lib.put_dav_account(&account).unwrap();
         lib.set_state(WINDOW, "1800000000,2000000000").unwrap();
         let library = LibraryLock::new(lib, None);
-        let remote = Remote::new(client_for(&account.hosts).unwrap(), "felix", "secret");
+        let remote = Remote::new(
+            client_for(&account.hosts).unwrap(),
+            Sign::password("felix", "secret"),
+        );
         World {
             _mock: mock,
             server,
@@ -1501,6 +1669,34 @@ mod tests {
         let said = pass_with(&w.library, &w.remote, &elsewhere).await;
         assert!(matches!(said, Err(Error::Protocol(_))));
         assert_eq!(w.library.lock().await.calendars().unwrap().len(), 1);
+    }
+
+    /// A token that will last is used again; one about to lapse is renewed, once.
+    #[tokio::test]
+    async fn a_token_is_renewed_only_when_it_has_to_be() {
+        let mock = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "fresh", "expires_in": 3600
+            })))
+            .expect(2)
+            .mount(&mock)
+            .await;
+        let kept = serde_json::to_string(&google::Kept {
+            client: google::client_from("x.apps.googleusercontent.com", None).unwrap(),
+            refresh_token: "r".into(),
+        })
+        .unwrap();
+        let (http, url) = (Client::new(), format!("{}/token", mock.uri()));
+        assert_eq!(token_of(&http, &url, "t1", &kept).await.unwrap(), "fresh");
+        assert_eq!(token_of(&http, &url, "t1", &kept).await.unwrap(), "fresh");
+        forget_token("t1");
+        assert_eq!(token_of(&http, &url, "t1", &kept).await.unwrap(), "fresh");
+        // Kept in the keyring as what it says it is, or asked for again rather than guessed at.
+        assert!(matches!(
+            token_of(&http, &url, "t2", "not what was kept").await,
+            Err(Error::ReauthRequired)
+        ));
     }
 
     /// A pass over iCloud (`put_calendars` with Apple's list) never touches these, and a server

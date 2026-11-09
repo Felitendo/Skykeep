@@ -545,7 +545,7 @@ export function CalendarView() {
   const [subscribing, setSubscribing] = useState(false);
   /** Calendar accounts other than iCloud, and the form adding one. */
   const [accounts, setAccounts] = useState<DavAccount[]>([]);
-  const [adding, setAdding] = useState<{ kind: "nextcloud" | "caldav"; server?: string } | null>(null);
+  const [adding, setAdding] = useState<{ kind: "nextcloud" | "caldav" | "google"; server?: string } | null>(null);
   const [addMenu, setAddMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
   const [groupMenu, setGroupMenu] = useState<{ list: Calendar[]; account?: DavAccount; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   const [moreMenu, setMoreMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
@@ -1555,9 +1555,22 @@ export function CalendarView() {
               onCancel={() => setAdding(adding.server === undefined ? { kind: "caldav" } : null)}
             />
           )}
+          {adding?.kind === "google" && (
+            <GoogleForm
+              clientKnown={accounts.some((a) => a.kind === "google")}
+              onDone={(a) => {
+                setAdding(null);
+                toast(`Added \u201c${a.title}\u201d`);
+                void read();
+              }}
+              leaving={adding.server === undefined ? "Back" : "Cancel"}
+              onCancel={() => setAdding(adding.server === undefined ? { kind: "caldav" } : null)}
+            />
+          )}
           {adding?.kind === "caldav" && (
             <CalDavForm
               onNextcloud={() => setAdding({ kind: "nextcloud" })}
+              onGoogle={() => setAdding({ kind: "google" })}
               onDone={(a) => {
                 setAdding(null);
                 toast(`Added \u201c${a.title}\u201d`);
@@ -1810,7 +1823,7 @@ export function CalendarView() {
                 return [
                   null,
                   ...(a.needsSignIn
-                    ? a.kind === "nextcloud" ? [{ label: "Sign In Again", run: () => setAdding({ kind: "nextcloud" as const, server: a.server }) }] : []
+                    ? a.kind !== "caldav" ? [{ label: "Sign In Again", run: () => setAdding({ kind: a.kind, server: a.server }) }] : []
                     : [{ label: "Refresh Now", run: () => refreshAccount(a) }]),
                   { label: "Remove Account", danger: true, run: () => removeAccount(a) },
                 ];
@@ -4043,20 +4056,12 @@ function QuickEvent({ calendar, onAdd, onClose }: {
   );
 }
 
-/**
- * Set Up Nextcloud Server, the preset under Add CalDAV Account: only the server's address.
- * Nextcloud's own page opens in the browser,
- * where the person approves Skykeep behind whatever sign-in they have set up; the rest is found
- * by asking the server. Skykeep never sees their password, only an app password for itself.
- */
-function NextcloudForm({ initial, leaving, onDone, onCancel }: {
-  initial?: string;
-  /** What the button that leaves this panel says. */
-  leaving: string;
-  onDone: (account: DavAccount) => void;
-  onCancel: () => void;
-}) {
-  const [server, setServer] = useState(initial ?? "");
+/** What signing in on a page in the browser is, whichever server's page it is. */
+function useBrowserSignIn(
+  finish: () => Promise<DavAccount>,
+  onDone: (account: DavAccount) => void,
+  onCancel: () => void,
+) {
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -4065,16 +4070,16 @@ function NextcloudForm({ initial, leaving, onDone, onCancel }: {
     here.current = true;
     return () => { here.current = false; };
   }, []);
-  const begin = () => {
-    if (!server.trim() || busy || waiting) return;
+  const begin = (open: () => Promise<unknown>) => {
+    if (busy || waiting) return;
     setBusy(true);
     setProblem(null);
-    davApi.nextcloudBegin(server.trim()).then(
+    open().then(
       () => {
         if (!here.current) return;
         setBusy(false);
         setWaiting(true);
-        davApi.nextcloudFinish().then(
+        finish().then(
           (account) => { if (here.current) onDone(account); },
           (err) => {
             if (!here.current || messageOf(err) === "cancelled") return;
@@ -4090,15 +4095,105 @@ function NextcloudForm({ initial, leaving, onDone, onCancel }: {
       },
     );
   };
+  const reopen = () => { void davApi.signInReopen().catch((err) => setProblem(messageOf(err))); };
   const cancel = () => {
-    void davApi.nextcloudCancel();
+    void davApi.signInCancel();
     onCancel();
+  };
+  return { busy, waiting, problem, setProblem, begin, reopen, cancel };
+}
+
+/**
+ * Set Up Google Calendar, the preset under Add CalDAV Account. Google's CalDAV takes no password,
+ * only a sign-in on its own page through an OAuth client, and that client is the person's own:
+ * asked for once, here, and remembered with the account.
+ */
+function GoogleForm({ clientKnown, leaving, onDone, onCancel }: {
+  clientKnown: boolean;
+  leaving: string;
+  onDone: (account: DavAccount) => void;
+  onCancel: () => void;
+}) {
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const { busy, waiting, problem, setProblem, begin, reopen, cancel } = useBrowserSignIn(davApi.googleFinish, onDone, onCancel);
+  const ready = clientKnown || Boolean(clientId.trim());
+  return (
+    <form
+      className="cx-subscribe"
+      aria-label="Set Up Google Calendar"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!ready) return;
+        begin(() => davApi.googleBegin(clientKnown ? null : clientId.trim(), clientKnown ? null : clientSecret.trim() || null));
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          cancel();
+        }
+      }}
+    >
+      <span className="cx-subscribe-label">Set up Google Calendar</span>
+      {waiting ? (
+        <p className="cx-subscribe-note" role="status">
+          Sign in on the page that opened in your browser. It finishes here by itself.
+        </p>
+      ) : (
+        <>
+          {!clientKnown && (
+            <>
+              <input className="field" type="text" placeholder="OAuth client ID" aria-label="OAuth client ID" autoFocus spellCheck={false} autoCapitalize="off" autoComplete="off" value={clientId} disabled={busy} onChange={(e) => { setClientId(e.target.value); setProblem(null); }} />
+              <input className="field" type="password" placeholder="Client secret" aria-label="Client secret" autoComplete="off" value={clientSecret} disabled={busy} onChange={(e) => { setClientSecret(e.target.value); setProblem(null); }} />
+            </>
+          )}
+          {problem ? (
+            <p className="cx-subscribe-note is-problem" role="alert">{problem}</p>
+          ) : clientKnown ? (
+            <p className="cx-subscribe-note">You’ll sign in on Google’s own page.</p>
+          ) : (
+            <p className="cx-subscribe-note">
+              Google asks for an OAuth client of your own: a Desktop app in{" "}
+              <a href="https://console.cloud.google.com/apis/credentials">Google Cloud</a>, with the CalDAV API turned on. Asked for once.
+            </p>
+          )}
+        </>
+      )}
+      <div className="cx-subscribe-actions">
+        <button type="button" className="quiet" onClick={cancel}>{waiting ? "Cancel" : leaving}</button>
+        {waiting ? (
+          <button type="button" className="quiet" onClick={reopen}>Open Page Again</button>
+        ) : (
+          <button type="submit" className="primary" disabled={!ready || busy} aria-busy={busy}>Continue</button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+/**
+ * Set Up Nextcloud Server, the preset under Add CalDAV Account: only the server's address.
+ * Nextcloud's own page opens in the browser,
+ * where the person approves Skykeep behind whatever sign-in they have set up; the rest is found
+ * by asking the server. Skykeep never sees their password, only an app password for itself.
+ */
+function NextcloudForm({ initial, leaving, onDone, onCancel }: {
+  initial?: string;
+  /** What the button that leaves this panel says. */
+  leaving: string;
+  onDone: (account: DavAccount) => void;
+  onCancel: () => void;
+}) {
+  const [server, setServer] = useState(initial ?? "");
+  const { busy, waiting, problem, setProblem, begin, reopen, cancel } = useBrowserSignIn(davApi.nextcloudFinish, onDone, onCancel);
+  const start = () => {
+    if (server.trim()) begin(() => davApi.nextcloudBegin(server.trim()));
   };
   return (
     <form
       className="cx-subscribe"
       aria-label="Set Up Nextcloud Server"
-      onSubmit={(e) => { e.preventDefault(); begin(); }}
+      onSubmit={(e) => { e.preventDefault(); start(); }}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.stopPropagation();
@@ -4136,7 +4231,7 @@ function NextcloudForm({ initial, leaving, onDone, onCancel }: {
       <div className={waiting ? "cx-subscribe-actions is-full" : "cx-subscribe-actions"}>
         <button type="button" className="quiet" onClick={cancel}>{waiting ? "Cancel" : leaving}</button>
         {waiting ? (
-          <button type="button" className="quiet" onClick={() => { void davApi.nextcloudReopen().catch((err) => setProblem(messageOf(err))); }}>Open Page Again</button>
+          <button type="button" className="quiet" onClick={reopen}>Open Page Again</button>
         ) : (
           <button type="submit" className="primary" disabled={!server.trim() || busy} aria-busy={busy}>Continue</button>
         )}
@@ -4149,8 +4244,9 @@ function NextcloudForm({ initial, leaving, onDone, onCancel }: {
  * Add CalDAV Account: a calendar server by its address, username and password. Under it, the
  * servers Skykeep can set up by itself, from less than that.
  */
-function CalDavForm({ onNextcloud, onDone, onCancel }: {
+function CalDavForm({ onNextcloud, onGoogle, onDone, onCancel }: {
   onNextcloud: () => void;
+  onGoogle: () => void;
   onDone: (account: DavAccount) => void;
   onCancel: () => void;
 }) {
@@ -4200,6 +4296,7 @@ function CalDavForm({ onNextcloud, onDone, onCancel }: {
       <div className="cx-subscribe-presets" role="group" aria-label="Preconfigured servers">
         <span className="cx-subscribe-note">Preconfigured</span>
         <button type="button" className="quiet" disabled={busy} onClick={onNextcloud}>Nextcloud Server</button>
+        <button type="button" className="quiet" disabled={busy} onClick={onGoogle}>Google Calendar</button>
       </div>
     </form>
   );

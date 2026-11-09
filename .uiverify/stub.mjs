@@ -228,8 +228,27 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           );
           return { ...account };
         }
-        case "nextcloud_reopen": { (window.__davWrites ??= []).push({ reopen: true }); return null; }
-        case "nextcloud_cancel": { (window.__davWrites ??= []).push({ cancel: true }); window.__davCancelled = true; return null; }
+        case "google_begin": {
+          (window.__davWrites ??= []).push({ google: { clientId: args.clientId, secret: Boolean(args.clientSecret) } });
+          if (window.__davFails) throw window.__davFails;
+          window.__davApproved = false;
+          return null;
+        }
+        case "google_finish": {
+          window.__davCancelled = false;
+          while (!window.__davApproved && !window.__davCancelled) await new Promise((r) => setTimeout(r, 20));
+          if (window.__davCancelled) throw "cancelled";
+          const id = `g${(window.__davAccounts ?? []).filter((a) => a.kind === "google").length + 1}`;
+          const account = { id, kind: "google", title: "Google", server: "https://apidata.googleusercontent.com", username: "felix@example.org",
+            home: "https://apidata.googleusercontent.com/caldav/v2/felix%40example.org/", hosts: ["apidata.googleusercontent.com", "oauth2.googleapis.com"], syncedAt: 1, problem: null, needsSignIn: false };
+          (window.__davAccounts ??= []).push(account);
+          (window.__cals ??= calendars.map((c) => ({ ...c }))).push(
+            { guid: `quince:dav:${id}:ccc`, title: "Felix Gmail", colour: "#ea4335", ctag: "1", sortOrder: 510, enabled: true, writable: true, isDefault: false },
+          );
+          return { ...account };
+        }
+        case "dav_sign_in_reopen": { (window.__davWrites ??= []).push({ reopen: true }); return null; }
+        case "dav_sign_in_cancel": { (window.__davWrites ??= []).push({ cancel: true }); window.__davCancelled = true; return null; }
         case "caldav_add": {
           (window.__davWrites ??= []).push({ caldav: { server: args.server, username: args.username } });
           if (window.__davFails) throw window.__davFails;

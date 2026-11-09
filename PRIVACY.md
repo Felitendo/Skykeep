@@ -28,8 +28,8 @@ Skykeep doesn't sell, share or upload your data.
 ## Other connections
 
 - **Calendar subscriptions:** only the calendars you subscribe to yourself, to fetch them.
-- **Calendar accounts:** only the Nextcloud or CalDAV servers you add yourself, to keep those
-  calendars in step. Their passwords stay in your system's keyring.
+- **Calendar accounts:** only the Nextcloud, Google or CalDAV accounts you add yourself, to keep
+  those calendars in step. Their passwords and tokens stay in your system's keyring.
 - **Updates:** a copy installed from the Windows installer, the `.msi` or the AppImage asks
   GitHub for the latest version's details about once a day, sending nothing about you (you can
   turn this off in Settings ▸ Software Update). Copies from the Microsoft Store, the Snap Store,

@@ -18,7 +18,9 @@ and GitHub's release servers for Skykeep's own updates:
 - The host of each calendar you subscribe to by address (Calendar ▸ + ▸ New Subscription),
   and only once you have: a `webcal://` or `https://` address of a public calendar file.
 - The server of each calendar account you add (Calendar ▸ + ▸ Add CalDAV Account, with
-  Nextcloud Server under it for a Nextcloud), and only once you have.
+  Nextcloud Server or Google Calendar under it), and only once you have. For a Google account
+  that is `apidata.googleusercontent.com` (its calendars) and `oauth2.googleapis.com` (renewing
+  its sign-in); Google's sign-in page itself opens in your browser, not in Skykeep.
 - `github.com`, then `release-assets.githubusercontent.com` (or
   `objects.githubusercontent.com`), where GitHub serves release files — only in a copy
   installed from the AppImage, the Windows installer or the `.msi`, to check for a new version
@@ -50,7 +52,11 @@ enforced in code rather than promised:
   never sees your password, only an app password made for it, which you can revoke in
   Nextcloud's settings and which **Remove Account** revokes itself. A password the server
   refuses is not tried again until you sign in again, so Skykeep cannot trip a server's
-  protection against guessing. Nothing of your iCloud is sent to these servers, except an event
+  protection against guessing. A Google account is signed in to on Google's own page too (OAuth
+  2.0 with PKCE, through a port open on `127.0.0.1` only for the sign-in, and only answering a
+  return that carries that sign-in's own random `state`). It uses an OAuth client from your own
+  Google Cloud project, and Skykeep ships none. The lasting token and the client's details are
+  kept in the keyring, and **Remove Account** revokes the token at Google. Nothing of your iCloud is sent to these servers, except an event
   you put in one of their calendars yourself.
 - **Updates.** The updater's client is locked by `quince_auth::releases::releases_only()` to
   the three GitHub hosts above, exactly (not `api.github.com`, not any other host under

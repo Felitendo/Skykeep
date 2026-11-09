@@ -867,7 +867,7 @@ function ReachGroup() {
         <div className="settings-row is-stacked">
           <span className="settings-label">Calendar Accounts</span>
           <span className="settings-hint settings-hint-wrap">
-            {reach.accounts.length === 0 ? "None. A Nextcloud or CalDAV account you add adds its own server here." : <Hosts hosts={reach.accounts} />}
+            {reach.accounts.length === 0 ? "None. A calendar account you add adds its own server here." : <Hosts hosts={reach.accounts} />}
           </span>
         </div>
         <div className="settings-row is-stacked">

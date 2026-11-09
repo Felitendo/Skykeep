@@ -318,21 +318,53 @@ fn failure(status: StatusCode) -> Error {
     }
 }
 
+/// How a request proves whose it is. Not `Debug`: it holds the password or token.
+#[derive(Clone)]
+pub enum Sign {
+    Password {
+        user: String,
+        password: String,
+    },
+    /// An OAuth access token, which Google's CalDAV asks for in place of a password.
+    Token(String),
+}
+
+impl Sign {
+    #[must_use]
+    pub fn password(user: &str, password: &str) -> Self {
+        Self::Password {
+            user: user.to_string(),
+            password: password.to_string(),
+        }
+    }
+
+    fn on(&self, r: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self {
+            Self::Password { user, password } => r.basic_auth(user, Some(password)),
+            Self::Token(token) => r.bearer_auth(token),
+        }
+    }
+}
+
 /// An account's connection. Not `Debug`: it holds the password.
 #[derive(Clone)]
 pub struct Remote {
     http: Client,
-    user: String,
-    password: String,
+    sign: Sign,
 }
 
 impl Remote {
     #[must_use]
-    pub fn new(http: Client, user: &str, password: &str) -> Self {
-        Self {
-            http,
-            user: user.to_string(),
-            password: password.to_string(),
+    pub fn new(http: Client, sign: Sign) -> Self {
+        Self { http, sign }
+    }
+
+    /// What a status means from this server. A token refused is one that has lapsed: only
+    /// the place tokens come from can say the sign-in itself is over.
+    fn failed(&self, status: StatusCode) -> Error {
+        match (status.as_u16(), &self.sign) {
+            (401, Sign::Token(_)) => Error::Busy,
+            _ => failure(status),
         }
     }
 
@@ -343,10 +375,7 @@ impl Remote {
         depth: Option<&'static str>,
         body: Option<String>,
     ) -> Result<Response> {
-        let mut r = self
-            .http
-            .request(verb, url)
-            .basic_auth(&self.user, Some(&self.password));
+        let mut r = self.sign.on(self.http.request(verb, url));
         if let Some(d) = depth {
             r = r.header("Depth", d);
         }
@@ -379,7 +408,7 @@ impl Remote {
         let response = self.raw(verb, url, Some(depth), Some(body)).await?;
         let status = response.status();
         if !status.is_success() {
-            return Err(failure(status));
+            return Err(self.failed(status));
         }
         multistatus(&Self::read(response).await?)
     }
@@ -505,7 +534,7 @@ impl Remote {
         let response = self.raw(Method::GET, url, None, None).await?;
         let status = response.status();
         if !status.is_success() {
-            return Err(failure(status));
+            return Err(self.failed(status));
         }
         let etag = response
             .headers()
@@ -530,9 +559,8 @@ impl Remote {
         header: (reqwest::header::HeaderName, HeaderValue),
     ) -> Result<()> {
         let response = self
-            .http
-            .put(url)
-            .basic_auth(&self.user, Some(&self.password))
+            .sign
+            .on(self.http.put(url))
             .header(CONTENT_TYPE, "text/calendar; charset=utf-8")
             .header(header.0, header.1)
             .body(ics.to_string())
@@ -542,7 +570,7 @@ impl Remote {
         if status.is_success() {
             Ok(())
         } else {
-            Err(failure(status))
+            Err(self.failed(status))
         }
     }
 
@@ -565,10 +593,7 @@ impl Remote {
 
     /// An event's file gone, only if it is still the version `etag` names.
     pub async fn delete(&self, url: &str, etag: Option<&str>) -> Result<()> {
-        let mut r = self
-            .http
-            .delete(url)
-            .basic_auth(&self.user, Some(&self.password));
+        let mut r = self.sign.on(self.http.delete(url));
         if let Some(tag) = etag.and_then(|t| HeaderValue::from_str(t).ok()) {
             r = r.header(IF_MATCH, tag);
         }
@@ -576,7 +601,7 @@ impl Remote {
         if status.is_success() || status == StatusCode::NOT_FOUND || status == StatusCode::GONE {
             Ok(())
         } else {
-            Err(failure(status))
+            Err(self.failed(status))
         }
     }
 
@@ -603,7 +628,7 @@ impl Remote {
         let response = self.raw(method("PROPPATCH"), url, None, Some(body)).await?;
         let status = response.status();
         if !status.is_success() {
-            return Err(failure(status));
+            return Err(self.failed(status));
         }
         Ok(())
     }
@@ -666,39 +691,29 @@ fn is_public(ip: std::net::IpAddr) -> bool {
 pub type ClientFor<'a> = &'a (dyn Fn(&[String]) -> Result<Client> + Send + Sync);
 
 /// Find where an account's calendars are listed, trying each address until one answers.
-pub async fn discover(
-    client_for: ClientFor<'_>,
-    starts: &[Url],
-    user: &str,
-    password: &str,
-) -> Result<Found> {
+pub async fn discover(client_for: ClientFor<'_>, starts: &[Url], sign: &Sign) -> Result<Found> {
     let mut last =
         Error::Refused("No calendars were found at that address. Check it and try again.".into());
     for start in starts {
-        match discover_from(client_for, start, user, password).await {
+        match discover_from(client_for, start, sign).await {
             Ok(found) => return Ok(found),
             // A wrong password is the same wrong password at every address.
             Err(Error::ReauthRequired) => return Err(Error::Refused(WRONG_PASSWORD.into())),
-            Err(e @ Error::Network(_)) => last = e,
+            Err(e @ (Error::Network(_) | Error::Refused(_))) => last = e,
             Err(_) => {}
         }
     }
     Err(last)
 }
 
-async fn discover_from(
-    client_for: ClientFor<'_>,
-    start: &Url,
-    user: &str,
-    password: &str,
-) -> Result<Found> {
+async fn discover_from(client_for: ClientFor<'_>, start: &Url, sign: &Sign) -> Result<Found> {
     let body = propfind_of("<d:current-user-principal/><c:calendar-home-set/>");
     let mut hosts: Vec<String> = host_name(start).into_iter().collect();
     let mut url = start.clone();
     // Redirects read here, not by the client: a redirect it followed would come back a GET
     // with no password. `.well-known/caldav` is one by design (RFC 6764).
     for _ in 0..6 {
-        let remote = Remote::new(client_for(&hosts)?, user, password);
+        let remote = Remote::new(client_for(&hosts)?, sign.clone());
         let response = remote
             .raw(
                 method("PROPFIND"),
@@ -729,7 +744,7 @@ async fn discover_from(
             continue;
         }
         if !status.is_success() {
-            return Err(failure(status));
+            return Err(remote.failed(status));
         }
         let answers = multistatus(&Remote::read(response).await?)?;
         let prop_href = |name: &str| {
@@ -841,7 +856,10 @@ mod tests {
     }
 
     fn remote() -> Remote {
-        Remote::new(client(&[]).unwrap(), "felix", "app-password")
+        Remote::new(
+            client(&[]).unwrap(),
+            Sign::password("felix", "app-password"),
+        )
     }
 
     #[tokio::test]
@@ -943,7 +961,9 @@ mod tests {
             Err(Error::ReauthRequired)
         ));
         let start = Url::parse(&home).unwrap();
-        let said = discover(&client, &[start], "u", "p").await.unwrap_err();
+        let said = discover(&client, &[start], &Sign::password("u", "p"))
+            .await
+            .unwrap_err();
         assert_eq!(said.to_string(), WRONG_PASSWORD);
     }
 
@@ -973,8 +993,25 @@ mod tests {
             .mount(&server)
             .await;
         let start = Url::parse(&format!("{}/.well-known/caldav", server.uri())).unwrap();
-        let found = discover(&client, &[start], "u", "p").await.unwrap();
+        let found = discover(&client, &[start], &Sign::password("u", "p"))
+            .await
+            .unwrap();
         assert_eq!(found.home, format!("{}/dav/calendars/u/", server.uri()));
+    }
+
+    /// A lapsed token says nothing about the sign-in: renewed on the next try, not a reason
+    /// to ask the person to sign in again.
+    #[tokio::test]
+    async fn a_token_is_sent_as_one_and_its_refusal_is_not_the_end_of_the_sign_in() {
+        let server = MockServer::start().await;
+        Mock::given(verb("PROPFIND"))
+            .and(header("Authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let with_token = Remote::new(client(&[]).unwrap(), Sign::Token("tok".into()));
+        let said = with_token.calendars(&format!("{}/h/", server.uri())).await;
+        assert!(matches!(said, Err(Error::Busy)));
     }
 
     #[test]
