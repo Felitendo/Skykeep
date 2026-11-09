@@ -45,7 +45,7 @@ enforced in code rather than promised:
   so it can reach that server and nothing else (`crates/quince-auth/src/lib.rs`). Unlike a
   subscription, whose address anyone can hand you, it is your own server, so one at home or on
   a tailnet is reached. The password travels only over HTTPS, or in the clear to an address
-  named as a private one (`192.168.…`, a tailnet's). It is kept in the system keyring, never in
+  named as a private one on your own network (`192.168.…`, `10.…`). It is kept in the system keyring, never in
   a file. A Nextcloud is signed in to on its own page in your browser (Login Flow v2): Skykeep
   never sees your password, only an app password made for it, which you can revoke in
   Nextcloud's settings and which **Remove Account** revokes itself. A password the server
