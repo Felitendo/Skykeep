@@ -10,6 +10,7 @@ import { ApprovalNotice, ApprovalScreen, awaitsApproval } from "../components/De
 import { SyncProvider, useSync } from "../lib/sync";
 import { AccountCard } from "../components/Account";
 import { AppFootContext } from "../components/AppFoot";
+import { useSidePane } from "../components/SidePane";
 import { reveal, takeWaiting, type Reveal } from "../lib/reveal";
 
 /*
@@ -494,6 +495,9 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
   </div>
     ) : null;
 
+  // The sidebar button: in an app's own window, over an app (not a notice in its place).
+  const side = useSidePane(SOLO !== "settings" && !icloudNotice && webAccess !== false ? SOLO : null);
+
   // An app's own window: the account and sync status at the foot of the app's own sidebar,
   // opening Settings in the main window (see `choose`).
   const soloFoot = SOLO !== "settings" ? (
@@ -513,7 +517,8 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
       <AppKeys screen={selected} onSettings={() => choose("settings")} />
       <FirstSyncHint />
       <AppFootContext.Provider value={soloFoot}>
-      <div className="library enter-library is-solo">
+      <div className={`library enter-library is-solo${side.className}`} data-app={SOLO}>
+        {side.button}
 
         {/* Which screen is in front, for its layout (each screen's CSS keys on it): asked with
             :has() across the whole content instead, WebKit checked it again on every change

@@ -99,6 +99,7 @@ step "webkit: set up"   .uiverify/webkit-libs.sh
 pooled "content policy"   node .uiverify/csp.mjs
 pooled "sign out"         node .uiverify/signout.mjs
 pooled "calendar edits"   node .uiverify/calendar-edits.mjs
+pooled "sidebar button"   node .uiverify/side-pane.mjs
 pooled "updates"          node .uiverify/updates.mjs
 pooled "ui renders"       node .uiverify/shots.mjs
 pooled "nav behaviour"    node .uiverify/assert.mjs

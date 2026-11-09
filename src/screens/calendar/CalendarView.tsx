@@ -30,6 +30,7 @@ import { useOutbox } from "../../lib/outbox";
 import { Unsent, Waiting } from "../../components/Unsent";
 import { Picker } from "../../components/Picker";
 import { RowMenu } from "../../components/RowMenu";
+import { askForSidebar } from "../../components/SidePane";
 import {
   addDays,
   addDaysIn,
@@ -532,6 +533,7 @@ export function CalendarView() {
   const [addMenu, setAddMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
   const [groupMenu, setGroupMenu] = useState<{ list: Calendar[]; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   const [moreMenu, setMoreMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
   const [eventMenu, setEventMenu] = useState<{ event: CalendarEvent; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   // An event found by the search across everything: its day shown, its calendar too if it
   // was hidden (and kept shown, as its tick in the list says) — never a found event that
@@ -1566,6 +1568,7 @@ export function CalendarView() {
             )}
             <span className="toolbar-group">
               <button
+                ref={moreButton}
                 className="tool cx-icon"
                 aria-label="More"
                 title="More"
@@ -1745,6 +1748,10 @@ export function CalendarView() {
             at={moreMenu}
             onClose={() => setMoreMenu(null)}
             entries={[
+              // A window too narrow for the calendars beside the month: they come over it.
+              ...(document.querySelector(".cx-side") && getComputedStyle(document.querySelector(".cx-side")!).display === "none"
+                ? [{ label: "Show Calendars", run: () => askForSidebar(moreButton.current) }, null]
+                : []),
               { label: "Go to Date", run: () => setGoingTo(true) },
               { label: "Show Week Numbers", checked: weekNumbers, run: () => setWeekNumbers(!weekNumbers) },
               null,

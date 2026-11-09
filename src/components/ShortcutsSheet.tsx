@@ -15,6 +15,7 @@ export const SHORTCUTS: { app: string; key: string; rows: Row[] }[] = [
     rows: [
       [[["Ctrl", "R"], ["F5"]], "Sync the app in front"],
       [[["Ctrl", ","]], "Settings"],
+      [[["F9"]], "Show or hide the sidebar"],
       [[["Ctrl", "/"]], "Keyboard shortcuts"],
     ],
   },

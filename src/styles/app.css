@@ -1824,6 +1824,67 @@
 }
 /* Photos' grid and Calendar's month run to their column's edge: a gutter from the card. */
 .library.is-solo :is(.px-side, .cx-side, .dx-side) { margin-right: 12px; }
+
+/*
+ * The sidebar button (components/SidePane): the same place in every app's window, at its top
+ * left, over a row of the sidebar's card kept for it, as the button beside a Mac window's
+ * controls sits over its sidebar. Hidden, the sidebar's column closes and only the first row
+ * of what is beside it steps right of the button; the rest takes the whole width. Shown and
+ * hidden at once: a full-height layer moving was what flickered on his WebKitGTK.
+ */
+.side-toggle {
+  position: absolute;
+  z-index: 35;
+  top: 16px;
+  left: 20px;
+  color: var(--text-2);
+}
+.side-toggle:focus-visible { outline: var(--focus-ring); }
+.library.is-solo :is(.cx-side, .dx-side) { padding-top: 52px; }
+@media (min-width: 1001px) { .library.is-solo :is(.notes-folders, .contacts-lists) { padding-top: 52px; } }
+@media (min-width: 721px) { .library.is-solo :is(.rx-side, .px-side) { padding-top: 52px; } }
+/* Where an app folds its sidebar into a picker or a column of its own, that reaches it. */
+@media (max-width: 1000px) { .library.is-solo:is([data-app="notes"], [data-app="contacts"]) > .side-toggle { display: none; } }
+@media (max-width: 720px) { .library.is-solo:is([data-app="photos"], [data-app="reminders"]) > .side-toggle { display: none; } }
+
+/* Hidden: its column closes to nothing (each app's grid reads the one width), the sidebar is
+   neither seen, reached by Tab nor read aloud, and Notes' edge for widening it goes too. */
+/* Only where the window holds a sidebar at all: where its width folds it, the app's own narrow
+   layout rules, and the button's choice waits for the window to widen. */
+.library.is-solo.side-hidden:not(.side-folded, .side-peek) { --source-w: 0px; }
+.library.is-solo.side-hidden:not(.side-folded, .side-peek) .notes { --folders-w: 0px !important; }
+.library.is-solo.side-hidden:not(.side-folded, .side-peek) :is(.notes-folders, .contacts-lists, .rx-side, .px-side, .cx-side, .dx-side) {
+  visibility: hidden;
+  overflow: hidden;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.library.is-solo.side-hidden:not(.side-folded, .side-peek) .notes-folders-edge { display: none; }
+/* The first row beside it steps right of the button. */
+.library.is-solo.side-hidden:not(.side-folded, .side-peek) :is(.notes-list-head, .contacts-head, .rx-head, .drive-bar, .cx-bar, .px-bar) { padding-left: 44px; }
+/* Drive folds its sidebar away in a narrow window: the same step there. Calendar's bar fills a
+   narrow window's first line to the pixel, so there the button gives way and its More menu
+   brings the calendars instead (F9 still does). */
+@media (max-width: 720px) { .library.is-solo .dx .drive-bar { padding-left: 44px; } }
+.library.is-solo[data-app="calendar"].side-folded > .side-toggle { display: none; }
+
+/* Brought over the content where the window's width folded it: a card on the window's left,
+   solid (a list read through another list is two lists), shadowed as a sheet is. */
+@container cx-page (max-width: 860px) { .library.is-solo.side-peek .cx-side { display: flex; position: fixed; margin: 0; } }
+@media (max-width: 720px) { .library.is-solo.side-peek .dx-side { display: flex; position: fixed; margin: 0; } }
+.library.is-solo.side-peek :is(.cx-side, .dx-side) {
+  z-index: 30;
+  top: 8px;
+  bottom: 8px;
+  left: 8px;
+  width: var(--source-w);
+  background: var(--bg);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge), var(--shadow-sheet);
+}
 .app-foot {
   margin-top: auto;
   padding-top: 10px;
