@@ -103,9 +103,9 @@
     <color type="primary" scheme_preference="dark">#0B2A4A</color>
   </branding>
   <releases>
-    <release version="0.1.17" date="2026-11-09">
+    <release version="0.1.18" date="2026-11-09">
       <description>
-        <p>Every app's window has a sidebar button, at its top left or with F9, that hides the sidebar and brings it back, remembered for each app. Calendar can add Nextcloud and other CalDAV calendars beside iCloud's, with Nextcloud signing you in on its own page. A small Calendar window brings your calendars over the month from its More menu, a small Drive window its places from the sidebar button, an event's popover stays on screen as it grows, and Send to iPhone has its own icon.</p>
+        <p>Every app's window has a sidebar button, at its top left or with F9, that hides the sidebar and brings it back, remembered for each app. Calendar can add Nextcloud and other CalDAV calendars beside iCloud's, with Nextcloud signing you in on its own page. A small Calendar window brings your calendars over the month from its More menu, a small Drive window its places from the sidebar button, an event's popover stays on screen as it grows, Keyboard Shortcuts shows the app in front and is never cut off, and Send to iPhone has its own icon.</p>
       </description>
     </release>
     <release version="0.1.16" date="2026-11-09">
