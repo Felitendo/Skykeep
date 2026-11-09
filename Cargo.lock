@@ -4335,6 +4335,7 @@ name = "quince-mobile"
 version = "0.1.17"
 dependencies = [
  "quince-auth",
+ "quince-icloud",
  "thiserror 2.0.20",
  "tokio",
  "uniffi",

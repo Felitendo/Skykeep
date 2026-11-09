@@ -126,6 +126,31 @@ pub struct CodeOptions {
     pub security_key: bool,
 }
 
+/// A way to reach someone: `phone`, `email`, `url` or `address`, with Apple's label.
+#[derive(uniffi::Record)]
+pub struct Method {
+    pub kind: String,
+    pub label: Option<String>,
+    pub value: String,
+}
+
+/// A person in the iCloud address book, as Android's Contacts will hold them.
+#[derive(uniffi::Record)]
+pub struct Person {
+    /// Apple's id for the card: the raw contact's source id, so a sync finds it again.
+    pub guid: String,
+    /// Changes whenever the card does: an unchanged card is not rewritten.
+    pub etag: Option<String>,
+    pub first_name: Option<String>,
+    pub middle_name: Option<String>,
+    pub last_name: Option<String>,
+    pub company: Option<String>,
+    pub is_company: bool,
+    pub birthday: Option<String>,
+    pub notes: Option<String>,
+    pub methods: Vec<Method>,
+}
+
 fn failed(e: impl std::fmt::Display) -> EngineError {
     EngineError::Failed {
         reason: e.to_string(),
@@ -208,6 +233,52 @@ impl Account {
         runtime()
             .block_on(c.submit_sms_code(phone_id, &code))
             .map_err(failed)
+    }
+
+    /// The Apple Account signed in, as Android's account list names it.
+    pub fn apple_id(&self) -> Option<String> {
+        let c = self.client.lock().ok()?;
+        c.session().apple_id.clone()
+    }
+
+    /// The whole iCloud address book, read as desktop reads it (Apple's `/co/startup`).
+    pub fn contacts(&self) -> Result<Vec<Person>, EngineError> {
+        let c = self.client.lock().map_err(failed)?;
+        let root = c
+            .session()
+            .service_url("contacts")
+            .ok_or_else(|| failed("Apple hasn't offered a contacts service for this account."))?;
+        let (book, _) = runtime()
+            .block_on(quince_icloud::contacts::fetch_book_with_tokens(
+                c.http(),
+                &root,
+                c.service_params(),
+            ))
+            .map_err(failed)?;
+        Ok(book
+            .contacts
+            .into_iter()
+            .map(|p| Person {
+                guid: p.guid,
+                etag: p.etag,
+                first_name: p.first_name,
+                middle_name: p.middle_name,
+                last_name: p.last_name,
+                company: p.company,
+                is_company: p.is_company,
+                birthday: p.birthday,
+                notes: p.notes,
+                methods: p
+                    .methods
+                    .into_iter()
+                    .map(|m| Method {
+                        kind: m.kind,
+                        label: m.label,
+                        value: m.value,
+                    })
+                    .collect(),
+            })
+            .collect())
     }
 
     /// Signs out here: the session forgotten on this phone, its secrets deleted.

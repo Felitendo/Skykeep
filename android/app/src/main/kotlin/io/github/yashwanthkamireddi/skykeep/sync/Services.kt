@@ -32,13 +32,29 @@ class AuthenticatorService : Service() {
   override fun onBind(intent: Intent): IBinder = authenticator.iBinder
 }
 
-/** Where Android asks for a sync. Phase 1 fills these in with the engine's CardDAV and CalDAV. */
+/** Where Android asks for a sync of Calendar. Filled in when calendars are synced. */
 private class Adapter(context: Context) : AbstractThreadedSyncAdapter(context, true) {
   override fun onPerformSync(a: Account, e: Bundle, authority: String, p: ContentProviderClient, r: SyncResult) = Unit
 }
 
+/** Android asking for Contacts: iCloud's address book read through the engine and written in. */
+private class ContactsAdapter(context: Context) : AbstractThreadedSyncAdapter(context, true) {
+  override fun onPerformSync(a: Account, e: Bundle, authority: String, p: ContentProviderClient, r: SyncResult) {
+    try {
+      val people = io.github.yashwanthkamireddi.skykeep.Engine.account(context).contacts()
+      val done = ContactsSync.sync(context.contentResolver, a, people)
+      r.stats.numInserts += done.added.toLong()
+      r.stats.numUpdates += done.updated.toLong()
+      r.stats.numDeletes += done.removed.toLong()
+    } catch (x: uniffi.quince_mobile.EngineException) {
+      // Apple unreachable or the session gone: Android retries later with backoff.
+      r.stats.numIoExceptions++
+    }
+  }
+}
+
 class ContactsSyncService : Service() {
-  private val adapter by lazy { Adapter(applicationContext) }
+  private val adapter by lazy { ContactsAdapter(applicationContext) }
   override fun onBind(intent: Intent): IBinder = adapter.syncAdapterBinder
 }
 
