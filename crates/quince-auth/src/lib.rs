@@ -34,8 +34,8 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client as HttpClient, Response, StatusCode};
 use reqwest_cookie_store::CookieStoreMutex;
 use serde_json::{json, Value};
-pub use session::Store;
 use session::{backoff_seconds, unix_now, Session, CAPTURED_HEADERS};
+pub use session::{use_platform_secrets, PlatformSecrets, Store};
 use std::path::Path;
 use std::sync::Arc;
 

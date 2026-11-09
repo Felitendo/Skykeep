@@ -320,7 +320,49 @@ fn previous() -> Result<Vec<SystemKeyring>, String> {
         .collect())
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Where secrets are kept on a system whose keyring this crate cannot reach itself: Android,
+/// whose Keystore only the app's own (Kotlin) side can use. The app hands the engine this once,
+/// at start-up, before the session is first read; the engine then uses it as it uses Linux's
+/// Secret Service or Windows' Credential Manager. `service` is the keyring's service name, so
+/// earlier identifiers' entries are found and moved as on desktop.
+pub trait PlatformSecrets: Send + Sync {
+    fn get(&self, service: &str, name: &str) -> Result<Option<String>, String>;
+    fn set(&self, service: &str, name: &str, value: &str) -> Result<(), String>;
+    fn delete(&self, service: &str, name: &str) -> Result<(), String>;
+}
+
+static PLATFORM_SECRETS: std::sync::OnceLock<Box<dyn PlatformSecrets>> = std::sync::OnceLock::new();
+
+/// Gives the engine the system's secret store (see [`PlatformSecrets`]). Once per run; a
+/// second call is refused, so a store can never be swapped under a session already read.
+pub fn use_platform_secrets(store: Box<dyn PlatformSecrets>) -> Result<(), String> {
+    PLATFORM_SECRETS
+        .set(store)
+        .map_err(|_| "The secret store was already given.".to_string())
+}
+
+#[cfg(target_os = "android")]
+impl Secrets for SystemKeyring {
+    fn get(&self, name: &str) -> Result<Option<String>, String> {
+        platform()?.get(self.0, name)
+    }
+    fn set(&self, name: &str, value: &str) -> Result<(), String> {
+        platform()?.set(self.0, name, value)
+    }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        platform()?.delete(self.0, name)
+    }
+}
+
+#[cfg(target_os = "android")]
+fn platform() -> Result<&'static dyn PlatformSecrets, String> {
+    PLATFORM_SECRETS
+        .get()
+        .map(|b| b.as_ref())
+        .ok_or_else(|| "The system's secret store was not given to the engine.".to_string())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 impl Secrets for SystemKeyring {
     fn get(&self, name: &str) -> Result<Option<String>, String> {
         match keyring::Entry::new(self.0, name).and_then(|e| e.get_password()) {
