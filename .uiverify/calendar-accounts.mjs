@@ -55,6 +55,13 @@ await page.keyboard.press("Enter");
 await page.waitForTimeout(300);
 ok((await writes()).some((w) => w.begin === "cloud.example.org"), "the sign-in starts on that server");
 ok(/in your browser/.test(await form.getByRole("status").innerText().catch(() => "")), "the panel says to approve it in the browser");
+ok(await form.evaluate((f) => {
+  const panel = f.getBoundingClientRect();
+  return [...f.querySelectorAll(".cx-subscribe-actions button")].every((b) => {
+    const r = b.getBoundingClientRect();
+    return r.left >= panel.left && r.right <= panel.right;
+  });
+}), "both waiting buttons stay inside the panel");
 await form.getByRole("button", { name: "Open Page Again" }).click();
 await page.waitForTimeout(100);
 ok((await writes()).some((w) => w.reopen), "the page can be opened again");

@@ -830,7 +830,9 @@
   display: flex; flex-direction: column; gap: 6px; padding-top: 8px;
   border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
 }
-.cx-subscribe-actions { display: flex; justify-content: flex-end; gap: 6px; }
+/* Too wide for the sidebar on one line, the buttons wrap rather than leave the panel. */
+.cx-subscribe-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.cx-subscribe-actions.is-full > button { flex: 1 1 auto; }
 
 /* ---- Quick Event --------------------------------------------------------------------- */
 

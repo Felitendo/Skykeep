@@ -4133,7 +4133,7 @@ function NextcloudForm({ initial, leaving, onDone, onCancel }: {
           )}
         </>
       )}
-      <div className="cx-subscribe-actions">
+      <div className={waiting ? "cx-subscribe-actions is-full" : "cx-subscribe-actions"}>
         <button type="button" className="quiet" onClick={cancel}>{waiting ? "Cancel" : leaving}</button>
         {waiting ? (
           <button type="button" className="quiet" onClick={() => { void davApi.nextcloudReopen().catch((err) => setProblem(messageOf(err))); }}>Open Page Again</button>
