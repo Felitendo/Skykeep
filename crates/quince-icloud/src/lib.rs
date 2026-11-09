@@ -15,6 +15,7 @@ macro_rules! quiet {
 }
 
 pub mod bounded;
+pub mod caldav;
 pub mod calendar;
 pub mod calendar_feeds;
 pub mod ckdocument;
@@ -23,8 +24,10 @@ pub mod contacts;
 pub mod courier;
 pub mod drive;
 pub mod drive_changes;
+pub mod ical_edit;
 pub mod markdown;
 pub mod mergeable;
+pub mod nextcloud;
 pub mod note_media;
 pub mod notes;
 pub mod occasions;

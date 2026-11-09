@@ -206,6 +206,45 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         // Calendars subscribed to by address (calendar tests). `window.__feedFails` makes the
         // next subscribe refuse, as a wrong address is refused.
+        // Calendar accounts other than iCloud (calendar-accounts). `window.__davFails` makes the
+        // next add refuse; `window.__davApproved` is the person approving in their browser.
+        case "dav_accounts": return (window.__davAccounts ?? []).map((x) => ({ ...x }));
+        case "nextcloud_begin": {
+          (window.__davWrites ??= []).push({ begin: args.server });
+          if (window.__davFails) throw window.__davFails;
+          window.__davApproved = false;
+          return `https://${args.server}/index.php/login/v2/flow/abc`;
+        }
+        case "nextcloud_finish": {
+          window.__davCancelled = false;
+          while (!window.__davApproved && !window.__davCancelled) await new Promise((r) => setTimeout(r, 20));
+          if (window.__davCancelled) throw "cancelled";
+          const account = { id: "n1", kind: "nextcloud", title: "Nextcloud", server: "https://cloud.example.org", username: "felix",
+            home: "https://cloud.example.org/remote.php/dav/calendars/felix/", hosts: ["cloud.example.org"], syncedAt: 1, problem: null, needsSignIn: false };
+          (window.__davAccounts ??= []).push(account);
+          (window.__cals ??= calendars.map((c) => ({ ...c }))).push(
+            { guid: "quince:dav:n1:aaa", title: "Familie", colour: "#0082c9", ctag: "1", sortOrder: 500, enabled: true, writable: true, isDefault: false },
+            { guid: "quince:dav:n1:bbb", title: "Team (shared)", colour: "#65db39", ctag: "1", sortOrder: 501, enabled: true, writable: false, isDefault: false },
+          );
+          return { ...account };
+        }
+        case "nextcloud_reopen": { (window.__davWrites ??= []).push({ reopen: true }); return null; }
+        case "nextcloud_cancel": { (window.__davWrites ??= []).push({ cancel: true }); window.__davCancelled = true; return null; }
+        case "caldav_add": {
+          (window.__davWrites ??= []).push({ caldav: { server: args.server, username: args.username } });
+          if (window.__davFails) throw window.__davFails;
+          const account = { id: "c1", kind: "caldav", title: args.server, server: `https://${args.server}`, username: args.username,
+            home: `https://${args.server}/dav/`, hosts: [args.server], syncedAt: 1, problem: null, needsSignIn: false };
+          (window.__davAccounts ??= []).push(account);
+          return { ...account };
+        }
+        case "dav_refresh": { (window.__davWrites ??= []).push({ refresh: args.id }); return null; }
+        case "dav_remove": {
+          (window.__davWrites ??= []).push({ remove: args.id });
+          window.__davAccounts = (window.__davAccounts ?? []).filter((a) => a.id !== args.id);
+          window.__cals = (window.__cals ?? []).filter((c) => !c.guid.startsWith(`quince:dav:${args.id}:`));
+          return null;
+        }
         case "calendar_subscriptions": return (window.__subs ?? []).map((x) => ({ ...x }));
         case "calendar_subscribe": {
           (window.__subWrites ??= []).push({ subscribe: args.url });
@@ -1239,7 +1278,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "system_contrast":  return window.__contrast ?? false;
         // LC_TIME, LANG (appearance.rs): null leaves the engine's own language.
         case "system_time_locale": return window.__timeLocale ?? null;
-        case "network_reach": return { apple: ["apple.com", "icloud.com", "icloud-content.com"], subscribed: window.__reachSubscribed ?? [],
+        case "network_reach": return { accounts: window.__reachAccounts ?? [], apple: ["apple.com", "icloud.com", "icloud-content.com"], subscribed: window.__reachSubscribed ?? [],
           updates: (window.__update?.install ?? "here") === "here" ? ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"] : [] };
         // Skykeep's own updates (updates.rs). A test sets `window.__update` (an offer, an install
         // kind); Update and Restart plays the download, then the wait (`__updateHold`: "changes"

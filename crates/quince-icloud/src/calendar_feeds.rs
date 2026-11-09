@@ -158,14 +158,14 @@ pub async fn fetch(http: &reqwest::Client, url: &str) -> Result<String> {
 /* ---- reading the file --------------------------------------------------------------- */
 
 #[derive(Debug, Clone)]
-struct Property {
-    name: String,
-    params: Vec<(String, String)>,
-    value: String,
+pub(crate) struct Property {
+    pub(crate) name: String,
+    pub(crate) params: Vec<(String, String)>,
+    pub(crate) value: String,
 }
 
 impl Property {
-    fn param(&self, name: &str) -> Option<&str> {
+    pub(crate) fn param(&self, name: &str) -> Option<&str> {
         self.params
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
@@ -173,7 +173,7 @@ impl Property {
     }
 }
 
-fn unfold(text: &str) -> Vec<String> {
+pub(crate) fn unfold(text: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for raw in text.split('\n') {
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
@@ -191,7 +191,7 @@ fn unfold(text: &str) -> Vec<String> {
 }
 
 /// `NAME;P=v;Q="a:b":value`, a colon inside a quoted parameter not ending the name.
-fn property(line: &str) -> Option<Property> {
+pub(crate) fn property(line: &str) -> Option<Property> {
     let mut quoted = false;
     let mut split = None;
     for (i, c) in line.char_indices() {
@@ -224,7 +224,7 @@ fn property(line: &str) -> Option<Property> {
     })
 }
 
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
@@ -243,14 +243,14 @@ fn unescape(s: &str) -> String {
 
 /// When something happens, as the file writes it.
 #[derive(Debug, Clone, PartialEq)]
-enum When {
+pub(crate) enum When {
     /// A date: an all-day event.
     Day(Date),
     /// A clock time in a zone (UTC for a time written with `Z`).
     At(DateTime, TimeZone),
 }
 
-fn parse_date(s: &str) -> Option<Date> {
+pub(crate) fn parse_date(s: &str) -> Option<Date> {
     let s = s.trim();
     if s.len() < 8 || !s.as_bytes()[..8].iter().all(u8::is_ascii_digit) {
         return None;
@@ -263,7 +263,7 @@ fn parse_date(s: &str) -> Option<Date> {
     .ok()
 }
 
-fn parse_datetime(s: &str) -> Option<(DateTime, bool)> {
+pub(crate) fn parse_datetime(s: &str) -> Option<(DateTime, bool)> {
     let s = s.trim();
     let (d, t) = s.split_once(['T', 't'])?;
     let date = parse_date(d)?;
@@ -285,13 +285,13 @@ fn parse_datetime(s: &str) -> Option<(DateTime, bool)> {
 
 /// What a file's times are read against: this computer's clock for a floating time, and the
 /// zones the file itself defines in its `VTIMEZONE`s.
-struct Clock<'a> {
-    here: &'a TimeZone,
-    zones: &'a zones::Defined,
+pub(crate) struct Clock<'a> {
+    pub(crate) here: &'a TimeZone,
+    pub(crate) zones: &'a zones::Defined,
 }
 
 /// A date or date-time property, read in `here` when it floats (no zone given).
-fn when_of(p: &Property, here: &Clock) -> Option<When> {
+pub(crate) fn when_of(p: &Property, here: &Clock) -> Option<When> {
     when_value(&p.value, p, here)
 }
 
@@ -315,7 +315,7 @@ fn when_value(value: &str, p: &Property, here: &Clock) -> Option<When> {
 }
 
 /// An iCalendar duration in seconds: `PT1H30M`, `-P1D`, `P2W`.
-fn duration(s: &str) -> Option<i64> {
+pub(crate) fn duration(s: &str) -> Option<i64> {
     let s = s.trim();
     let (sign, s) = match s.as_bytes().first()? {
         b'-' => (-1, &s[1..]),
@@ -353,7 +353,7 @@ fn duration(s: &str) -> Option<i64> {
 
 /// How an event repeats: the parts of an `RRULE` people publish.
 #[derive(Debug, Clone, PartialEq)]
-struct Rule {
+pub(crate) struct Rule {
     freq: Freq,
     interval: i64,
     count: Option<i64>,
@@ -455,7 +455,7 @@ fn rule_of(p: &Property, here: &Clock) -> Option<Rule> {
 
 /// One event in a subscribed file, before its repeats are laid out.
 #[derive(Debug, Clone)]
-struct Item {
+pub(crate) struct Item {
     uid: String,
     title: String,
     location: Option<String>,
@@ -464,11 +464,11 @@ struct Item {
     start: When,
     /// Seconds for a timed event; whole days for an all-day one.
     length: i64,
-    rule: Option<Rule>,
-    extra: Vec<When>,
+    pub(crate) rule: Option<Rule>,
+    pub(crate) extra: Vec<When>,
     except: Vec<When>,
     /// For a changed occurrence: the start of the one it replaces.
-    replaces: Option<When>,
+    pub(crate) replaces: Option<When>,
     cancelled: bool,
 }
 
@@ -482,7 +482,7 @@ pub struct Feed {
     /// How often the publisher asks to be fetched, in minutes (`REFRESH-INTERVAL`,
     /// `X-PUBLISHED-TTL`).
     pub refresh_minutes: Option<u32>,
-    items: Vec<Item>,
+    pub(crate) items: Vec<Item>,
 }
 
 impl Feed {
@@ -615,7 +615,7 @@ fn item_of(props: &[Property], here: &Clock) -> Option<Item> {
     })
 }
 
-fn instant(w: &When) -> Option<Timestamp> {
+pub(crate) fn instant(w: &When) -> Option<Timestamp> {
     match w {
         When::Day(d) => d.to_zoned(TimeZone::system()).ok().map(|z| z.timestamp()),
         When::At(dt, tz) => dt.to_zoned(tz.clone()).ok().map(|z| z.timestamp()),
@@ -624,7 +624,7 @@ fn instant(w: &When) -> Option<Timestamp> {
 
 /// The same moment for matching an exception or a changed occurrence to the one it is for:
 /// a date by its date, a time by its instant.
-fn key_of(w: &When) -> Option<i64> {
+pub(crate) fn key_of(w: &When) -> Option<i64> {
     match w {
         When::Day(d) => {
             Some(i64::from(d.year()) * 10_000 + i64::from(d.month()) * 100 + i64::from(d.day()))
@@ -808,7 +808,7 @@ fn month_set(rule: &Rule, year: i16, month: i8, day: i8) -> Vec<Date> {
 }
 
 /// The starts of an item's occurrences, as `When`s, up to `to` (unix seconds).
-fn starts(item: &Item, to: i64) -> Vec<When> {
+pub(crate) fn starts(item: &Item, to: i64) -> Vec<When> {
     let Some(rule) = &item.rule else {
         let mut all = vec![item.start.clone()];
         all.extend(item.extra.iter().cloned());
@@ -883,6 +883,45 @@ fn starts(item: &Item, to: i64) -> Vec<When> {
 /// each repeat laid out on its own day, exceptions left out and changed ones put in their place.
 #[must_use]
 pub fn events(feed: &Feed, calendar_guid: &str, from: i64, to: i64) -> Vec<Event> {
+    laid_out(feed, calendar_guid, from, to, &|item, key| {
+        format!("{calendar_guid}:{}:{key}", item.uid)
+    })
+}
+
+/// One event of a calendar account, as the calendar `calendar_guid` holds it: named `series`
+/// when it happens once, and `<series>__<key>` for each occurrence when it repeats, as Apple
+/// names them, so a repeating event is asked and changed as one from iCloud is. `key` is the
+/// occurrence as first scheduled, whatever it has since been moved to.
+#[must_use]
+pub fn account_events(
+    feed: &Feed,
+    calendar_guid: &str,
+    series: &str,
+    etag: Option<&str>,
+    from: i64,
+    to: i64,
+) -> Vec<Event> {
+    let mut out = laid_out(feed, calendar_guid, from, to, &|item, key| {
+        if item.rule.is_some() || !item.extra.is_empty() || item.replaces.is_some() {
+            let key = item.replaces.as_ref().and_then(key_of).unwrap_or(key);
+            format!("{series}__{key}")
+        } else {
+            series.to_string()
+        }
+    });
+    for e in &mut out {
+        e.etag = etag.map(ToString::to_string);
+    }
+    out
+}
+
+fn laid_out(
+    feed: &Feed,
+    calendar_guid: &str,
+    from: i64,
+    to: i64,
+    name: &dyn Fn(&Item, i64) -> String,
+) -> Vec<Event> {
     use std::collections::{HashMap, HashSet};
     // Changed occurrences, by the series and the start they replace.
     let mut moved: HashMap<&str, HashSet<i64>> = HashMap::new();
@@ -911,7 +950,7 @@ pub fn events(feed: &Feed, calendar_guid: &str, from: i64, to: i64) -> Vec<Event
             if item.cancelled {
                 continue;
             }
-            let Some(event) = event_of(item, &w, calendar_guid, key) else {
+            let Some(event) = event_of(item, &w, calendar_guid, name(item, key)) else {
                 continue;
             };
             if event.starts_at < to && event.ends_at > from {
@@ -927,7 +966,7 @@ pub fn events(feed: &Feed, calendar_guid: &str, from: i64, to: i64) -> Vec<Event
     out
 }
 
-fn event_of(item: &Item, w: &When, calendar_guid: &str, key: i64) -> Option<Event> {
+fn event_of(item: &Item, w: &When, calendar_guid: &str, guid: String) -> Option<Event> {
     let (starts_at, ends_at, all_day, timezone) = match w {
         When::Day(d) => {
             let zone = TimeZone::system();
@@ -955,7 +994,7 @@ fn event_of(item: &Item, w: &When, calendar_guid: &str, key: i64) -> Option<Even
         }
     };
     Some(Event {
-        guid: format!("{calendar_guid}:{}:{key}", item.uid),
+        guid,
         calendar_guid: calendar_guid.into(),
         title: item.title.clone(),
         location: item.location.clone(),

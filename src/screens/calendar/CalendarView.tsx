@@ -22,7 +22,11 @@ import {
   type CalendarEvent,
   type Reminder, type EventScope,
   type CalendarSubscription,
+  type DavAccount,
   calendarFeedsApi,
+  davAccountOf,
+  davApi,
+  DAV_PREFIX,
   SUBSCRIPTION_PREFIX } from "../../lib/ipc";
 import { parseQuick } from "./quick";
 import { useShownRevision } from "../../lib/sync";
@@ -141,6 +145,16 @@ const MONTH_ROWS = 4;
 /** Calendars the viewer has switched off here, remembered on this computer. */
 const HIDDEN_KEY = "quince.calendar.hidden";
 const VIEW_KEY = "quince.calendar.view";
+/** One heading of the sidebar and the calendars under it. */
+type SideGroup = { key: string; heading: string; list: Calendar[]; account?: DavAccount };
+
+/**
+ * Whether an event can be moved from one of these calendars to the other. Among iCloud's, yes;
+ * a calendar account's event stays in its calendar, since moving one means another server's
+ * copy of everything in it.
+ */
+const sameHome = (a: string, b: string) => a === b || (!a.startsWith(DAV_PREFIX) && !b.startsWith(DAV_PREFIX));
+
 /** Sidebar groups folded away, week numbers shown, and each calendar's default alerts —
  *  Apple keeps these as preferences of each Mac, and so does this. */
 const FOLDED_KEY = "quince.calendar.folded";
@@ -530,8 +544,11 @@ export function CalendarView() {
   const [quick, setQuick] = useState(false);
   /** New Calendar Subscription, opened from the sidebar's +. */
   const [subscribing, setSubscribing] = useState(false);
+  /** Calendar accounts other than iCloud, and the form adding one. */
+  const [accounts, setAccounts] = useState<DavAccount[]>([]);
+  const [adding, setAdding] = useState<{ kind: "nextcloud" | "caldav"; server?: string } | null>(null);
   const [addMenu, setAddMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
-  const [groupMenu, setGroupMenu] = useState<{ list: Calendar[]; at: { x: number; y: number; alignRight: boolean } } | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{ list: Calendar[]; account?: DavAccount; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   const [moreMenu, setMoreMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
   const moreButton = useRef<HTMLButtonElement>(null);
   const [eventMenu, setEventMenu] = useState<{ event: CalendarEvent; at: { x: number; y: number; alignRight: boolean } } | null>(null);
@@ -644,7 +661,7 @@ export function CalendarView() {
   const shownRead = useRef(0);
   const read = useCallback(async () => {
     const turn = ++asked.current;
-    const [found, cals, reminders, lists, feeds] = await Promise.all([
+    const [found, cals, reminders, lists, feeds, davAccounts] = await Promise.all([
       api.calendarEvents(range.from, range.to),
       api.calendarList(),
       // A day either side: an all-day reminder is kept as its day's midnight in UTC, which west
@@ -653,12 +670,14 @@ export function CalendarView() {
       api.remindersDueBetween(range.from - 86_400, range.to + 86_400),
       api.reminderLists().catch(() => []),
       calendarFeedsApi.list().catch(() => [] as CalendarSubscription[]),
+      davApi.list().catch(() => [] as DavAccount[]),
     ]);
     if (turn < shownRead.current) return;
     shownRead.current = turn;
     // What reads the same as before is kept as it was, so a read that found nothing new —
     // after every save, every sync, every month stepped into — draws nothing again.
     setSubs((was) => same(was, Array.isArray(feeds) ? feeds : []));
+    setAccounts((was) => same(was, Array.isArray(davAccounts) ? davAccounts : []));
     setListColours((was) => sameMap(was, new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.colour && /^#[0-9a-f]{6}$/i.test(l.colour) ? l.colour : ""]))));
     setListNames((was) => sameMap(was, new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.title]))));
     setEvents((was) => same(was, over(Array.isArray(found) ? found : [])));
@@ -1083,6 +1102,26 @@ export function CalendarView() {
       (e) => setError(messageOf(e)),
     );
   };
+  const refreshAccount = (a: DavAccount) => {
+    davApi.refresh(a.id).then(
+      () => { toast(`\u201c${a.title}\u201d is up to date`); void read(); },
+      (e) => { setError(messageOf(e)); void read(); },
+    );
+  };
+  const removeAccount = (a: DavAccount) => {
+    void confirm({
+      title: `Remove \u201c${a.title}\u201d?`,
+      body: "Its calendars leave this computer. Nothing is deleted on the server, and you can add the account again at any time.",
+      action: "Remove",
+      danger: true,
+    }).then((sure) => {
+      if (!sure) return;
+      setCalendars((cs) => cs.filter((c) => davAccountOf(c.guid) !== a.id));
+      setEvents((rows) => rows.filter((e) => davAccountOf(e.calendarGuid) !== a.id));
+      setAccounts((was) => was.filter((x) => x.id !== a.id));
+      void write(async () => { await davApi.remove(a.id); });
+    });
+  };
   const unsubscribe = (sub: CalendarSubscription) => {
     void confirm({
       title: `Unsubscribe from \u201c${sub.title}\u201d?`,
@@ -1417,11 +1456,12 @@ export function CalendarView() {
       <aside className="cx-side" aria-label="Calendars">
         <div className="cx-cals">
           {[
-            { key: "icloud", heading: "iCloud", list: calendars.filter((c) => c.writable) },
-            { key: "subs", heading: "Subscriptions", list: calendars.filter((c) => c.guid.startsWith(SUBSCRIPTION_PREFIX)) },
-            { key: "other", heading: "Other", list: calendars.filter((c) => !c.writable && !c.guid.startsWith(SUBSCRIPTION_PREFIX)) },
+            { key: "icloud", heading: "iCloud", list: calendars.filter((c) => c.writable && !c.guid.startsWith(DAV_PREFIX)) } as SideGroup,
+            ...accounts.map((a): SideGroup => ({ key: `account:${a.id}`, heading: a.title, account: a, list: calendars.filter((c) => davAccountOf(c.guid) === a.id) })),
+            { key: "subs", heading: "Subscriptions", list: calendars.filter((c) => c.guid.startsWith(SUBSCRIPTION_PREFIX)) } as SideGroup,
+            { key: "other", heading: "Other", list: calendars.filter((c) => !c.writable && !c.guid.startsWith(SUBSCRIPTION_PREFIX) && !c.guid.startsWith(DAV_PREFIX)) } as SideGroup,
           ]
-            .filter((g) => g.list.length > 0 || (g.key === "icloud" && loaded && calendars.length > 0))
+            .filter((g) => g.list.length > 0 || g.account || (g.key === "icloud" && loaded && calendars.length > 0))
             .map((group) => {
               const open = !folded.has(group.key);
               return (
@@ -1431,13 +1471,15 @@ export function CalendarView() {
                     className="side-heading cx-side-heading"
                     aria-expanded={open}
                     onClick={() => fold(group.key)}
+                    title={group.account?.problem ?? undefined}
                     onContextMenu={(e) => {
                       e.preventDefault();
-                      setGroupMenu({ list: group.list, at: { x: e.clientX, y: e.clientY, alignRight: false } });
+                      setGroupMenu({ list: group.list, account: group.account, at: { x: e.clientX, y: e.clientY, alignRight: false } });
                     }}
                   >
                     <ChevronDown size={11} strokeWidth={2.6} aria-hidden="true" className="cx-fold" />
                     {group.heading}
+                    {group.account?.problem && <span className="cx-cal-problem cx-account-problem" aria-label={group.account.problem}>!</span>}
                   </button>
                   {group.key === "icloud" && (
                     <button
@@ -1501,6 +1543,30 @@ export function CalendarView() {
             })}
           {loaded && calendars.length === 0 && (
             <EmptyState className="cal-empty">There are no calendars on this account yet.</EmptyState>
+          )}
+          {adding?.kind === "nextcloud" && (
+            <NextcloudForm
+              initial={adding.server}
+              onDone={(a) => {
+                setAdding(null);
+                toast(`Added \u201c${a.title}\u201d`);
+                void read();
+              }}
+              // Reached from the CalDAV panel, it goes back there; to sign in again, it just closes.
+              leaving={adding.server === undefined ? "Back" : "Cancel"}
+              onCancel={() => setAdding(adding.server === undefined ? { kind: "caldav" } : null)}
+            />
+          )}
+          {adding?.kind === "caldav" && (
+            <CalDavForm
+              onNextcloud={() => setAdding({ kind: "nextcloud" })}
+              onDone={(a) => {
+                setAdding(null);
+                toast(`Added \u201c${a.title}\u201d`);
+                void read();
+              }}
+              onCancel={() => setAdding(null)}
+            />
           )}
           {subscribing && (
             <SubscribeForm
@@ -1730,6 +1796,8 @@ export function CalendarView() {
             entries={[
               { label: "New Calendar", run: () => { if (folded.has("icloud")) fold("icloud"); setNaming("new"); } },
               { label: "New Subscription", run: () => setSubscribing(true) },
+              null,
+              { label: "Add CalDAV Account", run: () => setAdding({ kind: "caldav" }) },
             ]}
           />
         )}
@@ -1740,6 +1808,16 @@ export function CalendarView() {
             entries={[
               { label: "Show All", run: () => showOnly(groupMenu.list, true) },
               { label: "Hide All", run: () => showOnly(groupMenu.list, false) },
+              ...(groupMenu.account ? (() => {
+                const a = groupMenu.account;
+                return [
+                  null,
+                  ...(a.needsSignIn
+                    ? a.kind === "nextcloud" ? [{ label: "Sign In Again", run: () => setAdding({ kind: "nextcloud" as const, server: a.server }) }] : []
+                    : [{ label: "Refresh Now", run: () => refreshAccount(a) }]),
+                  { label: "Remove Account", danger: true, run: () => removeAccount(a) },
+                ];
+              })() : []),
             ]}
           />
         )}
@@ -1756,12 +1834,14 @@ export function CalendarView() {
               { label: "Show Week Numbers", checked: weekNumbers, run: () => setWeekNumbers(!weekNumbers) },
               null,
               { label: "New Subscription", run: () => setSubscribing(true) },
+              { label: "Add CalDAV Account", run: () => setAdding({ kind: "caldav" }) },
             ]}
           />
         )}
         {eventMenu && (() => {
           const e = eventMenu.event;
           const mine = Boolean(byGuid.get(e.calendarGuid)?.writable);
+          const movesTo = writable.filter((c) => sameHome(c.guid, e.calendarGuid));
           return (
             <RowMenu
               at={eventMenu.at}
@@ -1772,9 +1852,9 @@ export function CalendarView() {
                   { label: "Duplicate", run: () => void duplicate(e) },
                   { label: "Copy", run: () => setClip(e) },
                 ] : []),
-                ...(mine && writable.length > 1 ? [{
+                ...(mine && movesTo.length > 1 ? [{
                   label: "Calendar",
-                  submenu: writable.map((c) => ({
+                  submenu: movesTo.map((c) => ({
                     label: c.title,
                     checked: c.guid === e.calendarGuid,
                     run: () => { if (c.guid !== e.calendarGuid) void save({ ...draftOf(e), calendarGuid: c.guid }); },
@@ -3451,7 +3531,7 @@ function EventPopover({
   const pos = usePlacedBeside(box, at);
   const calendar = calendars.find((c) => c.guid === draft.calendarGuid);
   const editable = !draft.guid || (calendar?.writable ?? false);
-  const choices = calendars.filter((c) => c.writable || c.guid === draft.calendarGuid);
+  const choices = calendars.filter((c) => (c.writable && (!draft.guid || sameHome(c.guid, draft.calendarGuid))) || c.guid === draft.calendarGuid);
 
   const live = useActiveRef();
   useEffect(() => {
@@ -3976,6 +4056,168 @@ function QuickEvent({ calendar, onAdd, onClose }: {
       <div className="cx-quick-actions">
         <button type="button" className="quiet" onClick={() => onAdd(text, true, at())}>Details</button>
         <button type="submit" className="primary" disabled={!q?.title}>Add</button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * Set Up Nextcloud Server, the preset under Add CalDAV Account: only the server's address.
+ * Nextcloud's own page opens in the browser,
+ * where the person approves Skykeep behind whatever sign-in they have set up; the rest is found
+ * by asking the server. Skykeep never sees their password, only an app password for itself.
+ */
+function NextcloudForm({ initial, leaving, onDone, onCancel }: {
+  initial?: string;
+  /** What the button that leaves this panel says. */
+  leaving: string;
+  onDone: (account: DavAccount) => void;
+  onCancel: () => void;
+}) {
+  const [server, setServer] = useState(initial ?? "");
+  const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const here = useRef(true);
+  useEffect(() => {
+    here.current = true;
+    return () => { here.current = false; };
+  }, []);
+  const begin = () => {
+    if (!server.trim() || busy || waiting) return;
+    setBusy(true);
+    setProblem(null);
+    davApi.nextcloudBegin(server.trim()).then(
+      () => {
+        if (!here.current) return;
+        setBusy(false);
+        setWaiting(true);
+        davApi.nextcloudFinish().then(
+          (account) => { if (here.current) onDone(account); },
+          (err) => {
+            if (!here.current || messageOf(err) === "cancelled") return;
+            setWaiting(false);
+            setProblem(messageOf(err));
+          },
+        );
+      },
+      (err) => {
+        if (!here.current) return;
+        setBusy(false);
+        setProblem(messageOf(err));
+      },
+    );
+  };
+  const cancel = () => {
+    void davApi.nextcloudCancel();
+    onCancel();
+  };
+  return (
+    <form
+      className="cx-subscribe"
+      aria-label="Set Up Nextcloud Server"
+      onSubmit={(e) => { e.preventDefault(); begin(); }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          cancel();
+        }
+      }}
+    >
+      <label className="cx-subscribe-label" htmlFor="cx-nextcloud-server">Set up a Nextcloud server</label>
+      {waiting ? (
+        <p className="cx-subscribe-note" role="status">
+          Approve Skykeep in the page that opened in your browser. It finishes here by itself.
+        </p>
+      ) : (
+        <>
+          <input
+            id="cx-nextcloud-server"
+            className="field"
+            type="text"
+            inputMode="url"
+            placeholder="cloud.example.org"
+            autoFocus
+            spellCheck={false}
+            autoCapitalize="off"
+            value={server}
+            disabled={busy}
+            onChange={(e) => { setServer(e.target.value); setProblem(null); }}
+          />
+          {problem ? (
+            <p className="cx-subscribe-note is-problem" role="alert">{problem}</p>
+          ) : (
+            <p className="cx-subscribe-note">You’ll sign in on your Nextcloud’s own page. Skykeep finds your calendars by itself.</p>
+          )}
+        </>
+      )}
+      <div className={waiting ? "cx-subscribe-actions is-full" : "cx-subscribe-actions"}>
+        <button type="button" className="quiet" onClick={cancel}>{waiting ? "Cancel" : leaving}</button>
+        {waiting ? (
+          <button type="button" className="quiet" onClick={() => { void davApi.nextcloudReopen().catch((err) => setProblem(messageOf(err))); }}>Open Page Again</button>
+        ) : (
+          <button type="submit" className="primary" disabled={!server.trim() || busy} aria-busy={busy}>Continue</button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+/**
+ * Add CalDAV Account: a calendar server by its address, username and password. Under it, the
+ * servers Skykeep can set up by itself, from less than that.
+ */
+function CalDavForm({ onNextcloud, onDone, onCancel }: {
+  onNextcloud: () => void;
+  onDone: (account: DavAccount) => void;
+  onCancel: () => void;
+}) {
+  const [server, setServer] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const ready = Boolean(server.trim() && username.trim() && password) && !busy;
+  return (
+    <form
+      className="cx-subscribe"
+      aria-label="Add CalDAV Account"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!ready) return;
+        setBusy(true);
+        setProblem(null);
+        davApi.caldavAdd(server.trim(), username.trim(), password).then(
+          (account) => onDone(account),
+          (err) => {
+            setBusy(false);
+            setProblem(messageOf(err));
+          },
+        );
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onCancel();
+        }
+      }}
+    >
+      <label className="cx-subscribe-label" htmlFor="cx-caldav-server">Add a CalDAV account</label>
+      <input id="cx-caldav-server" className="field" type="text" inputMode="url" placeholder="calendar.example.org" aria-label="Server" autoFocus spellCheck={false} autoCapitalize="off" value={server} disabled={busy} onChange={(e) => { setServer(e.target.value); setProblem(null); }} />
+      <input className="field" type="text" placeholder="Username" aria-label="Username" spellCheck={false} autoCapitalize="off" autoComplete="off" value={username} disabled={busy} onChange={(e) => { setUsername(e.target.value); setProblem(null); }} />
+      <input className="field" type="password" placeholder="Password" aria-label="Password" autoComplete="off" value={password} disabled={busy} onChange={(e) => { setPassword(e.target.value); setProblem(null); }} />
+      {problem ? (
+        <p className="cx-subscribe-note is-problem" role="alert">{problem}</p>
+      ) : (
+        <p className="cx-subscribe-note">The password is kept in your system’s keyring, and only ever sent to this server.</p>
+      )}
+      <div className="cx-subscribe-actions">
+        <button type="button" className="quiet" onClick={onCancel}>Cancel</button>
+        <button type="submit" className="primary" disabled={!ready} aria-busy={busy}>Add</button>
+      </div>
+      <div className="cx-subscribe-presets" role="group" aria-label="Preconfigured servers">
+        <span className="cx-subscribe-note">Preconfigured</span>
+        <button type="button" className="quiet" disabled={busy} onClick={onNextcloud}>Nextcloud Server</button>
       </div>
     </form>
   );

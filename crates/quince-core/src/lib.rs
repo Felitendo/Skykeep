@@ -9,6 +9,7 @@ pub mod backup;
 pub mod calendar;
 pub mod changes;
 pub mod contacts;
+pub mod dav;
 pub mod drive;
 pub mod export;
 pub mod files;

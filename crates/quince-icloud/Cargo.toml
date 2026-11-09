@@ -13,6 +13,8 @@ serde_json.workspace = true
 thiserror = "2"
 jiff = "0.2.37"
 plist = "1.10"
+# CalDAV answers (caldav.rs). The version plist already brings.
+quick-xml = "0.42"
 base64 = "0.22"
 flate2 = "1"
 uuid = { workspace = true }
