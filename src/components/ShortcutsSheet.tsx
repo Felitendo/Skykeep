@@ -99,13 +99,16 @@ export const SHORTCUTS: { app: string; key: string; rows: Row[] }[] = [
 export function ShortcutsSheet({ front, onClose }: { front: string | null; onClose: () => void }) {
   const sheetRef = useRef<HTMLDivElement | null>(null);
   useModalFocus(sheetRef);
-  const groups = [...SHORTCUTS].sort((a, b) => Number(b.key === front && !!front) - Number(a.key === front && !!front));
+  // An app's own window shows its own keys and those that work everywhere, nothing of the
+  // other five apps (each is a window of its own); Skykeep's window, the overview, shows all.
+  const app = SHORTCUTS.find((g) => g.key !== "" && g.key === front);
+  const groups = app ? [app, ...SHORTCUTS.filter((g) => g.key === "")] : SHORTCUTS;
   return (
     <Portal>
       <div className="modal-veil" onClick={onClose}>
         <div
           ref={sheetRef}
-          className="modal-sheet shortcuts-sheet"
+          className={`modal-sheet shortcuts-sheet${app ? " is-one" : ""}`}
           role="dialog"
           aria-modal="true"
           aria-labelledby="shortcuts-title"

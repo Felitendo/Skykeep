@@ -104,6 +104,8 @@ pooled "sign out"         node .uiverify/signout.mjs
 pooled "calendar edits"   node .uiverify/calendar-edits.mjs
 pooled "sidebar button"   node .uiverify/side-pane.mjs
 pooled "popover on screen" node .uiverify/calendar-popover-fit.mjs
+pooled "shortcuts fit"    node .uiverify/shortcuts-fit.mjs
+pooled "webkit: shortcuts fit" env ENGINE=webkit node .uiverify/shortcuts-fit.mjs
 pooled "updates"          node .uiverify/updates.mjs
 pooled "ui renders"       node .uiverify/shots.mjs
 pooled "nav behaviour"    node .uiverify/assert.mjs

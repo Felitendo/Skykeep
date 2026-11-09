@@ -512,12 +512,17 @@ textarea.field { padding-block: 5px; resize: vertical; }
 .confirm-actions.is-stacked { grid-template-columns: 1fr; }
 .confirm-actions > button { width: 100%; }
 
-/* Keyboard Shortcuts (Ctrl+/): the apps in two columns where there is room, each a quiet
-   heading over its rows — the action, then its keys as small caps of the system's keycaps. */
-.shortcuts-sheet { width: min(760px, 94vw); max-height: min(640px, 88vh); }
+/* Keyboard Shortcuts (Ctrl+/): each app a quiet heading over its rows, the action, then its
+   keys as small caps of the system's keycaps. Sections sit in a grid that scrolls as one: laid
+   out in CSS columns inside a scrolling box, a short window poured the overflow into columns
+   off the right edge, rows cut mid-line and out of reach. Solid, not glass: a sheet of text
+   over a note's text read as two. */
+.shortcuts-sheet { width: min(760px, 94vw); max-height: min(640px, 88vh); background: var(--bg); }
+.shortcuts-sheet.is-one { width: min(460px, 94vw); }
 .shortcuts-groups {
   min-height: 0; overflow-y: auto; margin: 0 -22px; padding: 2px 22px 4px;
-  columns: 2 300px; column-gap: 32px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); column-gap: 32px;
+  align-items: start;
 }
 .shortcuts-groups:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 .shortcuts-groups section { break-inside: avoid; padding-bottom: 14px; }

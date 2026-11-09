@@ -21,12 +21,12 @@ for (const scheme of ["light", "dark"]) {
   await openScreen(page, "Calendar");
   await page.waitForTimeout(300);
 
-  // ── Ctrl+/ : every app's keys, the one in front first ──
+  // ── Ctrl+/ : this app's keys and those that work everywhere, nothing of the other apps ──
   await page.keyboard.press("Control+/");
   const sheet = page.getByRole("dialog", { name: "Keyboard Shortcuts" });
   await sheet.waitFor();
   const groups = await sheet.locator("h3").allInnerTexts();
-  ok(groups[0] === "Calendar" && groups.includes("Everywhere") && groups.length === 7, `${scheme}: the sheet lists every app, Calendar first  ${JSON.stringify(groups)}`);
+  ok(JSON.stringify(groups) === JSON.stringify(["Calendar", "Everywhere"]), `${scheme}: Calendar's window lists Calendar's keys, then those that work everywhere  ${JSON.stringify(groups)}`);
   ok((await sheet.locator(".shortcuts-row", { hasText: "Settings" }).locator("kbd").allInnerTexts()).join("+") === "Ctrl+,", `${scheme}: it names Ctrl+, for Settings`);
   const box = await sheet.boundingBox();
   ok(box && box.width <= 760 && box.height <= 820 * 0.88 + 1, `${scheme}: it fits the window  ${JSON.stringify(box)}`);
