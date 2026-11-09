@@ -2389,12 +2389,24 @@ mod listed_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let answered = tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let (mut socket, _) = listener.accept().await.unwrap();
+            // The request read first, as a server does: Windows resets a socket closed with
+            // unread data in it, and the client saw "connection aborted" (10053), not the answer.
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..n]);
+            }
             socket
                 .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
                 .await
                 .unwrap();
+            socket.shutdown().await.unwrap();
         });
         let own = http
             .get(format!("http://127.0.0.1:{port}/"))
