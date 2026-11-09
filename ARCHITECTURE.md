@@ -57,13 +57,13 @@ own kind of change in the queue, with its own `lay` and `send`.
 
 ## Calendar accounts other than iCloud
 
-A Nextcloud, Google or other CalDAV account (`src-tauri/src/dav.rs`) is read into the same `calendars` and
+A Nextcloud or CalDAV account (`src-tauri/src/dav.rs`) is read into the same `calendars` and
 `events` tables, so every screen, search, alerts and the outbox work as they do for iCloud. Its
 guids begin `quince:dav:`. Beside them, `dav_resources` keeps each event's iCalendar text as
 the server holds it. A change is made to that text, a line at a time
 (`crates/quince-icloud/src/ical_edit.rs`), so nothing Skykeep has no field for is lost, and
 sent with `If-Match`. Each account has its own outbox queue, so a server that is down holds up
-only its own changes. `caldav.rs` speaks the protocol; `nextcloud.rs` and `google.rs` are the browser sign-ins.
+only its own changes. `caldav.rs` speaks the protocol; `nextcloud.rs` is the browser sign-in.
 
 ## Windows and apps
 

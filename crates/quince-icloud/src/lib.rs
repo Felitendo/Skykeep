@@ -24,7 +24,6 @@ pub mod contacts;
 pub mod courier;
 pub mod drive;
 pub mod drive_changes;
-pub mod google;
 pub mod ical_edit;
 pub mod markdown;
 pub mod mergeable;

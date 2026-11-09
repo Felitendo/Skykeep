@@ -125,41 +125,6 @@ ok(await form.count() === 0 && await caldav.count() === 0, "signing in again, Ca
 const calendarsOffered = await page.evaluate(() => (window.__cals ?? []).filter((c) => c.writable).map((c) => c.title));
 ok(calendarsOffered.includes("Familie"), "a writable account calendar is offered for new events");
 
-// Google: the same panel's other preset, the OAuth client asked for once.
-await addMenu(/Add CalDAV Account/);
-const google = page.getByRole("form", { name: "Set Up Google Calendar" });
-await caldav.getByRole("button", { name: "Google Calendar" }).click();
-await page.waitForTimeout(100);
-ok(await google.isVisible() && await caldav.count() === 0, "the Google preset opens its own panel");
-ok(await google.getByRole("button", { name: "Continue" }).isDisabled(), "nothing to continue with until there is a client ID");
-ok((await google.getByRole("link", { name: "Google Cloud" }).getAttribute("href"))?.startsWith("https://console.cloud.google.com/"), "it says where a client is made");
-await page.evaluate(() => { window.__davFails = "That isn’t an OAuth client ID. It ends in .apps.googleusercontent.com."; });
-await google.getByRole("textbox", { name: "OAuth client ID" }).fill("wrong");
-await google.getByRole("button", { name: "Continue" }).click();
-await page.waitForTimeout(200);
-ok(/isn’t an OAuth client ID/.test(await google.getByRole("alert").innerText().catch(() => "")), "a wrong client ID is said where it was typed");
-await page.evaluate(() => { window.__davFails = null; });
-await google.getByRole("textbox", { name: "OAuth client ID" }).fill("abc.apps.googleusercontent.com");
-await google.getByLabel("Client secret").fill("shh");
-await google.getByRole("button", { name: "Continue" }).click();
-await page.waitForTimeout(200);
-ok((await writes()).some((w) => w.google?.clientId === "abc.apps.googleusercontent.com" && w.google.secret), "the sign-in starts with that client");
-ok(/in your browser/.test(await google.getByRole("status").innerText().catch(() => "")), "the panel says to sign in in the browser");
-await page.evaluate(() => { window.__davApproved = true; });
-await page.waitForTimeout(500);
-ok(await google.count() === 0 && await side.getByRole("button", { name: "Google", exact: true }).isVisible(), "signed in, the account has its own heading");
-ok(await side.getByText("Felix Gmail").isVisible(), "its calendars are listed");
-
-// A second time the client is known, and only the sign-in is left.
-await addMenu(/Add CalDAV Account/);
-await caldav.getByRole("button", { name: "Google Calendar" }).click();
-await page.waitForTimeout(100);
-ok(await google.getByRole("textbox").count() === 0 && await google.getByRole("button", { name: "Continue" }).isEnabled(), "a known client isn't asked for again");
-await google.getByRole("button", { name: "Back" }).click();
-await page.waitForTimeout(100);
-ok(await caldav.isVisible(), "Back returns to the CalDAV panel");
-await caldav.getByRole("button", { name: "Cancel" }).click();
-
 // Let go.
 await heading.click({ button: "right" });
 await page.getByRole("menuitem", { name: "Remove Account" }).click();

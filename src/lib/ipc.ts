@@ -1510,7 +1510,7 @@ export const calendarFeedsApi = {
 /** A Nextcloud or CalDAV account. Its password is in the system keyring, and never comes here. */
 export type DavAccount = {
   id: string;
-  kind: "nextcloud" | "caldav" | "google";
+  kind: "nextcloud" | "caldav";
   title: string;
   server: string;
   username: string;
@@ -1536,14 +1536,10 @@ export const davApi = {
   remove: (id: string) => invoke<void>("dav_remove", { id }),
   /** Starts a sign-in: the server's own page opens in the browser. */
   nextcloudBegin: (server: string) => invoke<string>("nextcloud_begin", { server }),
+  nextcloudReopen: () => invoke<void>("nextcloud_reopen"),
   /** Answers once the person has approved Skykeep in the browser. */
   nextcloudFinish: () => invoke<DavAccount>("nextcloud_finish"),
-  /** Google's own page opens in the browser. No client ID: the one a Google account here has. */
-  googleBegin: (clientId: string | null, clientSecret: string | null) =>
-    invoke<void>("google_begin", { clientId, clientSecret }),
-  googleFinish: () => invoke<DavAccount>("google_finish"),
-  signInReopen: () => invoke<void>("dav_sign_in_reopen"),
-  signInCancel: () => invoke<void>("dav_sign_in_cancel"),
+  nextcloudCancel: () => invoke<void>("nextcloud_cancel"),
   caldavAdd: (server: string, username: string, password: string) =>
     invoke<DavAccount>("caldav_add", { server, username, password }),
 };

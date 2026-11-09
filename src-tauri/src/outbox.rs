@@ -2026,11 +2026,9 @@ async fn drain_accounts(app: &AppHandle) -> Outcome {
         }
         // A refused password asked again looks like someone guessing it: kept for the sign-in.
         let ready = !crate::dav::waiting_for_sign_in(&account) && crate::same_account(app).await;
-        let remote = if ready {
-            crate::dav::remote_of(app, &account).await.ok()
-        } else {
-            None
-        };
+        let remote = ready
+            .then(|| crate::dav::remote_of(app, &account).ok())
+            .flatten();
         let (Some(remote), Some(owner)) = (remote, owner.as_deref()) else {
             outcome = either(outcome, Outcome::Later);
             continue;

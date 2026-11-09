@@ -39,7 +39,7 @@ Open Skykeep and your six apps are right there, each showing what it holds, with
     <td width="50%" valign="top"><p align="center"><img src="packaging/icons/apps/reminders-256.png" width="64" alt=""><br><b>Skykeep Reminders</b><br><sub>Smart lists, subtasks, tags and alerts.</sub></p><a href="docs/media/reminders-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/reminders-dark.webp"><img src="docs/media/reminders-light.webp" alt="Reminders with lists, sections and subtasks"></picture></a></td>
   </tr>
   <tr>
-    <td width="50%" valign="top"><p align="center"><img src="packaging/icons/apps/calendar-256.png" width="64" alt=""><br><b>Skykeep Calendar</b><br><sub>Day to year views, drag to edit, time zones. Nextcloud, Google and CalDAV calendars beside iCloud’s.</sub></p><a href="docs/media/calendar-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/calendar-dark.webp"><img src="docs/media/calendar-light.webp" alt="Calendar in week view"></picture></a></td>
+    <td width="50%" valign="top"><p align="center"><img src="packaging/icons/apps/calendar-256.png" width="64" alt=""><br><b>Skykeep Calendar</b><br><sub>Day to year views, drag to edit, time zones. Nextcloud and CalDAV calendars beside iCloud’s.</sub></p><a href="docs/media/calendar-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/calendar-dark.webp"><img src="docs/media/calendar-light.webp" alt="Calendar in week view"></picture></a></td>
     <td width="50%" valign="top"><p align="center"><img src="packaging/icons/apps/contacts-256.png" width="64" alt=""><br><b>Skykeep Contacts</b><br><sub>Every field, lists, merging, vCard and CSV.</sub></p><a href="docs/media/contacts-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/contacts-dark.webp"><img src="docs/media/contacts-light.webp" alt="A full contact card"></picture></a></td>
   </tr>
   <tr>
@@ -75,7 +75,7 @@ Skykeep is a native engine written in Rust with a light Tauri window on top: one
 ## Private by design
 
 - No Skykeep servers, accounts, analytics or crash reports. Your iCloud goes between your computer and Apple only.
-- Add a Nextcloud, Google or CalDAV account and its calendars sit beside iCloud’s. That connection is locked to that account’s own servers and goes nowhere else; on Nextcloud and Google you sign in on their own page, so Skykeep never sees your password.
+- Add a Nextcloud or CalDAV account and its calendars sit beside iCloud’s. That connection is locked to your own server and goes nowhere else; on Nextcloud you sign in on its own page, so Skykeep never sees your password.
 - Your password and session live in the system keyring, the saved connection is encrypted with AES-256-GCM, and your library sits in a folder only you can read.
 - The app window can't reach the internet at all; its content policy allows only Skykeep's own engine.
 - Every line is open source, and every release is built in public with checksums and signature-checked updates.
