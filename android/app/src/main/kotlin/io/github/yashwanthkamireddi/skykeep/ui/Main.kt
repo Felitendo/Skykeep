@@ -227,6 +227,14 @@ private fun Health(name: String, last: Outcome.Last?, busy: Boolean) {
       }
       detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
       if (last?.ok == true) Text(last.said, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      if (last != null && last.onlyHere > 0) {
+        val what = if (name == "Contacts") "contact" else "event"
+        Text(
+          (if (last.onlyHere == 1) "1 $what is only on this phone." else "${last.onlyHere} ${what}s are only on this phone.") +
+            (last.why?.let { " $it" } ?: ""),
+          style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+        )
+      }
     }
   }
 }
@@ -433,5 +441,7 @@ private fun showCalendar(context: Context, account: Account, id: Long, visible: 
 }
 
 /** "5 minutes ago", in the phone's language. */
+/** "just now" under a minute (Android's own words would be "0 minutes ago"), then "5 minutes ago". */
 private fun ago(ms: Long): String =
-  DateUtils.getRelativeTimeSpanString(ms, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString().lowercase()
+  if (System.currentTimeMillis() - ms < DateUtils.MINUTE_IN_MILLIS) "just now"
+  else DateUtils.getRelativeTimeSpanString(ms, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString().lowercase()

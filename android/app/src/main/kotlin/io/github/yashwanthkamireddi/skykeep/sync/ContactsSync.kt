@@ -143,7 +143,7 @@ object ContactsSync {
         is ChangeOutcome.Failed -> {
           reason = o.reason
           // Sent again on a later sync, as it is; refused, it is left as it is here and said once.
-          if (o.later) later++ else { failed++; settled(cr, account, c.rawId, null) }
+          if (o.later) later++ else { failed++; settled(cr, account, c.rawId, null, kept = o.reason) }
         }
         null -> later++
       }
@@ -170,18 +170,31 @@ object ContactsSync {
     )
   }
 
-  /** Sent: no longer waiting, and read again from iCloud whole on the reading pass. */
-  private fun settled(cr: ContentResolver, account: Account, rawId: Long, newGuid: String?) {
+  /**
+   * Sent, or refused: no longer waiting, and read again from iCloud whole on the reading pass. A
+   * refusal's reason is kept (SYNC4) for as long as iCloud doesn't have the card, so the app says
+   * so every time rather than once.
+   */
+  private fun settled(cr: ContentResolver, account: Account, rawId: Long, newGuid: String?, kept: String? = null) {
     cr.update(
       RawContacts.CONTENT_URI.asAdapter(account),
       android.content.ContentValues().apply {
         put(RawContacts.DIRTY, 0)
         putNull(RawContacts.SYNC1)
+        if (kept != null) put(RawContacts.SYNC4, kept) else putNull(RawContacts.SYNC4)
         newGuid?.let { put(RawContacts.SOURCE_ID, it) }
       },
       "${RawContacts._ID}=?", arrayOf(rawId.toString()),
     )
   }
+
+  /** Cards iCloud couldn't take that stay on this phone alone, and the first one's reason. */
+  fun onlyHere(cr: ContentResolver, account: Account): Pair<Int, String?> =
+    cr.query(
+      RawContacts.CONTENT_URI.asAdapter(account), arrayOf(RawContacts.SYNC4),
+      "${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.ACCOUNT_NAME}=? AND ${RawContacts.DELETED}=0 AND ${RawContacts.SYNC4} IS NOT NULL",
+      arrayOf(account.type, account.name), null,
+    )?.use { c -> c.count to (if (c.moveToFirst()) c.getString(0) else null) } ?: (0 to null)
 
   private fun removeRow(cr: ContentResolver, account: Account, rawId: Long) {
     cr.delete(RawContacts.CONTENT_URI.asAdapter(account), "${RawContacts._ID}=?", arrayOf(rawId.toString()))
@@ -317,6 +330,7 @@ object ContactsSync {
           .withValue(RawContacts.SOURCE_ID, p.guid)
           .withValue(RawContacts.SYNC1, p.etag)
           .withValue(RawContacts.SYNC2, personJson(p))
+          .withValue(RawContacts.SYNC4, null)
           .withValue(RawContacts.SYNC3, FORMAT)
           .build()
         rows(p, account).forEach { ops += it.withValueBackReference(Data.RAW_CONTACT_ID, start).build() }
@@ -326,6 +340,7 @@ object ContactsSync {
           .withSelection("${RawContacts._ID}=?", arrayOf(have.id.toString()))
           .withValue(RawContacts.SYNC1, p.etag)
           .withValue(RawContacts.SYNC2, personJson(p))
+          .withValue(RawContacts.SYNC4, null)
           .withValue(RawContacts.SYNC3, FORMAT)
           .build()
         ops += ContentProviderOperation.newDelete(Data.CONTENT_URI.asAdapter(account))

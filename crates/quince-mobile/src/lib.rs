@@ -197,13 +197,78 @@ pub struct EventChange {
     pub repeat: Option<Repeat>,
 }
 
-/// How a new event repeats, in iCloud's terms: `daily`, `weekly`, `monthly` or `yearly`, every
-/// `interval`, `count` times or for ever.
+/// How a new event repeats, in iCloud's terms (the engine's `EventRepeat`): `daily`, `weekly`,
+/// `monthly` or `yearly`, every `interval`; on `week_days`, the `position` weekday of the month,
+/// `month_days` or `months`; `count` times, until the day `until`, or for ever. Made from the
+/// phone's own rule by [`read_repeat`], never by hand.
 #[derive(uniffi::Record)]
 pub struct Repeat {
     pub freq: String,
     pub interval: i64,
     pub count: Option<i64>,
+    pub week_days: Vec<String>,
+    pub position: Option<String>,
+    pub month_days: Vec<i64>,
+    pub months: Vec<i64>,
+    pub until: Option<String>,
+}
+
+/// A phone's repeat rule, read as iCloud will hold it.
+#[derive(uniffi::Enum)]
+pub enum RepeatRead {
+    /// It ends before it would happen a second time: a one-off.
+    Once,
+    Repeats {
+        repeat: Repeat,
+    },
+    /// iCloud's repeat can't hold it; the sentence says why, for the person.
+    Refused {
+        reason: String,
+    },
+}
+
+/// The phone's repeat rule (its `RRULE`, such as `FREQ=MONTHLY;BYDAY=2TU`) for an event
+/// starting at `starts_at` (Unix seconds; an all-day event's midnight on `phone_zone`), on its
+/// own clock `timezone` or the phone's: read by the same engine code that reads an .ics file or
+/// a CalDAV calendar, so a rule means one thing everywhere.
+#[uniffi::export]
+pub fn read_repeat(
+    rule: String,
+    starts_at: i64,
+    all_day: bool,
+    timezone: Option<String>,
+    phone_zone: String,
+) -> RepeatRead {
+    let zone = |name: &str| jiff::tz::TimeZone::get(name).ok();
+    let here = zone(&phone_zone).unwrap_or(jiff::tz::TimeZone::UTC);
+    let own = if all_day {
+        None
+    } else {
+        timezone.as_deref().and_then(zone)
+    };
+    let clock = own.unwrap_or(here);
+    let Ok(at) = jiff::Timestamp::from_second(starts_at) else {
+        return RepeatRead::Refused {
+            reason: "Its start can’t be read.".into(),
+        };
+    };
+    let first = at.to_zoned(clock.clone()).datetime();
+    match quince_icloud::rrule::from_rrule(&rule, first, &clock, all_day) {
+        Ok(None) => RepeatRead::Once,
+        Ok(Some(r)) => RepeatRead::Repeats {
+            repeat: Repeat {
+                freq: r.freq,
+                interval: r.interval,
+                count: r.count,
+                week_days: r.week_days,
+                position: r.position,
+                month_days: r.month_days,
+                months: r.months,
+                until: r.until,
+            },
+        },
+        Err(reason) => RepeatRead::Refused { reason },
+    }
 }
 
 /// An iCloud calendar, as Android's Calendar will list it.
@@ -690,6 +755,11 @@ impl Account {
                             freq: r.freq.clone(),
                             interval: r.interval,
                             count: r.count,
+                            week_days: r.week_days.clone(),
+                            position: r.position.clone(),
+                            month_days: r.month_days.clone(),
+                            months: r.months.clone(),
+                            until: r.until.clone(),
                         });
                         cal.put_event_full(
                             &event_of(ev, &change.guid, None),

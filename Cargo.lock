@@ -4334,6 +4334,7 @@ dependencies = [
 name = "quince-mobile"
 version = "0.1.20"
 dependencies = [
+ "jiff",
  "quince-auth",
  "quince-core",
  "quince-icloud",

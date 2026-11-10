@@ -56,11 +56,13 @@ private class Adapter(context: Context) : AbstractThreadedSyncAdapter(context, t
         add("${done.calendars} calendars, ${window.events.size} events · ${done.added} added, ${done.updated} updated, ${done.removed} removed")
         if (sent.sent > 0) add("${sent.sent} sent to iCloud")
         if (sent.later > 0) add("${sent.later} to send again")
-        if (sent.failed > 0) add("${sent.failed} not saved: ${sent.reason}")
+        if (sent.failed > 0) add("${sent.failed} not taken by iCloud: ${sent.reason}")
         if (sent.held > 0) add("${sent.held} changes on this phone held until you confirm")
         if (done.held > 0) add("${done.held} no longer in iCloud, kept on this phone until you confirm")
       }.joinToString(" · ")
-      Outcome.record(context, authority, sent.failed == 0, said, held = done.held + sent.held)
+      // The sync worked: Apple answered. What it refused stays on this phone, said separately.
+      val (here, why) = CalendarSync.onlyHere(context.contentResolver, a)
+      Outcome.record(context, authority, true, said, held = done.held + sent.held, onlyHere = here, why = why)
     } catch (x: uniffi.quince_mobile.EngineException) {
       // Apple busy or unreachable, or the session gone: Android tries again later, backing off.
       r.stats.numIoExceptions++
@@ -92,11 +94,13 @@ private class ContactsAdapter(context: Context) : AbstractThreadedSyncAdapter(co
         add("${people.size} contacts · ${done.added} added, ${done.updated} updated, ${done.removed} removed")
         if (sent.sent > 0) add("${sent.sent} sent to iCloud")
         if (sent.later > 0) add("${sent.later} to send again")
-        if (sent.failed > 0) add("${sent.failed} not saved: ${sent.reason}")
+        if (sent.failed > 0) add("${sent.failed} not taken by iCloud: ${sent.reason}")
         if (sent.held > 0) add("${sent.held} changes on this phone held until you confirm")
         if (done.held > 0) add("${done.held} no longer in iCloud, kept on this phone until you confirm")
       }.joinToString(" · ")
-      Outcome.record(context, authority, sent.failed == 0, said, held = done.held + sent.held)
+      // The sync worked: Apple answered. What it refused stays on this phone, said separately.
+      val (here, why) = ContactsSync.onlyHere(context.contentResolver, a)
+      Outcome.record(context, authority, true, said, held = done.held + sent.held, onlyHere = here, why = why)
     } catch (x: uniffi.quince_mobile.EngineException) {
       // Apple busy or unreachable, or the session gone: Android tries again later, backing off.
       r.stats.numIoExceptions++

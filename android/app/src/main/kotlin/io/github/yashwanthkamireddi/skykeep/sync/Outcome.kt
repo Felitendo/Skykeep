@@ -11,18 +11,27 @@ import android.content.SharedPreferences
 object Outcome {
   private const val FILE = "sync-outcome"
 
-  /** `okAt`: the last time it synced cleanly, which the error wording names. */
-  data class Last(val at: Long, val ok: Boolean, val said: String, val okAt: Long)
+  /**
+   * `okAt`: the last time it synced cleanly, which the error wording names. `onlyHere`: how many
+   * items iCloud couldn't take stay on this phone alone, and `why` (the first one's reason): said
+   * for as long as it is true, not only by the sync that found it.
+   */
+  data class Last(val at: Long, val ok: Boolean, val said: String, val okAt: Long, val onlyHere: Int = 0, val why: String? = null)
 
   private fun prefs(context: Context): SharedPreferences =
     context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
-  fun record(context: Context, authority: String, ok: Boolean, said: String, held: Int = 0) {
+  fun record(
+    context: Context, authority: String, ok: Boolean, said: String, held: Int = 0,
+    onlyHere: Int = 0, why: String? = null,
+  ) {
     prefs(context).edit()
       .putLong("$authority.at", System.currentTimeMillis())
       .putBoolean("$authority.ok", ok)
       .putString("$authority.said", said)
       .putInt("$authority.held", held)
+      .putInt("$authority.onlyHere", onlyHere)
+      .putString("$authority.why", why)
       .apply { if (ok) putLong("$authority.okAt", System.currentTimeMillis()) }
       .apply()
   }
@@ -46,7 +55,10 @@ object Outcome {
   fun last(context: Context, authority: String): Last? {
     val p = prefs(context)
     val said = p.getString("$authority.said", null) ?: return null
-    return Last(p.getLong("$authority.at", 0), p.getBoolean("$authority.ok", false), said, p.getLong("$authority.okAt", 0))
+    return Last(
+      p.getLong("$authority.at", 0), p.getBoolean("$authority.ok", false), said, p.getLong("$authority.okAt", 0),
+      p.getInt("$authority.onlyHere", 0), p.getString("$authority.why", null),
+    )
   }
 
   /** Told of every new outcome until the returned function is called. */

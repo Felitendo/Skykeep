@@ -21,7 +21,8 @@ import uniffi.quince_mobile.ChangeKind
 import uniffi.quince_mobile.ChangeOutcome
 import uniffi.quince_mobile.Ev
 import uniffi.quince_mobile.EventChange
-import uniffi.quince_mobile.Repeat
+import uniffi.quince_mobile.RepeatRead
+import uniffi.quince_mobile.readRepeat
 
 /**
  * iCloud's calendars and Android's Calendar, both ways, for the span the engine reads: each
@@ -110,11 +111,15 @@ object CalendarSync {
           deleted -> changes += Change(rowId, EventChange(ChangeKind.DELETE, sync!!, null, base, null))
           calendar == null -> refused += rowId to "This event's calendar isn't an iCloud calendar."
           sync == null -> {
-            val rule = c.getString(13)
-            val repeat = rule?.let(::repeatOf)
-            if (rule != null && repeat == null) {
-              refused += rowId to "This event repeats in a way iCloud can't keep. Set it in iCloud on another device."
+            // The phone's repeat, read by the engine as an .ics file or CalDAV rule is read.
+            val read = c.getString(13)?.takeIf { it.isNotBlank() }?.let { rule ->
+              val e = ev("")
+              readRepeat(rule, e.startsAt, e.allDay, e.timezone, ZoneId.systemDefault().id)
+            }
+            if (read is RepeatRead.Refused) {
+              refused += rowId to "${read.reason} Change its repeat to one iCloud can keep, and it will be sent."
             } else {
+              val repeat = (read as? RepeatRead.Repeats)?.repeat
               // New here: its id chosen now and kept, so a send repeated after a lost answer
               // finds the event made rather than making a second.
               val guid = java.util.UUID.randomUUID().toString().uppercase()
@@ -131,7 +136,7 @@ object CalendarSync {
     }
     for (id in dropped) removeRow(cr, account, id)
     for (id in unknown) restore(cr, account, id)
-    for ((id, _) in refused) settled(cr, account, id, null)
+    for ((id, why) in refused) settled(cr, account, id, null, kept = why)
     val refusedReason = refused.firstOrNull()?.second
     if (changes.isEmpty()) return Sent(0, refused.size, 0, refusedReason, 0)
     if (!confirmed && changes.size > MASS && changes.size * 10 > count(cr, account)) {
@@ -148,7 +153,7 @@ object CalendarSync {
         is ChangeOutcome.Recreated -> { sent++; settled(cr, account, c.rowId, o.guid) }
         is ChangeOutcome.Failed -> {
           reason = o.reason
-          if (o.later) later++ else { failed++; settled(cr, account, c.rowId, null) }
+          if (o.later) later++ else { failed++; settled(cr, account, c.rowId, null, kept = o.reason) }
         }
         null -> later++
       }
@@ -185,27 +190,31 @@ object CalendarSync {
     return total.takeIf { it > 0 }
   }
 
-  /** A repeat iCloud can keep: FREQ with INTERVAL and COUNT only; anything else (BYDAY, UNTIL…) none. */
-  private fun repeatOf(rule: String): Repeat? {
-    val parts = rule.split(';').filter { it.isNotBlank() }.associate { p -> p.substringBefore('=').uppercase() to p.substringAfter('=') }
-    if (parts.keys.any { it !in setOf("FREQ", "INTERVAL", "COUNT", "WKST") }) return null
-    val freq = when (parts["FREQ"]?.uppercase()) {
-      "DAILY" -> "daily"; "WEEKLY" -> "weekly"; "MONTHLY" -> "monthly"; "YEARLY" -> "yearly"; else -> return null
-    }
-    return Repeat(freq, parts["INTERVAL"]?.toLongOrNull() ?: 1, parts["COUNT"]?.toLongOrNull())
-  }
-
-  private fun settled(cr: ContentResolver, account: Account, rowId: Long, newGuid: String?) {
+  /**
+   * Sent, or refused: no longer waiting. A refusal's reason is kept on the row (SYNC_DATA4) for as
+   * long as iCloud doesn't have it, so the app says so every time rather than once; a row written
+   * from iCloud, or sent, has none.
+   */
+  private fun settled(cr: ContentResolver, account: Account, rowId: Long, newGuid: String?, kept: String? = null) {
     cr.update(
       Events.CONTENT_URI.asAdapter(account),
       ContentValues().apply {
         put(Events.DIRTY, 0)
         putNull(Events.SYNC_DATA1)
+        if (kept != null) put(Events.SYNC_DATA4, kept) else putNull(Events.SYNC_DATA4)
         newGuid?.let { put(Events._SYNC_ID, it) }
       },
       "${Events._ID}=?", arrayOf(rowId.toString()),
     )
   }
+
+  /** Events iCloud couldn't take that stay on this phone alone, and the first one's reason. */
+  fun onlyHere(cr: ContentResolver, account: Account): Pair<Int, String?> =
+    cr.query(
+      Events.CONTENT_URI.asAdapter(account), arrayOf(Events.SYNC_DATA4),
+      "${Events.ACCOUNT_TYPE}=? AND ${Events.ACCOUNT_NAME}=? AND ${Events.DELETED}=0 AND ${Events.SYNC_DATA4} IS NOT NULL",
+      arrayOf(account.type, account.name), null,
+    )?.use { c -> c.count to (if (c.moveToFirst()) c.getString(0) else null) } ?: (0 to null)
 
   private fun restore(cr: ContentResolver, account: Account, rowId: Long) {
     cr.update(
@@ -337,6 +346,7 @@ object CalendarSync {
     put(Events.SYNC_DATA1, e.etag)
     put(Events.SYNC_DATA2, evJson(e))
     put(Events.SYNC_DATA3, FORMAT)
+    putNull(Events.SYNC_DATA4)
     put(Events.TITLE, e.title)
     put(Events.EVENT_LOCATION, e.location)
     put(Events.DESCRIPTION, e.notes)
