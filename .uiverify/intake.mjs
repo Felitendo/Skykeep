@@ -27,7 +27,7 @@ const ARRIVALS = {
       { title: "Dentist", location: null, startsAt: base + 2 * DAY, endsAt: base + 2 * DAY + 1800, allDay: false,
         timezone: "Asia/Kolkata", notes: null, url: null, alerts: null, repeat: null, duplicate: true },
     ],
-    refused: [{ title: "Classes", reason: "It repeats on several days of the week, which Skykeep can’t set up yet." }],
+    refused: [{ title: "Standup", reason: "Its repeat skips some dates, which Skykeep can’t set up." }],
   },
   contacts: {
     kind: "contacts", file: "people.vcf", path: "/home/test/Downloads/people.vcf",
@@ -87,7 +87,7 @@ async function page(url, arrivals, stub = {}) {
   ok((await rows.count()) === 5, "every event is listed, refused ones too");
   ok(await sheet.getByText("Every week, 10 times").isVisible(), "a repeat is spelled out");
   ok(await sheet.getByText("Already in your calendar").isVisible(), "a duplicate is marked");
-  ok(await sheet.getByText(/Can’t be added\. It repeats on several days/).isVisible(), "a refusal says why");
+  ok(await sheet.getByText(/Can’t be added\. Its repeat skips some dates/).isVisible(), "a refusal says why");
   ok(await sheet.getByText(/\(Europe\/Berlin\)/).isVisible(), "an event in another zone says its zone");
   await p.screenshot({ path: ".uiverify/intake-events.png" });
 

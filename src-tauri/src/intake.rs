@@ -947,7 +947,8 @@ mod tests {
                 "Rent",
                 "Team sync",
                 "Floating lunch",
-                "Classes"
+                "Classes",
+                "Book club"
             ]
         );
 
@@ -1008,12 +1009,22 @@ mod tests {
                 ..EventRepeat::default()
             })
         );
-        assert_eq!(reasons.len(), 5, "{reasons:?}");
-        assert!(reasons[0].0 == "Book club" && reasons[0].1.contains("weekday of the month"));
-        assert!(reasons[1].0 == "Standup" && reasons[1].1.contains("skips some dates"));
-        assert!(reasons[2].0 == "Standup" && reasons[2].1.contains("one day of a repeating"));
-        assert!(reasons[3].0 == "Cancelled thing" && reasons[3].1.contains("cancelled"));
-        assert!(reasons[4].0 == "Buy milk" && reasons[4].1.contains("to-do"));
+        // Monthly on the second Tuesday, starting on one (10 Nov 2026): Apple's repeat holds that.
+        assert_eq!(
+            events[6].repeat,
+            Some(EventRepeat {
+                freq: "monthly".into(),
+                interval: 1,
+                position: Some("2nd".into()),
+                week_days: vec!["TU".into()],
+                ..EventRepeat::default()
+            })
+        );
+        assert_eq!(reasons.len(), 4, "{reasons:?}");
+        assert!(reasons[0].0 == "Standup" && reasons[0].1.contains("skips some dates"));
+        assert!(reasons[1].0 == "Standup" && reasons[1].1.contains("one day of a repeating"));
+        assert!(reasons[2].0 == "Cancelled thing" && reasons[2].1.contains("cancelled"));
+        assert!(reasons[3].0 == "Buy milk" && reasons[3].1.contains("to-do"));
     }
 
     #[test]
