@@ -2,12 +2,13 @@
 //! Apple behind the app writing them.
 //!
 //! An app saving a file never waits on the network. What it writes goes into a private copy;
-//! a few seconds after the last program closes it, the copy goes to Apple. Replacing a file
-//! is done the safe way round — the new one sent, the old one moved into Recently Deleted
-//! (where it can be put back for thirty days), the new one given its name — and a file
-//! changed on another device meanwhile is never overwritten: this computer's version is kept
-//! beside it as a conflicted copy. What is waiting to go is written down, so a restart, a
-//! crash or an hour offline loses nothing: it goes when it can.
+//! a few seconds after the last program closes it, the copy goes to Apple. A file saved over
+//! gets its new contents in place — the same file at Apple, its id, shares and version history
+//! kept, so an app on another device that follows it still has it (#24) — and a file changed
+//! on another device meanwhile is never overwritten: Apple refuses a write over a version that
+//! is no longer its own, and this computer's version is kept beside it as a conflicted copy.
+//! What is waiting to go is written down, so a restart, a crash or an hour offline loses
+//! nothing: it goes when it can.
 
 use crate::Remote;
 use quince_core::drive::DriveItem;
@@ -308,14 +309,16 @@ pub struct Sent {
     pub conflicted: bool,
 }
 
-/// One pending file sent to Apple, the safe way round (see the module's notes). `folder` is
-/// the folder's item; `staged` the bytes, named as the file is to be called; `base` the
-/// version of Apple's file this computer's copy was taken from; `ours` what this computer
-/// itself last sent under that name.
+/// One pending file sent to Apple (see the module's notes). `folder` is the folder's item;
+/// `staged` the bytes, named as the file is to be called; `base` the version of Apple's file
+/// this computer's copy was taken from; `ours` what this computer itself last sent under that
+/// name.
 ///
 /// What it replaces is found when it is sent, not when it was opened: by the version it was
-/// taken from, else by its name. It is replaced only if it is that version or this
-/// computer's own last send; anything else is a change made elsewhere, and both are kept.
+/// taken from, else by its name. It is written over only if it is that version or this
+/// computer's own last send, and Apple checks the version again in the same step as the write,
+/// so a change landing between this look and the write is refused rather than written over.
+/// Anything changed elsewhere is kept, and this computer's version goes beside it.
 ///
 /// # Errors
 /// When Apple cannot be reached or refuses; nothing is lost — the copy stays, and the send
@@ -340,60 +343,324 @@ pub async fn send(
     let same = |a: &DriveItem, b: &DriveItem| {
         a.drivewsid == b.drivewsid && a.etag == b.etag && a.size == b.size
     };
-    let changed_elsewhere = current
-        .as_ref()
-        .is_some_and(|c| !(base.is_some_and(|b| same(b, c)) || ours.is_some_and(|o| same(o, c))));
-    if changed_elsewhere {
-        // Both kept: this computer's beside the other device's, never over it.
-        let copy = staged.with_file_name(conflicted(&name, SystemTime::now()));
-        std::fs::copy(staged, &copy).map_err(|e| e.to_string())?;
-        let sent = remote.upload(folder, &copy).await;
-        let _ = std::fs::remove_file(&copy);
+    let Some(current) = current else {
+        // Nothing there by that version or name: a new file.
         return Ok(Sent {
-            item: sent?,
-            conflicted: true,
+            item: remote.upload(folder, staged).await?,
+            conflicted: false,
         });
-    }
-    let new = remote.upload(folder, staged).await?;
-    if let Some(old) = current {
-        // The old one into Recently Deleted, then the new one given its name: if anything
-        // fails between, both are still there to be found — nothing is ever lost. Once the new
-        // bytes are at Apple, a step after that is tried again where it stands: failing the
-        // whole send uploaded them again, and left a "name 2" beside the result each time.
-        let mut tries = 0u64;
-        while let Err(e) = remote.delete(&old).await {
-            tries += 1;
-            if tries >= 3 {
-                return Err(e);
+    };
+    let ours_to_replace =
+        base.is_some_and(|b| same(b, &current)) || ours.is_some_and(|o| same(o, &current));
+    if ours_to_replace {
+        // Written over at the version just read; refused by Apple if another device got there
+        // first in the meantime.
+        if let Some(item) = remote.replace(&current, staged).await? {
+            if item.display_name() == name {
+                return Ok(Sent {
+                    item,
+                    conflicted: false,
+                });
             }
-            tokio::time::sleep(std::time::Duration::from_millis(800 * tries)).await;
-        }
-        if new.display_name() != name {
+            // Renamed here while it waited (an earlier send still on its way when it was):
+            // the same file takes its new name. Its contents are at Apple already, so a step
+            // that fails is tried again where it stands, never by sending them again.
             let mut tries = 0u64;
-            while let Err(e) = remote.rename(&new, &name).await {
+            while let Err(e) = remote.rename(&item, &name).await {
                 tries += 1;
                 if tries >= 3 {
                     return Err(e);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(800 * tries)).await;
             }
+            // Read back for the version the rename made; sent all the same if that fails.
+            let item = remote
+                .list(&folder.drivewsid)
+                .await
+                .ok()
+                .and_then(|after| after.into_iter().find(|i| i.drivewsid == item.drivewsid))
+                .unwrap_or(item);
+            return Ok(Sent {
+                item,
+                conflicted: false,
+            });
         }
-        // Read back for its new version; sent all the same if the listing fails.
-        let item = remote
-            .list(&folder.drivewsid)
-            .await
-            .ok()
-            .and_then(|after| after.into_iter().find(|i| i.drivewsid == new.drivewsid))
-            .unwrap_or(new);
-        return Ok(Sent {
-            item,
-            conflicted: false,
-        });
     }
+    // Both kept: this computer's beside the other device's, never over it.
+    let copy = staged.with_file_name(conflicted(&name, SystemTime::now()));
+    std::fs::copy(staged, &copy).map_err(|e| e.to_string())?;
+    let sent = remote.upload(folder, &copy).await;
+    let _ = std::fs::remove_file(&copy);
     Ok(Sent {
-        item: new,
-        conflicted: false,
+        item: sent?,
+        conflicted: true,
     })
+}
+
+#[cfg(test)]
+mod send_tests {
+    //! `send` against a stand-in for Apple that keeps its files and their versions and, as
+    //! Apple does (measured, probe `drive_modify_in_place`), refuses a write naming a version
+    //! that is no longer the file's.
+    use super::*;
+    use crate::Fut;
+
+    #[derive(Default)]
+    struct Apple {
+        files: Mutex<Vec<DriveItem>>,
+        /// Every write, in order: "replace <id>", "upload <name>", "delete <id>", "rename <id>".
+        log: Mutex<Vec<String>>,
+        /// Another device saves the file right after this computer's next look at the folder.
+        changed_after_look: Mutex<Option<String>>,
+        next: Mutex<u32>,
+    }
+
+    impl Apple {
+        fn with(files: Vec<DriveItem>) -> Self {
+            Self {
+                files: Mutex::new(files),
+                ..Self::default()
+            }
+        }
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+        fn bump(file: &mut DriveItem, size: i64) {
+            let n = file
+                .etag
+                .as_deref()
+                .unwrap_or("v0")
+                .trim_start_matches('v')
+                .parse::<u32>()
+                .unwrap_or(0);
+            file.etag = Some(format!("v{}", n + 1));
+            file.size = Some(size);
+        }
+    }
+
+    impl Remote for Apple {
+        fn list(&self, _folder: &str) -> Fut<Vec<DriveItem>> {
+            let listed = self.files.lock().unwrap().clone();
+            if let Some(id) = self.changed_after_look.lock().unwrap().take() {
+                for f in self
+                    .files
+                    .lock()
+                    .unwrap()
+                    .iter_mut()
+                    .filter(|f| f.drivewsid == id)
+                {
+                    Apple::bump(f, 999);
+                }
+            }
+            Box::pin(async move { Ok(listed) })
+        }
+        fn read(&self, _item: &DriveItem, _offset: u64, _len: u64) -> Fut<Vec<u8>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn replace(&self, item: &DriveItem, path: &Path) -> Fut<Option<DriveItem>> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("replace {}", item.drivewsid));
+            let size = i64::try_from(std::fs::metadata(path).unwrap().len()).unwrap();
+            let mut files = self.files.lock().unwrap();
+            let answer = match files.iter_mut().find(|f| f.drivewsid == item.drivewsid) {
+                Some(f) if f.etag == item.etag => {
+                    Apple::bump(f, size);
+                    Some(f.clone())
+                }
+                // Apple's OP_LOCK_FAILURE: nothing written.
+                _ => None,
+            };
+            Box::pin(async move { Ok(answer) })
+        }
+        fn upload(&self, folder: &DriveItem, path: &Path) -> Fut<DriveItem> {
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            self.log.lock().unwrap().push(format!("upload {name}"));
+            let mut next = self.next.lock().unwrap();
+            *next += 1;
+            let (stem, ext) = name
+                .rsplit_once('.')
+                .map_or((name.as_str(), None), |(s, e)| (s, Some(e)));
+            let item = DriveItem {
+                drivewsid: format!("FILE::new{next}"),
+                parent_id: Some(folder.drivewsid.clone()),
+                name: stem.into(),
+                extension: ext.map(Into::into),
+                size: Some(i64::try_from(std::fs::metadata(path).unwrap().len()).unwrap()),
+                etag: Some("v1".into()),
+                ..file("unused", "v1")
+            };
+            self.files.lock().unwrap().push(item.clone());
+            Box::pin(async move { Ok(item) })
+        }
+        fn delete(&self, item: &DriveItem) -> Fut<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("delete {}", item.drivewsid));
+            Box::pin(async { Ok(()) })
+        }
+        fn rename(&self, item: &DriveItem, _name: &str) -> Fut<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("rename {}", item.drivewsid));
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn file(id: &str, etag: &str) -> DriveItem {
+        DriveItem {
+            drivewsid: format!("FILE::{id}"),
+            parent_id: Some("FOLDER::f".into()),
+            name: "Passwords".into(),
+            extension: Some("kdbx".into()),
+            kind: "FILE".into(),
+            size: Some(10),
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: Some(etag.into()),
+        }
+    }
+
+    fn folder() -> DriveItem {
+        DriveItem {
+            drivewsid: "FOLDER::f".into(),
+            kind: "FOLDER".into(),
+            name: "f".into(),
+            extension: None,
+            size: None,
+            ..file("x", "v1")
+        }
+    }
+
+    fn staged(dir: &Path, bytes: &[u8]) -> PathBuf {
+        let path = dir.join("Passwords.kdbx");
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn run<T>(f: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// #24: a file saved over is the same file at Apple afterwards, with the new contents —
+    /// never a new file given its name with the old one sent to Recently Deleted.
+    #[test]
+    fn a_file_saved_over_keeps_its_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let apple = Apple::with(vec![file("db", "v1")]);
+        let base = file("db", "v1");
+        let sent = run(send(
+            &apple,
+            &folder(),
+            &staged(dir.path(), b"new contents"),
+            Some(&base),
+            None,
+        ))
+        .unwrap();
+        assert!(!sent.conflicted);
+        assert_eq!(sent.item.drivewsid, "FILE::db", "the same file");
+        assert_eq!(sent.item.size, Some(12));
+        assert_eq!(
+            apple.log(),
+            ["replace FILE::db"],
+            "nothing uploaded, deleted or renamed"
+        );
+        // Saved again from what was just sent: this computer's own, written over again.
+        let again = run(send(
+            &apple,
+            &folder(),
+            &staged(dir.path(), b"newer"),
+            Some(&base),
+            Some(&sent.item),
+        ))
+        .unwrap();
+        assert_eq!(
+            (again.item.drivewsid.as_str(), again.conflicted),
+            ("FILE::db", false)
+        );
+    }
+
+    /// A file changed on another device since this computer's copy was taken: kept, and this
+    /// computer's version goes beside it.
+    #[test]
+    fn a_file_changed_elsewhere_first_is_kept_and_ours_goes_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let apple = Apple::with(vec![file("db", "v2")]);
+        let sent = run(send(
+            &apple,
+            &folder(),
+            &staged(dir.path(), b"ours"),
+            Some(&file("db", "v1")),
+            None,
+        ))
+        .unwrap();
+        assert!(sent.conflicted);
+        assert_eq!(apple.log().len(), 1);
+        assert!(
+            apple.log()[0].starts_with("upload Passwords (conflicted copy "),
+            "{:?}",
+            apple.log()
+        );
+        assert_eq!(
+            apple.files.lock().unwrap()[0].etag.as_deref(),
+            Some("v2"),
+            "theirs untouched"
+        );
+    }
+
+    /// The race a look-then-write left open: another device saves between this computer's look
+    /// and its write. Apple refuses the write; theirs stays, ours goes beside it.
+    #[test]
+    fn a_change_landing_between_the_look_and_the_write_is_never_written_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let apple = Apple::with(vec![file("db", "v1")]);
+        *apple.changed_after_look.lock().unwrap() = Some("FILE::db".into());
+        let sent = run(send(
+            &apple,
+            &folder(),
+            &staged(dir.path(), b"ours"),
+            Some(&file("db", "v1")),
+            None,
+        ))
+        .unwrap();
+        assert!(sent.conflicted);
+        let log = apple.log();
+        assert_eq!(log[0], "replace FILE::db");
+        assert!(
+            log[1].starts_with("upload Passwords (conflicted copy "),
+            "{log:?}"
+        );
+        let theirs = apple.files.lock().unwrap()[0].clone();
+        assert_eq!(
+            (theirs.etag.as_deref(), theirs.size),
+            (Some("v2"), Some(999)),
+            "theirs untouched"
+        );
+    }
+
+    /// Nothing there by that version or name: a new file.
+    #[test]
+    fn a_new_file_is_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let apple = Apple::with(Vec::new());
+        let sent = run(send(
+            &apple,
+            &folder(),
+            &staged(dir.path(), b"fresh"),
+            None,
+            None,
+        ))
+        .unwrap();
+        assert!(!sent.conflicted);
+        assert_eq!(apple.log(), ["upload Passwords.kdbx"]);
+    }
 }
 
 #[cfg(test)]

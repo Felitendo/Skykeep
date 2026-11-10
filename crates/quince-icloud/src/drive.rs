@@ -3221,87 +3221,43 @@ fn millis(time: std::io::Result<std::time::SystemTime>) -> Option<i64> {
         .and_then(|d| i64::try_from(d.as_millis()).ok())
 }
 
-/// Upload one file into a folder, and prove it arrived whole.
-///
-/// Three steps, as iCloud.com does it: ask for somewhere to put the bytes, send them, then
-/// file them under a name. Every one is checked rather than trusted — the receipt must carry
-/// the checksum of exactly the bytes that were sent, and the filed document must carry it
-/// again at the same size — and the folder is read back for the document by its id. A file
-/// renamed on the way in because the name was taken ("photo 2.jpg") is found by id too, where
-/// matching by name reported it missing, and an older file of the same name could stand in
-/// for a failed one.
-pub async fn upload(
-    http: &reqwest::Client,
-    docws_root: &str,
-    drivews_root: &str,
-    params: Vec<(String, String)>,
-    folder_id: &str,
-    path: &std::path::Path,
-    progress: Progress,
-) -> Result<DriveItem> {
-    // A busy Drive at any step is met again from the start — a new slot, the bytes again —
-    // so a file half sent is never filed, and a moment's overload costs nothing.
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let result = upload_once(
-            http,
-            docws_root,
-            drivews_root,
-            params.clone(),
-            folder_id,
-            path,
-            progress.clone(),
-        )
-        .await;
-        match result {
-            Err(Error::Refused(ref m)) if m == BUSY && attempt < 3 => {
-                tokio::time::sleep(std::time::Duration::from_secs(3 * attempt)).await;
-            }
-            other => return other,
-        }
-    }
+/// A file's bytes at Apple, checked and ready to be filed: steps 1 and 2 of [`upload`], shared
+/// with [`replace_contents`].
+struct SentBytes {
+    /// The slot's document id: a new file's own id, when it is filed as one.
+    document_id: String,
+    /// Apple's account of what it received (`singleFile`): the receipt and checksums filing
+    /// names.
+    single: Value,
+    /// The checksum of exactly the bytes sent, in Apple's form.
+    local: String,
+    size: u64,
+    meta: std::fs::Metadata,
 }
 
-/// What a busy Drive is said to be, in one place so a retry can know it.
-const BUSY: &str = "iCloud Drive is busy right now — try this one again in a minute.";
-
-async fn upload_once(
+/// Somewhere to put the bytes asked for, the bytes sent, and Apple's receipt checked against
+/// what was sent: never filed unless Apple received exactly the file.
+async fn send_bytes(
     http: &reqwest::Client,
-    docws_root: &str,
-    drivews_root: &str,
-    params: Vec<(String, String)>,
-    folder_id: &str,
+    docws: &str,
+    zone: &str,
+    params: &[(String, String)],
+    name: &str,
     path: &std::path::Path,
     progress: Progress,
-) -> Result<DriveItem> {
+) -> Result<SentBytes> {
     use tokio::io::AsyncReadExt;
-
-    if folder_id.trim().is_empty() {
-        return Err(Error::Protocol("no folder was named to put this in".into()));
-    }
-    // Filed in the folder's own zone. An app library (Obsidian's vault, Shortcuts', Keynote's)
-    // is a zone of its own, and `update/documents` names the folder by a bare id — so asked
-    // of the documents zone, Apple looked for that id there and refused with "out of order
-    // children ... parents were missing" (rclone/rclone#9729). Asked of the folder's own zone,
-    // the zone in the path says where the id is (rclone/rclone#9731).
-    let zone = zone_of(folder_id).unwrap_or(DOCUMENTS_ZONE);
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| Error::Protocol("that file has no name to give it".into()))?
-        .to_string();
+    let name = name.to_string();
     let meta = tokio::fs::metadata(path)
         .await
         .map_err(|e| Error::Protocol(format!("could not read {name}: {e}")))?;
     let size = meta.len();
-    let docws = docws_root.trim_end_matches('/');
 
     // 1. Somewhere to put the bytes.
     let offered: Value = post_json(
         http,
         &format!("{docws}/ws/{zone}/upload/web"),
-        &params,
+        params,
         &json!({
             "filename": name,
             "type": "FILE",
@@ -3392,6 +3348,91 @@ async fn upload_once(
             "the bytes Apple received for {name} are not the file's, so it was not filed"
         )));
     }
+    Ok(SentBytes {
+        document_id: document_id.to_string(),
+        single: single.clone(),
+        local,
+        size,
+        meta,
+    })
+}
+
+/// Upload one file into a folder, and prove it arrived whole.
+///
+/// Three steps, as iCloud.com does it: ask for somewhere to put the bytes, send them, then
+/// file them under a name. Every one is checked rather than trusted — the receipt must carry
+/// the checksum of exactly the bytes that were sent, and the filed document must carry it
+/// again at the same size — and the folder is read back for the document by its id. A file
+/// renamed on the way in because the name was taken ("photo 2.jpg") is found by id too, where
+/// matching by name reported it missing, and an older file of the same name could stand in
+/// for a failed one.
+pub async fn upload(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: Vec<(String, String)>,
+    folder_id: &str,
+    path: &std::path::Path,
+    progress: Progress,
+) -> Result<DriveItem> {
+    // A busy Drive at any step is met again from the start — a new slot, the bytes again —
+    // so a file half sent is never filed, and a moment's overload costs nothing.
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let result = upload_once(
+            http,
+            docws_root,
+            drivews_root,
+            params.clone(),
+            folder_id,
+            path,
+            progress.clone(),
+        )
+        .await;
+        match result {
+            Err(Error::Refused(ref m)) if m == BUSY && attempt < 3 => {
+                tokio::time::sleep(std::time::Duration::from_secs(3 * attempt)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// What a busy Drive is said to be, in one place so a retry can know it.
+const BUSY: &str = "iCloud Drive is busy right now — try this one again in a minute.";
+
+async fn upload_once(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: Vec<(String, String)>,
+    folder_id: &str,
+    path: &std::path::Path,
+    progress: Progress,
+) -> Result<DriveItem> {
+    if folder_id.trim().is_empty() {
+        return Err(Error::Protocol("no folder was named to put this in".into()));
+    }
+    // Filed in the folder's own zone. An app library (Obsidian's vault, Shortcuts', Keynote's)
+    // is a zone of its own, and `update/documents` names the folder by a bare id — so asked
+    // of the documents zone, Apple looked for that id there and refused with "out of order
+    // children ... parents were missing" (rclone/rclone#9729). Asked of the folder's own zone,
+    // the zone in the path says where the id is (rclone/rclone#9731).
+    let zone = zone_of(folder_id).unwrap_or(DOCUMENTS_ZONE);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::Protocol("that file has no name to give it".into()))?
+        .to_string();
+    let docws = docws_root.trim_end_matches('/');
+    let SentBytes {
+        document_id,
+        single,
+        local,
+        size,
+        meta,
+    } = send_bytes(http, docws, zone, &params, &name, path, progress).await?;
     let of = |key: &str| single.get(key).cloned().unwrap_or(Value::Null);
 
     // 3. File it under a name, with the file's own dates — as Finder keeps them — rather than
@@ -3495,6 +3536,186 @@ async fn upload_once(
             "Apple accepted {name} but the folder does not hold it"
         ))),
     }
+}
+
+/// New contents for a file already in iCloud Drive, written into that same file (#24).
+///
+/// The file keeps its identity — its id, its place, its shares and Apple's history of its
+/// versions — so an app on another device that follows it by id (a password manager's
+/// database, a document left open) still has it. Saved as a new file given the old one's name,
+/// all of that was lost, and every save left a copy in Recently Deleted.
+///
+/// Apple's `modify_file` names the version written over (`etag`) and is refused when the file
+/// changed anywhere since: [`Error::Conflict`], nothing written, so a change made on another
+/// device is never written over — Apple decides that in the same step as the write, where a
+/// look first and a write after left a moment between them. Measured on a real account (probe
+/// `drive_modify_in_place`): the same id, the new bytes, nothing in Recently Deleted; a stale
+/// version refused with 409 `OP_LOCK_FAILURE` and the newer bytes kept.
+pub async fn replace_contents(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    path: &std::path::Path,
+    progress: Progress,
+) -> Result<DriveItem> {
+    // A busy Drive is met again from the start, as an upload's is.
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let result = replace_once(
+            http,
+            docws_root,
+            drivews_root,
+            params.clone(),
+            item,
+            path,
+            progress.clone(),
+        )
+        .await;
+        match result {
+            Err(Error::Refused(ref m)) if m == BUSY && attempt < 3 => {
+                tokio::time::sleep(std::time::Duration::from_secs(3 * attempt)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+async fn replace_once(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    path: &std::path::Path,
+    progress: Progress,
+) -> Result<DriveItem> {
+    let name = item.display_name();
+    if item.kind != "FILE" {
+        return Err(Error::Protocol(format!(
+            "{name} is not a file, so it has no contents to replace"
+        )));
+    }
+    let etag = item
+        .etag
+        .as_deref()
+        .filter(|e| !e.is_empty())
+        .ok_or_else(|| Error::Protocol(format!("{name} has no version to write over")))?;
+    let zone = zone_of(&item.drivewsid).unwrap_or(DOCUMENTS_ZONE);
+    let document_id = docwsid_of(&item.drivewsid);
+    let docws = docws_root.trim_end_matches('/');
+    let sent = send_bytes(http, docws, zone, &params, &name, path, progress).await?;
+    let of = |key: &str| sent.single.get(key).cloned().unwrap_or(Value::Null);
+    let modified = millis(sent.meta.modified())
+        .unwrap_or_else(|| millis(Ok(std::time::SystemTime::now())).unwrap_or(0));
+    let filed = post_json(
+        http,
+        &format!("{docws}/ws/{zone}/update/documents"),
+        &params,
+        &json!({
+            "command": "modify_file",
+            "document_id": document_id,
+            "etag": etag,
+            "mtime": modified,
+            "data": {
+                "receipt": of("receipt"),
+                "reference_signature": of("referenceChecksum"),
+                "signature": of("fileChecksum"),
+                "wrapping_key": of("wrappingKey"),
+                "size": of("size"),
+            },
+        }),
+    )
+    .await;
+    match filed {
+        Ok(reply) => {
+            let stored = filed_document(&reply, &sent.local, sent.size, &name, zone)?;
+            if stored != item.drivewsid {
+                return Err(Error::Protocol(format!(
+                    "Apple filed the new {name} as another file"
+                )));
+            }
+        }
+        // No answer is not "not written": Apple may have written it and the reply been lost.
+        // Apple says which bytes the file holds now: this send's, and it went; the version it
+        // was sent over, unchanged, and it is sent again later; anything else, another device
+        // changed it — taken for a send of ours, the retry kept a conflicted copy of itself.
+        Err(e @ (Error::Network(_) | Error::Refused(_))) => {
+            match holding(http, docws, &params, zone, document_id).await {
+                Ok(Holding { signature, .. })
+                    if signature.as_deref() == Some(sent.local.as_str()) => {}
+                Ok(Holding { version, .. }) if version.as_deref() == Some(etag) => return Err(e),
+                Ok(_) => return Err(Error::Conflict),
+                Err(_) => return Err(e),
+            }
+        }
+        Err(e) => return Err(e),
+    }
+
+    // Read back by id, as an upload is: Apple answers 200 to writes it did not make.
+    let mut tries = 0u64;
+    let found = loop {
+        match item_details(http, drivews_root, &params, &item.drivewsid).await {
+            Ok(found) => break found,
+            Err(e) if tries >= 2 => return Err(e),
+            Err(_) => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(700 * tries)).await;
+            }
+        }
+    };
+    match found {
+        Some(now) if now.size == Some(sent.size as i64) => Ok(now),
+        Some(_) => Err(Error::Protocol(format!(
+            "Apple holds {name} at a different size from the file sent"
+        ))),
+        None => Err(Error::Protocol(format!(
+            "{name} is no longer in iCloud Drive"
+        ))),
+    }
+}
+
+/// Which bytes a file holds at Apple now, and its version, as `download/by_id` says: the
+/// checksum is the one an upload's receipt gives for the same bytes (measured).
+struct Holding {
+    signature: Option<String>,
+    version: Option<String>,
+}
+
+async fn holding(
+    http: &reqwest::Client,
+    docws: &str,
+    params: &[(String, String)],
+    zone: &str,
+    document_id: &str,
+) -> Result<Holding> {
+    let response = http
+        .get(format!("{docws}/ws/{zone}/download/by_id"))
+        .query(params)
+        .query(&[("document_id", document_id)])
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(Error::Protocol(format!(
+            "Apple would not say what the file holds ({})",
+            response.status()
+        )));
+    }
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|e| Error::Protocol(format!("Apple's answer was not JSON: {e}")))?;
+    let text = |at: &str| {
+        body.pointer(at)
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    };
+    Ok(Holding {
+        signature: text("/data_token/signature"),
+        version: text("/double_etag"),
+    })
 }
 
 /// One item as Apple holds it now, by id (`retrieveItemDetails`, as icloud.com reads one).
@@ -3613,6 +3834,11 @@ async fn post_json(
         if status.as_u16() == 409 && text.contains("ZONE_BUSY") {
             return Err(Error::Refused(BUSY.into()));
         }
+        // A write naming a version of the item that is no longer Apple's: it changed
+        // elsewhere first, and nothing was written (measured: `modify_file` with a stale etag).
+        if status.as_u16() == 409 && text.contains("OP_LOCK_FAILURE") {
+            return Err(Error::Conflict);
+        }
         return Err(Error::Refused(match status.as_u16() {
             429 | 500..=599 => {
                 "iCloud Drive is busy right now — try this one again in a minute.".into()
@@ -3724,6 +3950,208 @@ mod upload_tests {
             starting_document_id("FOLDER::com.apple.CloudDocs::7B3F-ABCD"),
             "7B3F-ABCD"
         );
+    }
+}
+
+#[cfg(test)]
+mod replace_tests {
+    //! `replace_contents` against a stand-in for Apple, answering as the real one did
+    //! (probe `drive_modify_in_place`).
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const ID: &str = "FILE::com.apple.CloudDocs::DB";
+
+    fn item() -> DriveItem {
+        DriveItem {
+            drivewsid: ID.into(),
+            parent_id: Some("FOLDER::com.apple.CloudDocs::root".into()),
+            name: "Passwords".into(),
+            extension: Some("kdbx".into()),
+            kind: "FILE".into(),
+            size: Some(3),
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: Some("v1".into()),
+        }
+    }
+
+    /// Apple taking the bytes: a slot and the upload's receipt for `bytes`.
+    async fn takes_bytes(server: &MockServer, bytes: &[u8]) -> String {
+        let mut sum = AppleChecksum::default();
+        sum.update(bytes);
+        let sum = sum.finish();
+        Mock::given(method("POST"))
+            .and(path("/ws/com.apple.CloudDocs/upload/web"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "url": format!("{}/content", server.uri()), "document_id": "SLOT" }
+            ])))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "singleFile": { "fileChecksum": sum, "size": bytes.len(), "receipt": "r",
+                                "referenceChecksum": "ref", "wrappingKey": "k" }
+            })))
+            .mount(server)
+            .await;
+        sum
+    }
+
+    async fn holds_now(server: &MockServer, size: usize) {
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetails"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": [{
+                "drivewsid": ID, "parentId": "FOLDER::com.apple.CloudDocs::root", "name": "Passwords",
+                "extension": "kdbx", "type": "FILE", "size": size, "etag": "v2", "status": "OK"
+            }]})))
+            .mount(server)
+            .await;
+    }
+
+    async fn replace(server: &MockServer, file: &std::path::Path) -> Result<DriveItem> {
+        replace_contents(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &server.uri(),
+            vec![],
+            &item(),
+            file,
+            std::sync::Arc::new(|_, _| {}),
+        )
+        .await
+    }
+
+    /// The bytes in a folder of their own, removed when the test is done with them.
+    struct Staged(std::path::PathBuf);
+    impl Drop for Staged {
+        fn drop(&mut self) {
+            if let Some(dir) = self.0.parent() {
+                std::fs::remove_dir_all(dir).ok();
+            }
+        }
+    }
+    fn staged(bytes: &[u8]) -> (Staged, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("quince-replace-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Passwords.kdbx");
+        std::fs::write(&file, bytes).unwrap();
+        (Staged(file.clone()), file)
+    }
+
+    /// Written into the same document, at the version it was read at; the same id comes back.
+    #[tokio::test]
+    async fn new_contents_go_into_the_same_document_at_its_version() {
+        let server = MockServer::start().await;
+        let sum = takes_bytes(&server, b"new db").await;
+        Mock::given(method("POST"))
+            .and(path("/ws/com.apple.CloudDocs/update/documents"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [{ "document": { "document_id": "DB", "size": 6,
+                    "status": { "status_code": 0 }, "data": { "signature": sum } } }]
+            })))
+            .mount(&server)
+            .await;
+        holds_now(&server, 6).await;
+        let (_dir, file) = staged(b"new db");
+        let now = replace(&server, &file).await.expect("written in place");
+        assert_eq!(now.drivewsid, ID);
+        let reqs = server.received_requests().await.unwrap();
+        let filed = reqs
+            .iter()
+            .find(|r| r.url.path().ends_with("/update/documents"))
+            .unwrap();
+        let body: Value = serde_json::from_slice(&filed.body).unwrap();
+        assert_eq!(body["command"], "modify_file");
+        assert_eq!(
+            body["document_id"], "DB",
+            "the file's own id, never the slot's"
+        );
+        assert_eq!(body["etag"], "v1", "the version it was read at");
+        assert!(
+            body.get("allow_conflict").is_none(),
+            "a stale version must be refused"
+        );
+        assert_eq!(body["data"]["signature"], sum.as_str());
+    }
+
+    /// Changed on another device since: Apple's 409 OP_LOCK_FAILURE is a conflict, never a
+    /// name clash and never retried as a write over theirs.
+    #[tokio::test]
+    async fn a_version_changed_elsewhere_is_a_conflict() {
+        let server = MockServer::start().await;
+        takes_bytes(&server, b"ours").await;
+        Mock::given(method("POST"))
+            .and(path("/ws/com.apple.CloudDocs/update/documents"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "error_code": "OP_LOCK_FAILURE", "serverErrorCode": "OP_LOCK_FAILURE",
+                "reason": "client oplock error updating record"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (_dir, file) = staged(b"ours");
+        assert!(matches!(
+            replace(&server, &file).await,
+            Err(Error::Conflict)
+        ));
+    }
+
+    /// The answer lost on the way back: what Apple holds says whether the write went.
+    #[tokio::test]
+    async fn a_lost_answer_is_settled_by_what_apple_holds() {
+        for (holding, version, expect) in [
+            ("ours", "v2", "written"),
+            ("theirs", "v1", "again"),
+            ("theirs", "v3", "conflict"),
+        ] {
+            let server = MockServer::start().await;
+            let sum = takes_bytes(&server, b"ours").await;
+            Mock::given(method("POST"))
+                .and(path("/ws/com.apple.CloudDocs/update/documents"))
+                // The write's answer never comes back in time: the connection gives up on it.
+                .respond_with(
+                    ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(5)),
+                )
+                .mount(&server)
+                .await;
+            let signature = if holding == "ours" {
+                sum.clone()
+            } else {
+                "OTHER".into()
+            };
+            Mock::given(method("GET"))
+                .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data_token": { "url": "u", "signature": signature }, "double_etag": version
+                })))
+                .mount(&server)
+                .await;
+            holds_now(&server, 4).await;
+            let (_dir, file) = staged(b"ours");
+            let impatient = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(500))
+                .build()
+                .unwrap();
+            let got = replace_contents(
+                &impatient,
+                &server.uri(),
+                &server.uri(),
+                vec![],
+                &item(),
+                &file,
+                std::sync::Arc::new(|_, _| {}),
+            )
+            .await;
+            match expect {
+                "written" => assert_eq!(got.expect("it went").drivewsid, ID),
+                "again" => assert!(matches!(got, Err(Error::Network(_))), "{got:?}"),
+                _ => assert!(matches!(got, Err(Error::Conflict)), "{got:?}"),
+            }
+        }
     }
 }
 

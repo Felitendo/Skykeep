@@ -989,8 +989,9 @@ impl Inner {
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                                     .bind(ino, &sent.item);
-                                // A replace is a new document at Apple, with a new id: a file
-                                // chosen to be kept on this computer stays kept as its new self.
+                                // A save is written into the same file at Apple; should it
+                                // ever come back under another id, a file chosen to be kept on
+                                // this computer stays kept as its new self.
                                 if let Some(old) = p.replaces.as_ref() {
                                     if old.drivewsid != sent.item.drivewsid
                                         && me.cache.kept().chosen.contains(&old.drivewsid)
