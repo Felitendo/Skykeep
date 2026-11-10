@@ -83,6 +83,7 @@ pub struct REdit {
 #[derive(uniffi::Record)]
 pub struct RSync {
     pub lists: u32,
+    /// Open reminders, in all the lists.
     pub reminders: u32,
     /// Changes made here still waiting for Apple (it couldn't be reached).
     pub waiting: u32,
@@ -325,21 +326,26 @@ impl Account {
                     shared::send(&lock, &http, &root, params.clone(), p)
                 })
                 .await;
-            let (lists, reminders) = {
+            {
                 let _pass = PASS.lock().await;
                 shared::refresh(&lock, &http, &root, params.clone())
                     .await
-                    .map_err(failed)?
-            };
-            let waiting = lock
-                .lock()
-                .await
-                .outbox_pending(shared::REMINDERS)
+                    .map_err(failed)?;
+            }
+            // What the library holds now, not what this pass changed: a pass from a token
+            // brings only what changed ("1 reminders in 1 lists", it once said).
+            let l = lock.lock().await;
+            let lists = l
+                .reminder_lists()
                 .map_err(failed)?
-                .len();
+                .into_iter()
+                .filter(|x| x.enabled)
+                .count();
+            let open = l.reminder_counts(end_of_today()).map_err(failed)?.all;
+            let waiting = l.outbox_pending(shared::REMINDERS).map_err(failed)?.len();
             Ok(RSync {
                 lists: count(lists),
-                reminders: count(reminders),
+                reminders: count(open),
                 waiting: count(waiting),
                 refused: report.refused.into_iter().map(|(_, why)| why).collect(),
             })

@@ -109,10 +109,21 @@ object ReminderAlerts {
   /** Completed from the alert: ticked in the library at once, sent with a Reminders sync. */
   internal fun onDone(context: Context, guid: String) {
     val engine = io.github.yashwanthkamireddi.skykeep.Engine.account(context)
-    runCatching { engine.reminderTick(guid, true) }
+    // A tick that can't be recorded leaves the alert up, so it can be pressed again or opened,
+    // and says why in the log; it is never dropped quietly.
+    val ticked = runCatching { engine.reminderTick(guid, true) }
+    ticked.exceptionOrNull()?.let {
+      android.util.Log.w("Skykeep", "Completed from an alert wasn't recorded: ${(it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: it}")
+      return
+    }
     NotificationManagerCompat.from(context).cancel(guid.hashCode())
-    io.github.yashwanthkamireddi.skykeep.ui.phoneAccount(context)?.let {
-      ContentResolver.requestSync(it, REMINDERS_AUTHORITY, Bundle().apply { putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true) })
+    val account = io.github.yashwanthkamireddi.skykeep.ui.phoneAccount(context)
+    if (account == null) android.util.Log.w("Skykeep", "Completed from an alert: no account to sync")
+    account?.let {
+      ContentResolver.requestSync(it, REMINDERS_AUTHORITY, Bundle().apply {
+        putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true)
+        putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
+      })
     }
     schedule(context)
   }

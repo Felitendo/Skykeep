@@ -42,7 +42,7 @@ private class RemindersAdapter(context: Context) : AbstractThreadedSyncAdapter(c
     try {
       val done = engine.remindersSync()
       val said = buildList {
-        add("${done.reminders} reminders in ${done.lists} lists")
+        add("${done.reminders} open in ${done.lists} lists")
         if (done.waiting > 0u) add("${done.waiting} changes to send again")
         if (done.refused.isNotEmpty()) add("${done.refused.size} not taken by iCloud: ${done.refused.first()}")
       }.joinToString(" · ")
