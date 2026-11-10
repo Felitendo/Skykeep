@@ -306,7 +306,6 @@ object CalendarSync {
         // Editable here where iCloud lets it be; a subscription or a calendar shared read-only
         // stays read-only.
         put(Calendars.CALENDAR_ACCESS_LEVEL, if (k.writable) Calendars.CAL_ACCESS_OWNER else Calendars.CAL_ACCESS_READ)
-        put(Calendars.VISIBLE, 1)
         put(Calendars.SYNC_EVENTS, 1)
       }
       val id = have.remove(k.guid)
@@ -319,6 +318,8 @@ object CalendarSync {
         values.put(Calendars.NAME, k.guid)
         values.put(Calendars._SYNC_ID, k.guid)
         values.put(Calendars.OWNER_ACCOUNT, account.name)
+        // Shown when it first arrives; after that, shown or hidden as the person chose here.
+        values.put(Calendars.VISIBLE, 1)
         values.put(Calendars.CALENDAR_TIME_ZONE, TimeZone.getDefault().id)
         cr.insert(Calendars.CONTENT_URI.asAdapter(account), values)?.lastPathSegment?.toLongOrNull()?.let { out[k.guid] = it }
       }

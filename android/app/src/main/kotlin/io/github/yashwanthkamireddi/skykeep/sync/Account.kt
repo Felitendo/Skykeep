@@ -10,8 +10,21 @@ import android.provider.ContactsContract
 /** The account type Android files Skykeep's contacts and calendars under. */
 const val ACCOUNT_TYPE = "io.github.yashwanthkamireddi.skykeep.account"
 
-/** How often Android syncs Contacts and Calendar on its own: hourly, gentle on the battery. */
-private const val SYNC_EVERY_SECONDS = 60L * 60
+/** How often Android syncs on its own unless chosen in Settings: hourly, gentle on the battery. */
+const val SYNC_EVERY_SECONDS = 60L * 60
+
+/** The interval chosen in Settings, in seconds. */
+fun syncEvery(context: Context): Long =
+  context.getSharedPreferences("settings", Context.MODE_PRIVATE).getLong("syncEvery", SYNC_EVERY_SECONDS)
+
+/** A new interval: kept, and given to Android for both Contacts and Calendar. */
+fun setSyncEvery(context: Context, account: Account?, seconds: Long) {
+  context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().putLong("syncEvery", seconds).apply()
+  if (account == null) return
+  for (authority in listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY)) {
+    ContentResolver.addPeriodicSync(account, authority, android.os.Bundle.EMPTY, seconds)
+  }
+}
 
 /**
  * The Skykeep account for an Apple Account, created once and made syncable for Contacts and
@@ -28,7 +41,7 @@ fun ensureAccount(context: Context, appleId: String): Account {
     ContentResolver.setSyncAutomatically(account, authority, true)
     // iCloud sends no push a third-party app can receive, so Android is asked to sync on a
     // schedule; it batches these with other apps' syncs and skips them without a network.
-    ContentResolver.addPeriodicSync(account, authority, android.os.Bundle.EMPTY, SYNC_EVERY_SECONDS)
+    ContentResolver.addPeriodicSync(account, authority, android.os.Bundle.EMPTY, syncEvery(context))
   }
   return account
 }

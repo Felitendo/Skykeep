@@ -11,7 +11,8 @@ import android.content.SharedPreferences
 object Outcome {
   private const val FILE = "sync-outcome"
 
-  data class Last(val at: Long, val ok: Boolean, val said: String)
+  /** `okAt`: the last time it synced cleanly, which the error wording names. */
+  data class Last(val at: Long, val ok: Boolean, val said: String, val okAt: Long)
 
   private fun prefs(context: Context): SharedPreferences =
     context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -22,6 +23,7 @@ object Outcome {
       .putBoolean("$authority.ok", ok)
       .putString("$authority.said", said)
       .putInt("$authority.held", held)
+      .apply { if (ok) putLong("$authority.okAt", System.currentTimeMillis()) }
       .apply()
   }
 
@@ -44,7 +46,7 @@ object Outcome {
   fun last(context: Context, authority: String): Last? {
     val p = prefs(context)
     val said = p.getString("$authority.said", null) ?: return null
-    return Last(p.getLong("$authority.at", 0), p.getBoolean("$authority.ok", false), said)
+    return Last(p.getLong("$authority.at", 0), p.getBoolean("$authority.ok", false), said, p.getLong("$authority.okAt", 0))
   }
 
   /** Told of every new outcome until the returned function is called. */
