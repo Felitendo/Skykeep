@@ -281,6 +281,8 @@ export const api = {
   /** Open at Login: whether it is on, the command it runs, and whether this desktop runs it. */
   loginItem: () => invoke<LoginItem>("login_item_status"),
   loginItemSet: (on: boolean) => invoke<LoginItem>("login_item_set", { on }),
+  /** Start in Tray: whether a launch at login keeps its window in the tray. */
+  loginStartInTraySet: (on: boolean) => invoke<LoginItem>("login_start_in_tray_set", { on }),
   photosFolderOpen: () => invoke<void>("photos_folder_open"),
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Where the window's player fetches videos from (a loopback server), or null without one. */
@@ -1148,6 +1150,8 @@ export type LoginItem = {
   /** Why the switch can't change it: Windows holds the Store install's startup task off in
    * Task Manager, or on or off by policy. */
   elsewhere?: string | null;
+  /** Start in Tray: a launch at login keeps its window in the tray (on unless turned off). */
+  startInTray?: boolean;
 };
 
 export type DriveFolder = {

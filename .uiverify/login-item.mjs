@@ -1,6 +1,7 @@
 // Settings → Open at Login: off until turned on; on a desktop that runs login entries it says
 // what it does; on one that does not (Hyprland without uwsm, Sway), it says so and gives the
-// exact line, selectable whole; a refusal puts the switch back with the reason.
+// exact line, selectable whole; a refusal puts the switch back with the reason. Start in Tray
+// shows under it only while it is on, on until turned off.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openSettings } from "./stub.mjs";
 const b = await engine.launch();
@@ -21,8 +22,20 @@ for (const scheme of ["light", "dark"]) {
   await page.waitForTimeout(200);
   ok((await sw.getAttribute("aria-checked")) === "true" && /Starts in the background/.test(await row.innerText()), `${scheme}: on, and says what it does`);
   ok((await row.locator(".settings-command").count()) === 0, `${scheme}: no command where the desktop runs it`);
+  // Start in Tray: on in a new install, and turned off and on again.
+  const tray = page.getByRole("switch", { name: "Start in Tray" });
+  const trayRow = page.locator(".settings-row", { has: tray });
+  ok((await tray.getAttribute("aria-checked")) === "true" && /stays closed until you open it from the tray/.test(await trayRow.innerText()), `${scheme}: Start in Tray on unless turned off`);
+  await tray.click();
+  await page.waitForTimeout(200);
+  ok((await tray.getAttribute("aria-checked")) === "false" && /the window opens/.test(await trayRow.innerText()), `${scheme}: Start in Tray turned off`);
+  ok((await page.evaluate(() => window.__login.startInTray)) === false, `${scheme}: kept off by the app`);
+  await tray.click();
+  await page.waitForTimeout(200);
+  ok((await tray.getAttribute("aria-checked")) === "true", `${scheme}: Start in Tray on again`);
   await sw.click();
   await page.waitForTimeout(200);
+  ok((await tray.count()) === 0, `${scheme}: Start in Tray only while Open at Login is on`);
   // A desktop that runs no login entries: said plainly, with the line to add.
   await page.evaluate(() => { window.__login = { honoured: false }; });
   await sw.click();

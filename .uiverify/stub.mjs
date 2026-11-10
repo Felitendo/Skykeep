@@ -1267,10 +1267,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (!window.__driveFolder?.on) throw "Turn on the Drive folder in Settings to keep files on this computer.";
           window.__kept = (window.__kept ??= []).filter((k) => k !== args.drivewsid).concat(args.on ? [args.drivewsid] : []);
           return [...window.__kept];
-        case "login_item_status": return { on: false, command: "\"/usr/bin/quince-app\" --background", honoured: true, ...(window.__login ?? {}) };
+        case "login_item_status": return { on: false, command: "\"/usr/bin/quince-app\" --background", honoured: true, startInTray: true, ...(window.__login ?? {}) };
         case "login_item_set":
           if (window.__loginRefuse) throw window.__loginRefuse;
-          return (window.__login = { ...(window.__login ?? {}), on: args.on, command: "\"/usr/bin/quince-app\" --background", honoured: window.__login?.honoured ?? true });
+          return (window.__login = { startInTray: true, ...(window.__login ?? {}), on: args.on, command: "\"/usr/bin/quince-app\" --background", honoured: window.__login?.honoured ?? true });
+        case "login_start_in_tray_set":
+          if (window.__loginRefuse) throw window.__loginRefuse;
+          return (window.__login = { on: false, command: "\"/usr/bin/quince-app\" --background", honoured: true, ...(window.__login ?? {}), startInTray: args.on });
         case "account_unsent":   return window.__unsent ?? { changes: 0, files: 0, photos: 0 };
         // Changes waiting for Apple, and ones it refused: a test sets `window.__outbox`.
         case "outbox_status":    return window.__outbox ?? { waiting: [], refused: [] };
