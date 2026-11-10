@@ -355,6 +355,22 @@ private fun SettingsPage(engine: uniffi.quince_mobile.Account, account: Account?
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   Text("Settings", style = MaterialTheme.typography.headlineSmall)
+  // Off unless turned on; from that moment on, never the whole camera roll at once.
+  var backup by remember { mutableStateOf(io.github.yashwanthkamireddi.skykeep.sync.PhotoBackup.on(context)) }
+  val media = if (android.os.Build.VERSION.SDK_INT >= 33) arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
+    else arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+  val askMedia = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+    if (granted.values.all { it }) { backup = true; io.github.yashwanthkamireddi.skykeep.sync.PhotoBackup.set(context, true) }
+  }
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.weight(1f)) {
+      Text("Back up new photos", style = MaterialTheme.typography.titleSmall)
+      Text("Photos and videos you take on this phone from now on go to iCloud Photos.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    androidx.compose.material3.Switch(backup, { on ->
+      if (on) askMedia.launch(media) else { backup = false; io.github.yashwanthkamireddi.skykeep.sync.PhotoBackup.set(context, false) }
+    })
+  }
   Text("Sync every", style = MaterialTheme.typography.titleSmall)
   var every by remember { mutableLongStateOf(syncEvery(context)) }
   for ((seconds, label) in listOf(3_600L to "Hour", 3 * 3_600L to "3 hours", 6 * 3_600L to "6 hours", 12 * 3_600L to "12 hours", 86_400L to "Day")) {

@@ -92,6 +92,17 @@ pub enum PSize {
     Video,
 }
 
+/// How a photo backed up from the phone went.
+#[derive(uniffi::Enum)]
+pub enum PBackup {
+    /// In iCloud Photos now (or found there already from an earlier try).
+    Sent,
+    /// iCloud already has this photo: nothing sent.
+    Duplicate,
+    /// Not taken, for good: the reason, for the person (a type Photos takes none of, too large…).
+    Refused { reason: String },
+}
+
 /// What a pass from Apple came to.
 #[derive(uniffi::Record)]
 pub struct PSync {
@@ -203,6 +214,166 @@ impl Account {
                 parent: a.parent,
             })
             .collect())
+    }
+
+    /// A photo or film from the phone (`key`: the phone's own id for it) backed up to iCloud
+    /// Photos, as the desktop uploads one (`photos_upload::send`). Never twice: as soon as Apple
+    /// names the photo it is making, the name is kept in the phone's library under `key`, and a
+    /// later try (after the app was stopped mid-way) asks Apple for that photo before sending
+    /// again; Apple itself also answers a photo it already has as a duplicate.
+    pub fn photo_backup(
+        &self,
+        key: String,
+        path: String,
+        name: String,
+    ) -> Result<PBackup, EngineError> {
+        use quince_icloud::photos_upload::{self as up, Refusal, Sending, Stage};
+        let (lock, _) = self.library()?;
+        let (http, ck, params, upload_root) = {
+            let c = self.client.lock().map_err(failed)?;
+            let s = c.session();
+            (
+                c.http().clone(),
+                s.service_url("ckdatabasews")
+                    .ok_or_else(|| failed("Apple hasn't offered Photos for this account."))?,
+                c.service_params(),
+                s.service_url("photosupload").ok_or_else(|| {
+                    failed("Apple hasn't offered photo uploads for this account.")
+                })?,
+            )
+        };
+        let dsid = params
+            .iter()
+            .find(|(k, _)| k == "dsid")
+            .map(|(_, v)| v.clone())
+            .ok_or_else(|| failed("Sign in to back up photos."))?;
+        runtime().block_on(async {
+            let zc = quince_icloud::cloudkit::ZoneClient::new(
+                &http,
+                &ck,
+                quince_icloud::photos::CONTAINER,
+                params.clone(),
+            );
+            let zone = quince_icloud::photos::library_zone(&zc).await;
+            // Named by Apple on an earlier try: there already, or sent again.
+            let known = lock.lock().await.upload(&key).map_err(failed)?;
+            if let Some(asset) = known.as_ref().and_then(|u| u.asset.clone()) {
+                match zc.lookup_record(&zone, &asset).await {
+                    Ok(Some(_)) => {
+                        lock.lock()
+                            .await
+                            .set_upload(&key, "done", None, None)
+                            .map_err(failed)?;
+                        return Ok(PBackup::Sent);
+                    }
+                    Ok(None) => {}
+                    // Can't tell now: not sent, so never twice; the next sync asks again.
+                    Err(e) => return Err(failed(e)),
+                }
+            }
+            if known.is_none() {
+                lock.lock()
+                    .await
+                    .queue_uploads(&[quince_core::photos::Upload {
+                        id: key.clone(),
+                        batch: "phone-backup".into(),
+                        path: path.clone(),
+                        name: name.clone(),
+                        state: "sending".into(),
+                        error: None,
+                        asset: None,
+                        added_at: jiff::Timestamp::now().as_second(),
+                        album: None,
+                    }])
+                    .map_err(failed)?;
+            }
+            let file = std::path::Path::new(&path);
+            let modified = std::fs::metadata(file)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
+            let zone_name = jiff::tz::TimeZone::system()
+                .iana_name()
+                .unwrap_or("UTC")
+                .to_string();
+            let offset = -i64::from(jiff::Zoned::now().offset().seconds()) / 60;
+            // Apple's name for the photo kept the moment it gives one, before the rest is done;
+            // the final state written only after that, so it is never overwritten by it.
+            let named: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+                std::sync::Arc::default();
+            let (keep, key2, held) = (
+                std::sync::Arc::clone(&lock),
+                key.clone(),
+                std::sync::Arc::clone(&named),
+            );
+            let progress: std::sync::Arc<dyn Fn(Stage) + Send + Sync> =
+                std::sync::Arc::new(move |stage| {
+                    if let Stage::Named(made) = stage {
+                        let (keep, key) = (std::sync::Arc::clone(&keep), key2.clone());
+                        let write = runtime().spawn(async move {
+                            let _ = keep.lock().await.set_upload(
+                                &key,
+                                "verifying",
+                                None,
+                                Some(&made.asset),
+                            );
+                        });
+                        *held
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(write);
+                    }
+                });
+            let sent = up::send(
+                &http,
+                &upload_root,
+                &dsid,
+                &zone,
+                file,
+                &name,
+                modified,
+                &zone_name,
+                offset,
+                "phone-backup",
+                progress,
+            )
+            .await;
+            let pending = named
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(write) = pending {
+                let _ = write.await;
+            }
+            let sent = sent.map_err(failed)?;
+            let l = lock.lock().await;
+            Ok(match sent {
+                Sending::Sent(s) => {
+                    l.set_upload(&key, "done", None, Some(&s.made.asset))
+                        .map_err(failed)?;
+                    PBackup::Sent
+                }
+                Sending::Refused(Refusal::Duplicate) => {
+                    l.set_upload(&key, "done", None, None).map_err(failed)?;
+                    PBackup::Duplicate
+                }
+                Sending::Refused(r) => {
+                    let reason = match r {
+                        Refusal::Kind(k) => format!("iCloud Photos doesn't take {k} files."),
+                        Refusal::TooSmall => "This file is too small to be a photo.".into(),
+                        Refusal::TooLarge => "This file is too large for iCloud Photos.".into(),
+                        Refusal::NameTooLong => {
+                            "This file's name is too long for iCloud Photos.".into()
+                        }
+                        Refusal::OverQuota => "Your iCloud storage is full.".into(),
+                        Refusal::Duplicate => unreachable!(),
+                    };
+                    l.set_upload(&key, "refused", Some(&reason), None)
+                        .map_err(failed)?;
+                    PBackup::Refused { reason }
+                }
+            })
+        })
     }
 
     /// A photo's picture at `size` fetched to `path` (the app's cache), once: a path that has

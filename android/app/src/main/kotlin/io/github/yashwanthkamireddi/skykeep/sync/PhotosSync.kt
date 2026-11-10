@@ -43,6 +43,8 @@ private class PhotosAdapter(context: Context) : AbstractThreadedSyncAdapter(cont
         else -> "${done.photos} photos"
       }
       Outcome.record(context, authority, true, said)
+      // New photos taken here, when backup is on: sent after the library is read.
+      PhotoBackup.run(context)
       // A large library is read over several passes: the next is asked for at once.
       if (done.more) ContentResolver.requestSync(a, authority, Bundle())
     } catch (x: uniffi.quince_mobile.EngineException) {
