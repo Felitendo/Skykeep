@@ -4,7 +4,8 @@
   to iCloud (ContactsSync's KIND and TYPES), with the labels it maps to Apple's. Left empty, as
   it first was, the Contacts app showed every Skykeep contact as "View-only" (10 Nov). A field
   not listed here can't be added in the editor, so nothing is typed that would never reach
-  iCloud: no relations or chat accounts, which the sync doesn't carry. The name's prefix,
+  iCloud: no relations or chat accounts, which the sync doesn't carry. Labels are iCloud's lists
+  (GroupsSync.kt). The name's prefix,
   suffix and phonetic parts, the nickname, and the company's job title and department are
   carried (ContactsSync's FORMAT 4).
 -->
@@ -16,6 +17,7 @@
             supportsPhoneticFamilyName="true" supportsPhoneticMiddleName="false"
             supportsPhoneticGivenName="true" />
         <DataKind kind="nickname" maxOccurs="1" />
+        <DataKind kind="group_membership" />
         <DataKind kind="photo" maxOccurs="1" />
         <DataKind kind="phone">
             <Type type="mobile" />

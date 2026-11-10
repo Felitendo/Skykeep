@@ -68,6 +68,7 @@ class SyncScaleTest {
     photo = if (n % 50 == 0) uniffi.quince_mobile.PhotoRef(url = "test:$n", crop = null, key = "k$n") else null,
     prefix = null, suffix = null, nickname = null, phoneticFirstName = null, phoneticLastName = null,
     jobTitle = if (n % 3 == 0) "Engineer" else null, department = null,
+    groups = emptyList(),
   )
 
   /** A picture as the engine hands one over: a small JPEG. */

@@ -157,9 +157,57 @@ pub struct Person {
     pub phonetic_last_name: Option<String>,
     pub job_title: Option<String>,
     pub department: Option<String>,
+    /// The iCloud lists (Android's labels) the card is in, by the lists' ids.
+    pub groups: Vec<String>,
     /// The card's picture as Apple holds it, if it has one; fetched with
     /// [`Account::contact_photo`] only when its `key` is not the one the phone has.
     pub photo: Option<PhotoRef>,
+}
+
+/// An iCloud contacts list: a label in Android's Contacts.
+#[derive(uniffi::Record)]
+pub struct CList {
+    pub guid: String,
+    pub name: String,
+    pub etag: Option<String>,
+}
+
+/// The address book: the people, and the lists.
+#[derive(uniffi::Record)]
+pub struct Book {
+    pub people: Vec<Person>,
+    pub lists: Vec<CList>,
+}
+
+/// A change to a list made on the phone. Members are changed as added and removed, laid over
+/// the list as iCloud has it when sent, so members added on another device meanwhile stay.
+#[derive(uniffi::Enum)]
+pub enum ListChange {
+    Create {
+        name: String,
+        members: Vec<String>,
+    },
+    Rename {
+        guid: String,
+        name: String,
+    },
+    Delete {
+        guid: String,
+    },
+    Members {
+        guid: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
+}
+
+/// How one list change went: in iCloud now (`guid`, the list's), gone from iCloud already
+/// (deleted on another device), or not sent (`later`: try again on the next sync).
+#[derive(uniffi::Enum)]
+pub enum ListOutcome {
+    Saved { guid: String },
+    Gone,
+    Failed { reason: String, later: bool },
 }
 
 /// Where a card's picture is and which picture it is.
@@ -588,6 +636,11 @@ impl Account {
 
     /// The whole iCloud address book, read as desktop reads it (Apple's `/co/startup`).
     pub fn contacts(&self) -> Result<Vec<Person>, EngineError> {
+        Ok(self.address_book()?.people)
+    }
+
+    /// The whole iCloud address book: the people, and the lists (Android's labels) they are in.
+    pub fn address_book(&self) -> Result<Book, EngineError> {
         let c = self.client.lock().map_err(failed)?;
         let root = c
             .session()
@@ -602,11 +655,31 @@ impl Account {
             .map_err(failed)?;
         let mut details: std::collections::HashMap<String, quince_core::contacts::ContactDetails> =
             book.details.into_iter().collect();
-        Ok(book
+        let mut groups: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for list in &book.lists {
+            for member in &list.members {
+                groups
+                    .entry(member.clone())
+                    .or_default()
+                    .push(list.guid.clone());
+            }
+        }
+        let lists = book
+            .lists
+            .iter()
+            .map(|l| CList {
+                guid: l.guid.clone(),
+                name: l.name.clone(),
+                etag: l.etag.clone(),
+            })
+            .collect();
+        let people = book
             .contacts
             .into_iter()
             .map(|p| {
                 let d = details.remove(&p.guid).unwrap_or_default();
+                let in_lists = groups.remove(&p.guid).unwrap_or_default();
                 Person {
                     guid: p.guid,
                     etag: p.etag,
@@ -638,9 +711,11 @@ impl Account {
                     phonetic_last_name: d.phonetic_last_name,
                     job_title: d.job_title,
                     department: d.department,
+                    groups: in_lists,
                 }
             })
-            .collect())
+            .collect();
+        Ok(Book { people, lists })
     }
 
     /// A card's picture for the phone's Contacts: cut to the square its owner chose and `size`
@@ -658,6 +733,95 @@ impl Account {
             .map_err(failed)?;
         let crop = photo.crop.as_deref().and_then(quince_media::Crop::parse);
         quince_media::avatar(&bytes, crop, size).map_err(failed)
+    }
+
+    /// The phone's changes to lists sent to iCloud, each laid over the list as iCloud has it
+    /// now: one read of the address book, then each change in order. One outcome per change.
+    pub fn save_lists(&self, changes: Vec<ListChange>) -> Result<Vec<ListOutcome>, EngineError> {
+        use quince_icloud::contacts as c;
+        let (http, root, params) = {
+            let cl = self.client.lock().map_err(failed)?;
+            let root = cl.session().service_url("contacts").ok_or_else(|| {
+                failed("Apple hasn't offered a contacts service for this account.")
+            })?;
+            (cl.http().clone(), root, cl.service_params())
+        };
+        let ledger = c::Ledger::new();
+        let mut lists = runtime()
+            .block_on(c::fetch_book_with_tokens(&http, &root, params.clone()))
+            .map_err(failed)?
+            .0
+            .lists;
+        let mut out = Vec::with_capacity(changes.len());
+        for change in changes {
+            let at = |guid: &str| lists.iter().position(|l| l.guid == guid);
+            let sent: quince_icloud::Result<ListOutcome> = runtime().block_on(async {
+                match change {
+                    ListChange::Create { name, members } => {
+                        let guid =
+                            c::create_list(&http, &root, params.clone(), &ledger, &name, &members)
+                                .await?;
+                        Ok(ListOutcome::Saved { guid })
+                    }
+                    ListChange::Rename { guid, name } => match at(&guid) {
+                        None => Ok(ListOutcome::Gone),
+                        Some(i) => {
+                            let mut list = lists[i].clone();
+                            list.name = name;
+                            c::update_list(&http, &root, params.clone(), &ledger, &list).await?;
+                            Ok(ListOutcome::Saved { guid })
+                        }
+                    },
+                    ListChange::Delete { guid } => {
+                        if at(&guid).is_some() {
+                            c::delete_list(&http, &root, params.clone(), &ledger, &guid).await?;
+                        }
+                        Ok(ListOutcome::Saved { guid })
+                    }
+                    ListChange::Members { guid, add, remove } => match at(&guid) {
+                        None => Ok(ListOutcome::Gone),
+                        Some(i) => {
+                            let mut list = lists[i].clone();
+                            list.members.retain(|m| !remove.contains(m));
+                            for m in add {
+                                if !list.members.contains(&m) {
+                                    list.members.push(m);
+                                }
+                            }
+                            c::update_list(&http, &root, params.clone(), &ledger, &list).await?;
+                            Ok(ListOutcome::Saved { guid })
+                        }
+                    },
+                }
+            });
+            // What this change wrote is old in the lists read before it: read again.
+            ledger.spend();
+            if matches!(sent, Ok(ListOutcome::Saved { .. })) {
+                if let Ok((fresh, _)) =
+                    runtime().block_on(c::fetch_book_with_tokens(&http, &root, params.clone()))
+                {
+                    lists = fresh.lists;
+                }
+            }
+            out.push(match sent {
+                Ok(done) => done,
+                Err(e) => {
+                    log::error(&format!("{e:?}"));
+                    let later = matches!(
+                        e,
+                        quince_icloud::Error::Network(_)
+                            | quince_icloud::Error::Busy
+                            | quince_icloud::Error::Conflict
+                            | quince_icloud::Error::ReauthRequired
+                    );
+                    ListOutcome::Failed {
+                        reason: e.to_string(),
+                        later,
+                    }
+                }
+            });
+        }
+        Ok(out)
     }
 
     /// The phone's changes to contacts sent to iCloud, as the desktop sends its own (outbox.rs):

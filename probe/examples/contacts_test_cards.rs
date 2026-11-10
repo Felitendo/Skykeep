@@ -9,6 +9,8 @@
 //!       that test card deleted
 //!   cargo run -p quince-probe --example contacts_test_cards -- create
 //!       a new test card, "Skykeep Test Photo", with a picture (a blue square); prints its id
+//!   cargo run -p quince-probe --example contacts_test_cards -- delete-list <id>
+//!       that test list deleted (only a list whose name starts with "Skykeep Test")
 //!   cargo run -p quince-probe --example contacts_test_cards -- photo <id> <red|green|blue>
 //!       that test card's picture replaced with a square of that colour, as another device would
 use anyhow::{anyhow, bail, Result};
@@ -71,6 +73,9 @@ async fn main() -> Result<()> {
                 }
             }
             println!("{} test cards", tests.len());
+            for l in book.lists.iter().filter(|l| l.name.starts_with(PREFIX)) {
+                println!("list {} | {} | members {:?}", l.guid, l.name, l.members);
+            }
         }
         Some("notes") => {
             let id = args.get(1).ok_or_else(|| anyhow!("which id?"))?;
@@ -139,7 +144,16 @@ async fn main() -> Result<()> {
             .await?;
             println!("picture of {id} set to {colour}");
         }
-        _ => bail!("peek, notes <id> <text>, delete <id>, create, or photo <id> <colour>"),
+        Some("delete-list") => {
+            let id = args.get(1).ok_or_else(|| anyhow!("which list id?"))?;
+            let ok = book.lists.iter().any(|l| l.guid == *id && l.name.starts_with(PREFIX));
+            if !ok {
+                bail!("{id} is not a test list: refused");
+            }
+            c::delete_list(&http, &root, params, &c::Ledger::new(), id).await?;
+            println!("deleted list {id}");
+        }
+        _ => bail!("peek, notes <id> <text>, delete <id>, create, photo <id> <colour>, or delete-list <id>"),
     }
     Ok(())
 }

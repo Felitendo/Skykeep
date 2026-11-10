@@ -72,6 +72,7 @@ class PhotoSyncTest {
     photo = PhotoRef(url = "test:blue", crop = null, key = "blue"),
     prefix = "Countess", suffix = null, nickname = "Ada", phoneticFirstName = null, phoneticLastName = null,
     jobTitle = "Mathematician", department = "Analytical Engine",
+    groups = emptyList(),
   )
 
   /** The phone's changes as the sync would send them, each answered Saved. */

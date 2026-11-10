@@ -7,6 +7,7 @@ import android.net.Uri
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Event
+import android.provider.ContactsContract.CommonDataKinds.GroupMembership
 import android.provider.ContactsContract.CommonDataKinds.Nickname
 import android.provider.ContactsContract.CommonDataKinds.Note
 import android.provider.ContactsContract.CommonDataKinds.Organization
@@ -47,7 +48,11 @@ object ContactsSync {
   )
 
   /** `held`: changes the circuit breaker kept back, waiting for the person to confirm. */
-  data class Sent(val sent: Int, val failed: Int, val later: Int, val reason: String?, val held: Int)
+  /** `members`: each label's row id to the contacts added to it and taken out of it here. */
+  data class Sent(
+    val sent: Int, val failed: Int, val later: Int, val reason: String?, val held: Int,
+    val members: Map<Long, Pair<List<String>, List<String>>> = emptyMap(),
+  )
 
   /**
    * More than this many cards gone in one sync — and more than a tenth of the book — is held: an
@@ -62,16 +67,20 @@ object ContactsSync {
     .build()
 
   /** A card on the phone: its row, etag, whether it waits to be sent, format, and picture's key. */
-  private data class Local(val id: Long, val etag: String?, val pending: Boolean, val format: String?, val photoKey: String?)
+  private data class Local(
+    val id: Long, val etag: String?, val pending: Boolean, val format: String?, val photoKey: String?,
+    val groups: Set<String>,
+  )
 
   /**
    * How a card's rows are written here (kept in SYNC3). A row in an older format is written again
-   * from iCloud on the next sync, whatever its etag: 4 = with the rest of the name and work
+   * from iCloud on the next sync, whatever its etag: 5 = with its lists (Android's labels);
+   * 4 = with the rest of the name and work
    * (prefix, suffix, nickname, phonetic names, job title, department); 3 = with its picture; 2 = Apple's standard
    * labels as Android's own types, a number with no label as Other (1 wrote labels as custom
    * text, none as "phone").
    */
-  private const val FORMAT = "4"
+  private const val FORMAT = "5"
 
   /** The most pictures' bytes in one batch: half of what one binder call can carry. */
   const val BATCH_BYTES = 500_000
@@ -147,15 +156,31 @@ object ContactsSync {
     if (!confirmed && changes.size > MASS_REMOVAL && changes.size * 10 > book) {
       return Sent(0, 0, 0, null, changes.size)
     }
+    // Which labels each changed card joined or left here, by the labels' rows: read before the
+    // cards are settled, kept for the cards iCloud took (a card it refused is in no list).
+    val rowOfList = GroupsSync.guids(cr, account).entries.associate { (row, guid) -> guid to row }
+    val joined = changes.associate { c ->
+      val now = if (c.change.kind == ChangeKind.DELETE) emptySet() else memberRows(cr, c.rawId)
+      val was = c.change.base?.groups?.mapNotNull { rowOfList[it] }?.toSet() ?: emptySet()
+      c.rawId to ((now - was) to (was - now))
+    }
+    val members = HashMap<Long, Pair<MutableList<String>, MutableList<String>>>()
+    fun member(rawId: Long, guid: String) {
+      if (changes.first { it.rawId == rawId }.change.kind == ChangeKind.DELETE) return
+      val (added, left) = joined[rawId] ?: return
+      for (g in added) members.getOrPut(g) { mutableListOf<String>() to mutableListOf() }.first += guid
+      for (g in left) members.getOrPut(g) { mutableListOf<String>() to mutableListOf() }.second += guid
+    }
     val outcomes = save(changes.map { it.change })
     var sent = 0; var failed = 0; var later = 0; var reason: String? = null
     for ((i, c) in changes.withIndex()) {
       when (val o = outcomes.getOrNull(i)) {
         is ChangeOutcome.Saved -> {
           sent++
+          member(c.rawId, c.change.guid)
           if (c.change.kind == ChangeKind.DELETE) removeRow(cr, account, c.rawId) else settled(cr, account, c.rawId, null)
         }
-        is ChangeOutcome.Recreated -> { sent++; settled(cr, account, c.rawId, o.guid) }
+        is ChangeOutcome.Recreated -> { sent++; member(c.rawId, o.guid); settled(cr, account, c.rawId, o.guid) }
         is ChangeOutcome.Failed -> {
           reason = o.reason
           // Sent again on a later sync, as it is; refused, it is left as it is here and said once.
@@ -164,8 +189,15 @@ object ContactsSync {
         null -> later++
       }
     }
-    return Sent(sent, failed, later, reason, 0)
+    return Sent(sent, failed, later, reason, 0, members)
   }
+
+  /** The label rows a card is in on the phone. */
+  private fun memberRows(cr: ContentResolver, rawId: Long): Set<Long> =
+    cr.query(
+      Data.CONTENT_URI, arrayOf(GroupMembership.GROUP_ROW_ID),
+      "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=?", arrayOf(rawId.toString(), GroupMembership.CONTENT_ITEM_TYPE), null,
+    )?.use { c -> buildSet { while (c.moveToNext()) if (!c.isNull(0)) add(c.getLong(0)) } } ?: emptySet()
 
   private fun count(cr: ContentResolver, account: Account): Int =
     cr.query(
@@ -327,7 +359,7 @@ object ContactsSync {
       methods = methods, photo = base?.photo,
       prefix = prefix, suffix = suffix, nickname = nickname,
       phoneticFirstName = phoneticFirst, phoneticLastName = phoneticLast,
-      jobTitle = jobTitle, department = department,
+      jobTitle = jobTitle, department = department, groups = base?.groups ?: emptyList(),
     )
   }
 
@@ -401,8 +433,8 @@ object ContactsSync {
         val source = c.getString(1) ?: continue
         val pending = c.getInt(3) != 0 || c.getInt(4) != 0
         if (source in local) { if (!pending) extra += c.getLong(0); continue }
-        val photoKey = c.getString(6)?.let(::personFromJson)?.photo?.key
-        local[source] = Local(c.getLong(0), c.getString(2), pending, c.getString(5), photoKey)
+        val base = c.getString(6)?.let(::personFromJson)
+        local[source] = Local(c.getLong(0), c.getString(2), pending, c.getString(5), base?.photo?.key, base?.groups?.toSet() ?: emptySet())
       }
     }
     var added = 0; var updated = 0; var unchanged = 0
@@ -417,7 +449,11 @@ object ContactsSync {
       val have = local.remove(p.guid)
       // Changed here and not yet in iCloud: left as it is, sent on the next sync.
       if (have != null && have.pending) continue
-      if (have != null && have.etag != null && have.etag == p.etag && have.format == FORMAT && have.photoKey == p.photo?.key) {
+      // A card's lists are changed on the lists, not the card (its etag stays), so they are
+      // compared too: without it, a contact added to a list on an iPhone never showed here.
+      if (have != null && have.etag != null && have.etag == p.etag && have.format == FORMAT &&
+        have.photoKey == p.photo?.key && have.groups == p.groups.toSet()
+      ) {
         unchanged++; continue
       }
       // The picture: fetched only when it is not the one the phone has. A picture that can't be
@@ -505,6 +541,8 @@ object ContactsSync {
         .withValue(Organization.DEPARTMENT, p.department)
     }
     p.nickname?.let { out += row(Nickname.CONTENT_ITEM_TYPE).withValue(Nickname.NAME, it) }
+    // Its lists, by the list's id: Android finds the label (GroupsSync wrote it first).
+    for (g in p.groups) out += row(GroupMembership.CONTENT_ITEM_TYPE).withValue(GroupMembership.GROUP_SOURCE_ID, g)
     p.notes?.let { out += row(Note.CONTENT_ITEM_TYPE).withValue(Note.NOTE, it) }
     p.birthday?.let {
       out += row(Event.CONTENT_ITEM_TYPE).withValue(Event.TYPE, Event.TYPE_BIRTHDAY).withValue(Event.START_DATE, it)
@@ -537,6 +575,7 @@ object ContactsSync {
     put("prefix", p.prefix); put("suffix", p.suffix); put("nickname", p.nickname)
     put("phoneticFirst", p.phoneticFirstName); put("phoneticLast", p.phoneticLastName)
     put("jobTitle", p.jobTitle); put("department", p.department)
+    put("groups", JSONArray().apply { p.groups.forEach { put(it) } })
     put("methods", JSONArray().apply {
       for (m in p.methods) put(JSONObject().apply { put("kind", m.kind); put("label", m.label); put("value", m.value) })
     })
@@ -555,6 +594,7 @@ object ContactsSync {
       prefix = str("prefix"), suffix = str("suffix"), nickname = str("nickname"),
       phoneticFirstName = str("phoneticFirst"), phoneticLastName = str("phoneticLast"),
       jobTitle = str("jobTitle"), department = str("department"),
+      groups = o.optJSONArray("groups")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
       methods = (0 until ms.length()).map { i ->
         val m = ms.getJSONObject(i)
         Method(m.getString("kind"), if (m.isNull("label")) null else m.optString("label"), m.getString("value"))

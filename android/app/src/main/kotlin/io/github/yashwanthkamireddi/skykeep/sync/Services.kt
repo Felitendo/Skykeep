@@ -85,7 +85,12 @@ private class ContactsAdapter(context: Context) : AbstractThreadedSyncAdapter(co
       val confirmed = Outcome.massRemovalConfirmed(context, authority)
       val sent = ContactsSync.send(context.contentResolver, a, confirmed) { engine.saveContacts(it) }
       if (sent.later > 0) r.stats.numIoExceptions++
-      val people = engine.contacts()
+      // Labels made, renamed or deleted here, and members added or removed, sent after the
+      // cards (a new card's id is iCloud's by then); then the book read once: lists, then people.
+      GroupsSync.send(context.contentResolver, a, sent.members) { engine.saveLists(it) }
+      val book = engine.addressBook()
+      GroupsSync.download(context.contentResolver, a, book.lists)
+      val people = book.people
       // A picture at Android's display size; one still too large for a batch (a big PNG kept
       // for its transparency) is asked for again at half the size, never left out.
       val done = ContactsSync.sync(context.contentResolver, a, people, confirmed) { ref ->
