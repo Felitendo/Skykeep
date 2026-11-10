@@ -4,7 +4,8 @@
 #   msix    — the Store package packed from that same build and installed (msix.yml, prebuilt):
 #             one Windows build, both checks.
 # A release is tagged only on a commit whose CI and Windows checks both succeeded (by its SHA).
-# A newer push cancels an older push's run: only the latest commit is a release candidate.
+# Every commit keeps its own run (grouped by SHA): a newer push never cancels the run a release
+# candidate is waiting on (10 Nov: pushing after a tag cancelled 0.1.20's run).
 name: Windows checks
 
 on:
@@ -23,8 +24,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: windows-checks-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-checks-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
