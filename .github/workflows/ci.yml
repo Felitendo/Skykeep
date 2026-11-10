@@ -24,9 +24,12 @@ on:
 permissions:
   contents: read
 
+# A pull request's newer push cancels its older run. On main every commit keeps its own run (the
+# group is its SHA), as uv's CI does: a push landing while a release candidate was being checked
+# cancelled the candidate's run, the one its tag depends on.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
