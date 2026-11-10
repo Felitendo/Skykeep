@@ -15,7 +15,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.ui.Alignment
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -34,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import io.github.yashwanthkamireddi.skykeep.sync.Outcome
+import io.github.yashwanthkamireddi.skykeep.sync.SignOut
 import io.github.yashwanthkamireddi.skykeep.sync.ensureAccount
 import io.github.yashwanthkamireddi.skykeep.ui.theme.SkykeepTheme
 import kotlinx.coroutines.Dispatchers
@@ -63,7 +68,7 @@ class MainActivity : ComponentActivity() {
           when (phase) {
             Phase.Starting -> CircularProgressIndicator(Modifier.padding(96.dp))
             Phase.SignedOut -> SignInScreen(account!!) { phase = Phase.SignedIn }
-            Phase.SignedIn -> SignedIn(account!!)
+            Phase.SignedIn -> SignedIn(account!!) { phase = Phase.SignedOut }
           }
         }
       }
@@ -78,7 +83,7 @@ class MainActivity : ComponentActivity() {
  * says what each last did (sync/Outcome.kt).
  */
 @Composable
-private fun SignedIn(account: Account) {
+private fun SignedIn(account: Account, onSignedOut: () -> Unit) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var status by remember { mutableStateOf<String?>(null) }
@@ -130,6 +135,26 @@ private fun SignedIn(account: Account) {
       refresh()
     }
   }
+  var leaving by remember { mutableStateOf(false) }
+  var unsent by remember { mutableStateOf(0) }
+  /** The copy made if chosen, the account removed (its contacts and calendars with it), the
+   * session and its keys forgotten. */
+  fun signOut(keep: Boolean) {
+    busy = true
+    scope.launch {
+      val done = withContext(Dispatchers.IO) {
+        runCatching {
+          androidAccount?.let { a ->
+            if (keep) SignOut.keepCopy(context.contentResolver, a)
+            SignOut.removeAccount(context, a)
+          }
+          account.signOut()
+        }
+      }
+      busy = false
+      done.onSuccess { onSignedOut() }.onFailure { status = "Couldn't sign out: ${it.message}" }
+    }
+  }
   val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
     if (granted.values.all { it }) syncNow() else status = "Contacts and Calendar access is needed to show iCloud's in them."
   }
@@ -156,5 +181,37 @@ private fun SignedIn(account: Account) {
     }
     if (busy) CircularProgressIndicator()
     status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+    TextButton(enabled = !busy, onClick = {
+      // Asked with what's still on its way to iCloud, so nothing goes by surprise.
+      scope.launch {
+        unsent = withContext(Dispatchers.IO) { androidAccount?.let { SignOut.unsent(context.contentResolver, it) } ?: 0 }
+        leaving = true
+      }
+    }) { Text("Sign Out") }
+  }
+  if (leaving) {
+    AlertDialog(
+      onDismissRequest = { leaving = false },
+      title = { Text("Sign out of iCloud on this phone?") },
+      text = {
+        Text(
+          (if (unsent > 0) "$unsent changes made on this phone haven't reached iCloud yet and won't be sent.\n\n" else "") +
+            "Keep a copy and your contacts and calendars stay on this phone as its own, no longer synced. " +
+            "iCloud itself isn't changed either way.",
+        )
+      },
+      // Three choices, stacked as Material lays out more than two: the safe one first, the one
+      // that removes in the error colour, Cancel last.
+      confirmButton = {
+        Column(horizontalAlignment = Alignment.End) {
+          TextButton(onClick = { leaving = false; signOut(keep = true) }) { Text("Keep a Copy") }
+          TextButton(
+            onClick = { leaving = false; signOut(keep = false) },
+            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+          ) { Text("Remove from Phone") }
+          TextButton(onClick = { leaving = false }) { Text("Cancel") }
+        }
+      },
+    )
   }
 }
