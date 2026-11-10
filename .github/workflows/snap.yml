@@ -59,6 +59,13 @@ jobs:
           packaging/snap/store-install.sh snapcraft --classic
           packaging/snap/store-install.sh core24
           STORE_MINUTES=15 packaging/snap/store-install.sh gnome-46-2404-sdk
+          # The GNOME extension's runtime and themes, which snapcraft would otherwise install
+          # itself mid-build with no limit (10 Nov: that hung a build 20 minutes, and its
+          # leftover change failed the retry). Here, each limited and cleared like the rest;
+          # the install check below needs them too.
+          STORE_MINUTES=15 packaging/snap/store-install.sh gnome-46-2404
+          STORE_MINUTES=10 packaging/snap/store-install.sh gtk-common-themes
+          STORE_MINUTES=10 packaging/snap/store-install.sh mesa-2404
       # snapcraft fetches the stage-packages from archive.ubuntu.com, which now and then stops
       # answering a runner (v0.1.16's snap failed on one .deb): a second try goes on from where
       # the first stopped. Each try is limited, so a hang is a failure and is tried again.
@@ -81,10 +88,8 @@ jobs:
           [ -f "$SNAP_FILE" ] || { echo "::error::no snap was built"; exit 1; }
           echo "snap=$SNAP_FILE" >> "$GITHUB_OUTPUT"
       - name: It installs and starts
-        timeout-minutes: 40
+        timeout-minutes: 20
         run: |
-          # What snapd would fetch for it on install, fetched first the same patient way.
-          for s in gnome-46-2404 gtk-common-themes mesa-2404; do STORE_MINUTES=10 packaging/snap/store-install.sh "$s"; done
           sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
           sudo apt-get install -y xvfb dbus-x11 >/dev/null
           # Snaps start only inside a user session's scope, as on a desktop; a runner step sits
