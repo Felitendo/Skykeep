@@ -3802,7 +3802,7 @@ function EventPopover({
             </div>
           );
         })}
-        {/* Repeat, icloud.com's simple choices; a schedule it has no name for is shown as is. */}
+        {/* Repeat, icloud.com's simple choices; any other schedule is "Custom", said in full below. */}
         <div className="cx-pop-row cal-field">
           <span>repeat</span>
           <Picker
@@ -3815,11 +3815,16 @@ function EventPopover({
                 ? [{ value: "loading", label: "Loading" }]
                 : [
                     ...REPEATS,
-                    ...(repeatKey(draft.repeat) === "custom" ? [{ value: "custom", label: repeatText(draft.repeat) }] : []),
+                    // Apple's word for a schedule the menu has no entry for; the schedule itself
+                    // is said in full on its own line below, where it has room.
+                    ...(repeatKey(draft.repeat) === "custom" ? [{ value: "custom", label: "Custom" }] : []),
                   ]
             }
           />
         </div>
+        {draft.repeat && repeatKey(draft.repeat) === "custom" && (
+          <p className="cx-pop-row-note">{repeatText(draft.repeat)}</p>
+        )}
       </div>
       <span className="cx-pop-place">
         <input

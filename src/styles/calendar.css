@@ -580,7 +580,9 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 300px;
+  /* Room for a date as Chromium draws it (its calendar icon beside "11/10/2026") next to the
+     time: at 300px the year was cut to "202". */
+  width: 320px;
   /* Never taller than the window: a long event (guests, notes) scrolls inside, so its last
      rows can always be reached instead of running off the bottom of a short window. */
   max-height: calc(100vh - 16px);
@@ -636,6 +638,8 @@
 .cx-pop-rows { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: var(--hairline) solid var(--separator); border-bottom: var(--hairline) solid var(--separator); }
 .cx-pop-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; font-size: var(--t-13); }
 .cx-pop-row > span:first-child { color: var(--text-2); text-align: right; }
+/* A row's value said in full under it, aligned with the values (the label column and its gap). */
+.cx-pop-row-note { margin: -2px 0 0 72px; font-size: var(--t-12); line-height: 1.35; color: var(--text-2); overflow-wrap: anywhere; }
 .cx-when { display: flex; gap: 6px; min-width: 0; }
 .cx-when input[type="date"] { flex: 1 1 auto; min-width: 0; }
 .cx-when input[type="time"] { flex: 0 0 auto; }
