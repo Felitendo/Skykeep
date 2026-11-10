@@ -34,6 +34,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     outputs:
       snap: ${{ steps.name.outputs.snap }}
     steps:
@@ -51,11 +52,16 @@ jobs:
       # answering a runner: v0.1.16's Stores run failed on one .deb (connection timed out), and
       # its Snap never went out. A second try runs in the same build instance and goes on from
       # where the first one stopped; only a second failure fails the job.
+      # Each try is given 20 minutes (a build takes 2 to 8): a store that stops answering mid-way
+      # hung v0.1.19's first build at "Installing build-snaps" with no limit at all, and a hang
+      # never fails, so the second try never came. Now a hang is a failure, and tried again.
       - uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
         id: first
         continue-on-error: true
+        timeout-minutes: 20
       - uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
         id: again
+        timeout-minutes: 20
         if: steps.first.outcome == 'failure'
       - name: The snap built
         id: build
