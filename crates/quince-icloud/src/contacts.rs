@@ -941,6 +941,11 @@ async fn write_with(
     }
     if !status.is_success() {
         crate::approval_needed(status, &text)?;
+        // Apple can't take it now (429, 503 under load): busy, asked again later — never a
+        // broken answer, which the outbox gives up on after a few tries.
+        if status.as_u16() == 429 || status.is_server_error() {
+            return Err(Error::Busy);
+        }
         return Err(Error::Protocol(format!(
             "contacts returned {status}: {}",
             text.chars().take(200).collect::<String>()
@@ -1359,6 +1364,11 @@ async fn write_list_with(
     }
     if !status.is_success() {
         crate::approval_needed(status, &text)?;
+        // Apple can't take it now (429, 503 under load): busy, asked again later — never a
+        // broken answer, which the outbox gives up on after a few tries.
+        if status.as_u16() == 429 || status.is_server_error() {
+            return Err(Error::Busy);
+        }
         return Err(Error::Protocol(format!(
             "contacts returned {status}: {}",
             text.chars().take(200).collect::<String>()
@@ -1513,6 +1523,11 @@ async fn co_text_with(
     }
     if !status.is_success() {
         crate::approval_needed(status, &text)?;
+        // Apple can't take it now (429, 503 under load): busy, asked again later — never a
+        // broken answer, which the outbox gives up on after a few tries.
+        if status.as_u16() == 429 || status.is_server_error() {
+            return Err(Error::Busy);
+        }
         return Err(Error::Protocol(format!(
             "contacts returned {status}: {}",
             text.chars().take(200).collect::<String>()
@@ -2057,6 +2072,11 @@ async fn startup(
     }
     if !status.is_success() {
         crate::approval_needed(status, &text)?;
+        // Apple can't take it now (429, 503 under load): busy, asked again later — never a
+        // broken answer, which the outbox gives up on after a few tries.
+        if status.as_u16() == 429 || status.is_server_error() {
+            return Err(Error::Busy);
+        }
         return Err(Error::Protocol(format!(
             "/co/startup returned {status}: {}",
             text.chars().take(160).collect::<String>()
@@ -2145,6 +2165,29 @@ fn apply_whole(library: &mut quince_core::Library, book: AddressBook) -> Result<
     library.set_state(ME_KEY, book.me.as_deref().unwrap_or(""))?;
     library.mark_synced("contacts", None)?;
     Ok(book.contacts.len())
+}
+
+#[cfg(test)]
+mod busy_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Apple under load answers 503 (seen on Android, several syncs at once): busy, asked
+    /// again later — not "something unexpected", which the outbox stops trying after a few.
+    #[tokio::test]
+    async fn an_overloaded_apple_is_busy_not_broken() {
+        for status in [429, 503] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/co/startup"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            let got = fetch(&reqwest::Client::new(), &server.uri(), vec![]).await;
+            assert!(matches!(got, Err(Error::Busy)), "{status}: {:?}", got.err());
+        }
+    }
 }
 
 #[cfg(test)]
