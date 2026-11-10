@@ -59,9 +59,12 @@ Left out on purpose:
 
 Regenerate whenever `Cargo.lock` or `package-lock.json` changes. Run from the repository root.
 The build uses `--locked`, so generate from the **committed** lockfiles.
+`sources-current.py` checks that both files hold every package the lockfiles name, checksum for
+checksum. The gate and CI run it on every change, so a lockfile changed without them fails
+there rather than in the Flatpak build at release.
 
-`cargo-sources.json` was regenerated from `Cargo.lock` at `054560f` on 2026-10-22 (1,267 entries;
-it now has aes-gcm, aes-kw, ctr, ghash, polyval and rustls 0.23.46).
+`cargo-sources.json` was last regenerated from `Cargo.lock` at `e851a4d` on 2026-11-10, for the
+crates the Android bridge (`crates/quince-mobile`, UniFFI) added.
 
 `node-sources.json` was checked against `package-lock.json` on 2026-10-22 by running the current
 generator: every one of its 310 entries is identical. The generator's only additions were ten

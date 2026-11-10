@@ -1944,15 +1944,18 @@ pub(crate) mod tests {
     #[test]
     fn views_sort_and_filter() {
         let mut lib = Library::in_memory().unwrap();
-        let mut fav = photo("b", 200);
+        // Mid-January 1970: January in every zone. Seconds past midnight UTC on the 1st were
+        // still December west of Greenwich, and the month search found nothing there.
+        const JAN_15: i64 = 14 * 86_400;
+        let mut fav = photo("b", JAN_15 + 200);
         fav.favorite = true;
-        let mut video = photo("c", 300);
+        let mut video = photo("c", JAN_15 + 300);
         video.kind = Kind::Video;
-        let mut gone = photo("d", 400);
+        let mut gone = photo("d", JAN_15 + 400);
         gone.deleted = true;
-        let mut hidden = photo("e", 500);
+        let mut hidden = photo("e", JAN_15 + 500);
         hidden.hidden = true;
-        lib.put_photos(&[photo("a", 100), fav, video, gone, hidden])
+        lib.put_photos(&[photo("a", JAN_15 + 100), fav, video, gone, hidden])
             .unwrap();
         let ids = |lib: &Library, v| {
             lib.photos(v)

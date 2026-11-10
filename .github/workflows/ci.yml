@@ -53,6 +53,10 @@ jobs:
             echo "$stray"
             exit 1
           fi
+      # The Flatpak builds offline from packaging/flatpak/*-sources.json; a dependency added
+      # without them regenerated failed only there, at release (v0.1.18).
+      - name: The Flatpak's offline sources match the lockfiles
+        run: python3 packaging/flatpak/sources-current.py
       - name: No secret in any commit
         env:
           GITLEAKS: "8.30.1"
@@ -110,7 +114,12 @@ jobs:
             if (mm(npm) !== mm(rust)) { console.error("Tauri npm package and crate differ: align them"); process.exit(1); }'
       - run: npx vite build
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # In a zone west of UTC with clock changes: in UTC a time read in the wrong zone reads
+      # the same as the right one, so #23 (a floating reminder rang hours early) passed here.
+      # The gate runs in its own machine's zone and Windows in UTC: three kinds of offset.
       - run: cargo test --workspace --lib --bins --tests --locked --no-fail-fast
+        env:
+          TZ: America/Chicago
       # The keyring code against a real, throwaway gnome-keyring on a private bus (check.sh's
       # "real keyring"): what the keyring crate saved reads with ours, and a burst is survived.
       - name: A real keyring

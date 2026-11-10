@@ -42,6 +42,8 @@ step "app is standalone" bash -c '! grep -q devUrl src-tauri/tauri.conf.json'
 
 # Only what is meant to be public is tracked (.github/published-paths says what that is).
 step "nothing stray is published" bash -c '! git ls-files | grep -vxE -f <(grep -vE "^(#|$)" .github/published-paths)'
+# The Flatpak builds offline: every package the lockfiles name must be in its sources.
+step "flatpak sources current" python3 packaging/flatpak/sources-current.py
 
 
 # Every suite CI runs is one this gate runs too, so a suite renamed or removed here can't
