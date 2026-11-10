@@ -9,7 +9,7 @@ name: Windows checks
 
 on:
   push:
-    branches: [main, ci-speed]
+    branches: [main]
     paths-ignore:
       - "android/**"
       - "docs/**"
