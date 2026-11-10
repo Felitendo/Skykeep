@@ -70,6 +70,8 @@ class PhotoSyncTest {
     company = null, isCompany = false, birthday = null, notes = null,
     methods = listOf(Method("phone", "MOBILE", "+1 555 0100")),
     photo = PhotoRef(url = "test:blue", crop = null, key = "blue"),
+    prefix = "Countess", suffix = null, nickname = "Ada", phoneticFirstName = null, phoneticLastName = null,
+    jobTitle = "Mathematician", department = "Analytical Engine",
   )
 
   /** The phone's changes as the sync would send them, each answered Saved. */
@@ -110,6 +112,13 @@ class PhotoSyncTest {
     val renamed = sent()
     assertEquals(1, renamed.size)
     assertNull("a name edit never sends the picture", renamed[0].photo)
+    // The rest of the name and work, read back from the phone's rows as written: sent as they
+    // are, so a name edit never clears a job title or nickname in iCloud.
+    val back = renamed[0].person!!
+    assertEquals("Mathematician", back.jobTitle)
+    assertEquals("Analytical Engine", back.department)
+    assertEquals("Ada", back.nickname)
+    assertEquals("Countess", back.prefix)
 
     // Read again from iCloud as it now is (the name edit in it), so the base is current.
     ContactsSync.sync(cr, account, listOf(ada.copy(etag = "e2", firstName = "Augusta Ada")), allowMassRemoval = false) { blue }

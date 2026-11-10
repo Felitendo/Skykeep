@@ -66,6 +66,8 @@ class SyncScaleTest {
     ),
     // Every 50th with a picture, so the picture rows are part of what is timed.
     photo = if (n % 50 == 0) uniffi.quince_mobile.PhotoRef(url = "test:$n", crop = null, key = "k$n") else null,
+    prefix = null, suffix = null, nickname = null, phoneticFirstName = null, phoneticLastName = null,
+    jobTitle = if (n % 3 == 0) "Engineer" else null, department = null,
   )
 
   /** A picture as the engine hands one over: a small JPEG. */

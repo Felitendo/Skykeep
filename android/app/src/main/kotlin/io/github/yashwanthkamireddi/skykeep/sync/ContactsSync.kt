@@ -7,6 +7,7 @@ import android.net.Uri
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Event
+import android.provider.ContactsContract.CommonDataKinds.Nickname
 import android.provider.ContactsContract.CommonDataKinds.Note
 import android.provider.ContactsContract.CommonDataKinds.Organization
 import android.provider.ContactsContract.CommonDataKinds.Phone
@@ -65,11 +66,12 @@ object ContactsSync {
 
   /**
    * How a card's rows are written here (kept in SYNC3). A row in an older format is written again
-   * from iCloud on the next sync, whatever its etag: 3 = with its picture; 2 = Apple's standard
+   * from iCloud on the next sync, whatever its etag: 4 = with the rest of the name and work
+   * (prefix, suffix, nickname, phonetic names, job title, department); 3 = with its picture; 2 = Apple's standard
    * labels as Android's own types, a number with no label as Other (1 wrote labels as custom
    * text, none as "phone").
    */
-  private const val FORMAT = "3"
+  private const val FORMAT = "4"
 
   /** The most pictures' bytes in one batch: half of what one binder call can carry. */
   const val BATCH_BYTES = 500_000
@@ -284,10 +286,13 @@ object ContactsSync {
   private fun readPerson(cr: ContentResolver, rawId: Long, guid: String, base: Person?): Person {
     var first: String? = null; var middle: String? = null; var last: String? = null
     var company: String? = null; var notes: String? = null; var birthday: String? = null
+    var prefix: String? = null; var suffix: String? = null; var nickname: String? = null
+    var phoneticFirst: String? = null; var phoneticLast: String? = null
+    var jobTitle: String? = null; var department: String? = null
     val methods = ArrayList<Method>()
     cr.query(
       Data.CONTENT_URI,
-      arrayOf(Data.MIMETYPE, Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA5),
+      arrayOf(Data.MIMETYPE, Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA5, Data.DATA4, Data.DATA6, Data.DATA7, Data.DATA9),
       "${Data.RAW_CONTACT_ID}=?", arrayOf(rawId.toString()), null,
     )?.use { c ->
       while (c.moveToNext()) {
@@ -295,8 +300,14 @@ object ContactsSync {
         fun text(i: Int) = c.getString(i)?.takeIf { it.isNotBlank() }
         when (mime) {
           // GIVEN_NAME is DATA2, FAMILY_NAME DATA3, MIDDLE_NAME DATA5 (columns 2, 3, 4 here).
-          StructuredName.CONTENT_ITEM_TYPE -> { first = text(2); last = text(3); middle = text(4) }
-          Organization.CONTENT_ITEM_TYPE -> company = text(1)
+          // PREFIX DATA4, SUFFIX DATA6, PHONETIC_GIVEN_NAME DATA7, PHONETIC_FAMILY_NAME DATA9.
+          StructuredName.CONTENT_ITEM_TYPE -> {
+            first = text(2); last = text(3); middle = text(4)
+            prefix = text(5); suffix = text(6); phoneticFirst = text(7); phoneticLast = text(8)
+          }
+          // COMPANY DATA1, TITLE DATA4, DEPARTMENT DATA5.
+          Organization.CONTENT_ITEM_TYPE -> { company = text(1); jobTitle = text(5); department = text(4) }
+          Nickname.CONTENT_ITEM_TYPE -> nickname = text(1)
           Note.CONTENT_ITEM_TYPE -> notes = text(1)
           Event.CONTENT_ITEM_TYPE -> if (c.getInt(2) == Event.TYPE_BIRTHDAY) birthday = text(1)
           // Android's own type (Mobile, Home, Work…) or, for TYPE_CUSTOM, the label typed.
@@ -314,6 +325,9 @@ object ContactsSync {
       guid = guid, etag = base?.etag, firstName = first, middleName = middle, lastName = last,
       company = company, isCompany = base?.isCompany ?: false, birthday = birthday, notes = notes,
       methods = methods, photo = base?.photo,
+      prefix = prefix, suffix = suffix, nickname = nickname,
+      phoneticFirstName = phoneticFirst, phoneticLastName = phoneticLast,
+      jobTitle = jobTitle, department = department,
     )
   }
 
@@ -471,6 +485,10 @@ object ContactsSync {
       .withValue(StructuredName.GIVEN_NAME, p.firstName)
       .withValue(StructuredName.MIDDLE_NAME, p.middleName)
       .withValue(StructuredName.FAMILY_NAME, p.lastName)
+      .withValue(StructuredName.PREFIX, p.prefix)
+      .withValue(StructuredName.SUFFIX, p.suffix)
+      .withValue(StructuredName.PHONETIC_GIVEN_NAME, p.phoneticFirstName)
+      .withValue(StructuredName.PHONETIC_FAMILY_NAME, p.phoneticLastName)
       .apply { if (p.isCompany || (p.firstName == null && p.lastName == null)) withValue(StructuredName.DISPLAY_NAME, p.company) }
     // The picture whole: Android keeps it as the card's large photo and makes the small one for
     // lists itself. Its key (SYNC1 on the row) says which of iCloud's pictures it is; the file
@@ -480,7 +498,13 @@ object ContactsSync {
         .withValue(Data.IS_PRIMARY, 1).withValue(Data.IS_SUPER_PRIMARY, 1)
         .withValue(Data.SYNC1, p.photo!!.key)
     }
-    p.company?.let { out += row(Organization.CONTENT_ITEM_TYPE).withValue(Organization.COMPANY, it) }
+    if (p.company != null || p.jobTitle != null || p.department != null) {
+      out += row(Organization.CONTENT_ITEM_TYPE)
+        .withValue(Organization.COMPANY, p.company)
+        .withValue(Organization.TITLE, p.jobTitle)
+        .withValue(Organization.DEPARTMENT, p.department)
+    }
+    p.nickname?.let { out += row(Nickname.CONTENT_ITEM_TYPE).withValue(Nickname.NAME, it) }
     p.notes?.let { out += row(Note.CONTENT_ITEM_TYPE).withValue(Note.NOTE, it) }
     p.birthday?.let {
       out += row(Event.CONTENT_ITEM_TYPE).withValue(Event.TYPE, Event.TYPE_BIRTHDAY).withValue(Event.START_DATE, it)
@@ -510,6 +534,9 @@ object ContactsSync {
     put("guid", p.guid); put("etag", p.etag); put("first", p.firstName); put("middle", p.middleName)
     put("last", p.lastName); put("company", p.company); put("isCompany", p.isCompany)
     put("birthday", p.birthday); put("notes", p.notes); put("photoKey", p.photo?.key)
+    put("prefix", p.prefix); put("suffix", p.suffix); put("nickname", p.nickname)
+    put("phoneticFirst", p.phoneticFirstName); put("phoneticLast", p.phoneticLastName)
+    put("jobTitle", p.jobTitle); put("department", p.department)
     put("methods", JSONArray().apply {
       for (m in p.methods) put(JSONObject().apply { put("kind", m.kind); put("label", m.label); put("value", m.value) })
     })
@@ -525,6 +552,9 @@ object ContactsSync {
       birthday = str("birthday"), notes = str("notes"),
       // Only the key is kept: which picture the phone has (the url is asked for anew each time).
       photo = str("photoKey")?.let { PhotoRef(url = "", crop = null, key = it) },
+      prefix = str("prefix"), suffix = str("suffix"), nickname = str("nickname"),
+      phoneticFirstName = str("phoneticFirst"), phoneticLastName = str("phoneticLast"),
+      jobTitle = str("jobTitle"), department = str("department"),
       methods = (0 until ms.length()).map { i ->
         val m = ms.getJSONObject(i)
         Method(m.getString("kind"), if (m.isNull("label")) null else m.optString("label"), m.getString("value"))

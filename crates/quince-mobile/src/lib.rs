@@ -149,6 +149,14 @@ pub struct Person {
     pub birthday: Option<String>,
     pub notes: Option<String>,
     pub methods: Vec<Method>,
+    /// The rest of the name and work, as iCloud keeps them (the engine's `ContactDetails`).
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub nickname: Option<String>,
+    pub phonetic_first_name: Option<String>,
+    pub phonetic_last_name: Option<String>,
+    pub job_title: Option<String>,
+    pub department: Option<String>,
     /// The card's picture as Apple holds it, if it has one; fetched with
     /// [`Account::contact_photo`] only when its `key` is not the one the phone has.
     pub photo: Option<PhotoRef>,
@@ -375,6 +383,25 @@ fn contact_of(p: &Person, guid: &str) -> quince_core::contacts::Contact {
     }
 }
 
+/// A person as the engine's card: the contact and the rest of the name and work. The engine
+/// sends only what changed from the base, field by field, so a field the phone never showed is
+/// left as iCloud has it.
+fn card_of(contact: quince_core::contacts::Contact, p: &Person) -> quince_core::contacts::Card {
+    quince_core::contacts::Card {
+        contact,
+        details: quince_core::contacts::ContactDetails {
+            prefix: p.prefix.clone(),
+            suffix: p.suffix.clone(),
+            nickname: p.nickname.clone(),
+            phonetic_first_name: p.phonetic_first_name.clone(),
+            phonetic_last_name: p.phonetic_last_name.clone(),
+            job_title: p.job_title.clone(),
+            department: p.department.clone(),
+            ..Default::default()
+        },
+    }
+}
+
 /// What went wrong, for the screen: the engine's sentence. The whole of it — Apple's status,
 /// the connection's own error — goes to the phone's log (`adb logcat -s Skykeep`), where it was
 /// lost: "the connection dropped" on screen said nothing of which request or why.
@@ -573,33 +600,45 @@ impl Account {
                 c.service_params(),
             ))
             .map_err(failed)?;
+        let mut details: std::collections::HashMap<String, quince_core::contacts::ContactDetails> =
+            book.details.into_iter().collect();
         Ok(book
             .contacts
             .into_iter()
-            .map(|p| Person {
-                guid: p.guid,
-                etag: p.etag,
-                first_name: p.first_name,
-                middle_name: p.middle_name,
-                last_name: p.last_name,
-                company: p.company,
-                is_company: p.is_company,
-                birthday: p.birthday,
-                notes: p.notes,
-                methods: p
-                    .methods
-                    .into_iter()
-                    .map(|m| Method {
-                        kind: m.kind,
-                        label: m.label,
-                        value: m.value,
-                    })
-                    .collect(),
-                photo: p.photo_url.map(|url| PhotoRef {
-                    key: p.photo_signature.unwrap_or_else(|| url.clone()),
-                    url,
-                    crop: p.photo_crop,
-                }),
+            .map(|p| {
+                let d = details.remove(&p.guid).unwrap_or_default();
+                Person {
+                    guid: p.guid,
+                    etag: p.etag,
+                    first_name: p.first_name,
+                    middle_name: p.middle_name,
+                    last_name: p.last_name,
+                    company: p.company,
+                    is_company: p.is_company,
+                    birthday: p.birthday,
+                    notes: p.notes,
+                    methods: p
+                        .methods
+                        .into_iter()
+                        .map(|m| Method {
+                            kind: m.kind,
+                            label: m.label,
+                            value: m.value,
+                        })
+                        .collect(),
+                    photo: p.photo_url.map(|url| PhotoRef {
+                        key: p.photo_signature.unwrap_or_else(|| url.clone()),
+                        url,
+                        crop: p.photo_crop,
+                    }),
+                    prefix: d.prefix,
+                    suffix: d.suffix,
+                    nickname: d.nickname,
+                    phonetic_first_name: d.phonetic_first_name,
+                    phonetic_last_name: d.phonetic_last_name,
+                    job_title: d.job_title,
+                    department: d.department,
+                }
             })
             .collect())
     }
@@ -673,11 +712,20 @@ impl Account {
                                 "a new contact with nothing in it".into(),
                             )
                         })?;
-                        let card =
-                            with_photo(contact_of(person, &change.guid), change.photo.as_ref())?;
-                        c::create_named(&http, &root, params.clone(), &ledger, &change.guid, &card)
-                            .await
-                            .map(|()| ChangeOutcome::Saved)
+                        let card = card_of(
+                            with_photo(contact_of(person, &change.guid), change.photo.as_ref())?,
+                            person,
+                        );
+                        c::create_card_named(
+                            &http,
+                            &root,
+                            params.clone(),
+                            &ledger,
+                            &change.guid,
+                            &card,
+                        )
+                        .await
+                        .map(|()| ChangeOutcome::Saved)
                     }
                     ChangeKind::Update => {
                         let person = change.person.as_ref().ok_or_else(|| {
@@ -687,23 +735,38 @@ impl Account {
                             // Deleted in iCloud while edited here: kept as a new card.
                             None => {
                                 let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
-                                let card =
-                                    with_photo(contact_of(person, &guid), change.photo.as_ref())?;
-                                c::create_named(&http, &root, params.clone(), &ledger, &guid, &card)
-                                    .await
-                                    .map(|()| ChangeOutcome::Recreated { guid })
+                                let card = card_of(
+                                    with_photo(contact_of(person, &guid), change.photo.as_ref())?,
+                                    person,
+                                );
+                                c::create_card_named(
+                                    &http,
+                                    &root,
+                                    params.clone(),
+                                    &ledger,
+                                    &guid,
+                                    &card,
+                                )
+                                .await
+                                .map(|()| ChangeOutcome::Recreated { guid })
                             }
                             Some(card) => {
-                                let base = base_with_photo(
-                                    change.base.as_ref().map(|b| contact_of(b, &change.guid)),
-                                    change.photo.as_ref(),
-                                    card,
+                                let base = change.base.as_ref().and_then(|b| {
+                                    base_with_photo(
+                                        Some(contact_of(b, &change.guid)),
+                                        change.photo.as_ref(),
+                                        card,
+                                    )
+                                    .map(|contact| card_of(contact, b))
+                                });
+                                let mine = card_of(
+                                    with_photo(
+                                        contact_of(person, &change.guid),
+                                        change.photo.as_ref(),
+                                    )?,
+                                    person,
                                 );
-                                let mine = with_photo(
-                                    contact_of(person, &change.guid),
-                                    change.photo.as_ref(),
-                                )?;
-                                c::update_from(
+                                c::update_card(
                                     &http,
                                     &root,
                                     params.clone(),

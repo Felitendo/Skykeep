@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no contacts service"))?;
     let (http, params) = (client.http().clone(), client.service_params());
     let (book, _) = c::fetch_book_with_tokens(&http, &root, params.clone()).await?;
+    let details: std::collections::HashMap<_, _> = book.details.iter().cloned().collect();
     let tests: Vec<_> = book
         .contacts
         .iter()
@@ -61,6 +62,12 @@ async fn main() -> Result<()> {
                 );
                 for m in &p.methods {
                     println!("    {} {:?} {}", m.kind, m.label, m.value);
+                }
+                if let Some(d) = details.get(&p.guid) {
+                    println!(
+                        "    job title {:?}, department {:?}, nickname {:?}",
+                        d.job_title, d.department, d.nickname
+                    );
                 }
             }
             println!("{} test cards", tests.len());

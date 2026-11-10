@@ -4,17 +4,18 @@
   to iCloud (ContactsSync's KIND and TYPES), with the labels it maps to Apple's. Left empty, as
   it first was, the Contacts app showed every Skykeep contact as "View-only" (10 Nov). A field
   not listed here can't be added in the editor, so nothing is typed that would never reach
-  iCloud: no nicknames, relations or chat accounts, which the sync doesn't carry. The company
-  field's editor also has a job title box, which this can't take away; job titles aren't carried
-  yet (the engine's Contact has none), a known gap to close.
+  iCloud: no relations or chat accounts, which the sync doesn't carry. The name's prefix,
+  suffix and phonetic parts, the nickname, and the company's job title and department are
+  carried (ContactsSync's FORMAT 4).
 -->
 <ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android">
     <EditSchema>
         <DataKind kind="name" maxOccurs="1"
             supportsDisplayName="true" supportsMiddleName="true"
-            supportsPrefix="false" supportsSuffix="false"
-            supportsPhoneticFamilyName="false" supportsPhoneticMiddleName="false"
-            supportsPhoneticGivenName="false" />
+            supportsPrefix="true" supportsSuffix="true"
+            supportsPhoneticFamilyName="true" supportsPhoneticMiddleName="false"
+            supportsPhoneticGivenName="true" />
+        <DataKind kind="nickname" maxOccurs="1" />
         <DataKind kind="photo" maxOccurs="1" />
         <DataKind kind="phone">
             <Type type="mobile" />
