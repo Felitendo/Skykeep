@@ -75,6 +75,7 @@ private enum class Tab(val label: String, val icon: Int) {
   Home("Home", R.drawable.ic_home),
   Contacts("Contacts", R.drawable.ic_person),
   Calendar("Calendar", R.drawable.ic_calendar),
+  Reminders("Reminders", R.drawable.ic_reminders),
   Settings("Settings", R.drawable.ic_settings),
 }
 
@@ -105,13 +106,19 @@ fun MainScreens(engine: uniffi.quince_mobile.Account, onSignedOut: () -> Unit) {
       }
     },
   ) { inner ->
-    Box(Modifier.padding(inner).fillMaxSize().verticalScroll(rememberScrollState())) {
-      Column(Modifier.padding(horizontal = 20.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        when (tab) {
-          Tab.Home -> Home(engine, account, sync, onSync = ::now)
-          Tab.Contacts -> ContactsPage(account)
-          Tab.Calendar -> CalendarPage(account)
-          Tab.Settings -> SettingsPage(engine, account, onSignedOut)
+    // Reminders scrolls its own lists (a list can be long); the other pages are one column.
+    if (tab == Tab.Reminders) {
+      Box(Modifier.padding(inner).fillMaxSize()) { RemindersPage(engine) }
+    } else {
+      Box(Modifier.padding(inner).fillMaxSize().verticalScroll(rememberScrollState())) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+          when (tab) {
+            Tab.Home -> Home(engine, account, sync, onSync = ::now)
+            Tab.Contacts -> ContactsPage(account)
+            Tab.Calendar -> CalendarPage(account)
+            Tab.Reminders -> {}
+            Tab.Settings -> SettingsPage(engine, account, onSignedOut)
+          }
         }
       }
     }
@@ -149,7 +156,10 @@ private fun Home(engine: uniffi.quince_mobile.Account, account: Account?, sync: 
       }
     }
   }
-  for ((authority, name) in listOf(ContactsContract.AUTHORITY to "Contacts", CalendarContract.AUTHORITY to "Calendar")) {
+  for ((authority, name) in listOf(
+    ContactsContract.AUTHORITY to "Contacts", CalendarContract.AUTHORITY to "Calendar",
+    io.github.yashwanthkamireddi.skykeep.sync.REMINDERS_AUTHORITY to "Reminders",
+  )) {
     Health(name, sync.last[authority], sync.busy)
   }
   // Phone makers' battery savers pause apps that aren't opened often, and a sync with them. Said

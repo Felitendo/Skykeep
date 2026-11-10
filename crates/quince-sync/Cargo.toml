@@ -16,6 +16,7 @@ reqwest.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jiff = "0.2.37"
+sha2 = "0.10"
 
 # The library's file lock (library_lock.rs), on Linux, macOS and Android.
 [target.'cfg(unix)'.dependencies]

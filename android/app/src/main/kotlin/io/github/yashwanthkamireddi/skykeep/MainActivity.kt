@@ -58,6 +58,10 @@ class MainActivity : ComponentActivity() {
               phoneAccount(applicationContext) == null || !allowed(applicationContext) -> Stage.Setup
               else -> Stage.Main
             }
+            // An account made before something synced (Reminders, 10 Nov) is given it now.
+            phoneAccount(applicationContext)?.let { existing ->
+              withContext(Dispatchers.IO) { io.github.yashwanthkamireddi.skykeep.sync.ensureAccount(applicationContext, existing.name) }
+            }
           }
           when (stage) {
             Stage.Starting -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }

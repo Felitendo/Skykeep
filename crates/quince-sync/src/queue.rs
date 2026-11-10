@@ -202,3 +202,20 @@ pub fn last_word(
         .rfind(|p| p.record == record)
         .filter(|p| p.kind == kind))
 }
+
+/// An account as the library names it.
+pub fn account_tag(dsid: &str) -> String {
+    use sha2::Digest;
+    format!(
+        "{:x}",
+        sha2::Sha256::digest(format!("quince-account:{dsid}"))
+    )
+}
+
+/// The account a request's parameters ask as (its `dsid`), as the library names accounts.
+pub fn asked_as(params: &[(String, String)]) -> Option<String> {
+    params
+        .iter()
+        .find(|(k, _)| k == "dsid")
+        .map(|(_, dsid)| account_tag(dsid))
+}

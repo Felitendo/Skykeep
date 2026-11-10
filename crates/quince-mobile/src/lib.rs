@@ -432,6 +432,9 @@ fn failed(e: impl std::fmt::Display + std::fmt::Debug) -> EngineError {
 }
 
 /// The phone's own log, through Android's `liblog`; nothing elsewhere.
+mod reminders;
+pub use reminders::{RCounts, REdit, RItem, RList, RSync, RView};
+
 mod log {
     #[cfg(target_os = "android")]
     pub fn error(text: &str) {
@@ -466,6 +469,15 @@ mod log {
 #[derive(uniffi::Object)]
 pub struct Account {
     client: std::sync::Mutex<quince_auth::Client>,
+    /// The app's private files: the session, and each account's library under `libraries/`.
+    dir: std::path::PathBuf,
+    /// The open library, and whose it is (reminders.rs).
+    library: std::sync::Mutex<
+        Option<(
+            String,
+            std::sync::Arc<quince_sync::library_lock::LibraryLock>,
+        )>,
+    >,
 }
 
 #[uniffi::export]
@@ -476,6 +488,8 @@ impl Account {
         let client = quince_auth::Client::new(std::path::Path::new(&state_dir)).map_err(failed)?;
         Ok(std::sync::Arc::new(Self {
             client: std::sync::Mutex::new(client),
+            dir: std::path::PathBuf::from(state_dir),
+            library: std::sync::Mutex::new(None),
         }))
     }
 

@@ -1442,14 +1442,7 @@ const ACCOUNT_FILES: [&str; 13] = [
 /// Where the accounts not signed in are kept, each under its own tag.
 const SET_ASIDE: &str = "accounts";
 
-/// An account as the library names it.
-pub fn account_tag(dsid: &str) -> String {
-    use sha2::Digest;
-    format!(
-        "{:x}",
-        sha2::Sha256::digest(format!("quince-account:{dsid}"))
-    )
-}
+pub use quince_sync::queue::account_tag;
 
 /// The library made the signed-in account's, before anything else can use the session: called
 /// with the auth lock still held, so no sync, send or upload ever sees one account's session
@@ -1686,13 +1679,7 @@ async fn account_now(auth: &Auth) -> Option<String> {
         .map(account_tag)
 }
 
-/// The account a request's parameters ask as (its `dsid`), as the library names accounts.
-fn asked_as(params: &[(String, String)]) -> Option<String> {
-    params
-        .iter()
-        .find(|(k, _)| k == "dsid")
-        .map(|(_, dsid)| account_tag(dsid))
-}
+use quince_sync::queue::asked_as;
 
 /// Whether what was read with one account's session may be stored in this library: only in
 /// the library that account owns. A pass after a write read with the session the write was

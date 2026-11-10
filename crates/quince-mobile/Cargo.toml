@@ -26,6 +26,7 @@ quince-core = { path = "../quince-core" }
 # Contact pictures only: cut and sized for the phone, sent at Apple's size. No HEIC (libheif
 # would have to be built for Android for nothing).
 quince-media = { path = "../quince-media", default-features = false }
+quince-sync = { path = "../quince-sync" }
 serde_json.workspace = true
 uuid = { workspace = true }
 uniffi = "0.32"
