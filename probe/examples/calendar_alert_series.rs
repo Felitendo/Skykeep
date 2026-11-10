@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
         freq: "weekly".into(),
         interval: 1,
         count: Some(3),
+        ..quince_icloud::calendar::EventRepeat::default()
     };
     cal.put_event_full(&event, None, None, Some(Some(&rule)), None)
         .await?;

@@ -91,6 +91,7 @@ async fn main() -> Result<()> {
                 freq: "weekly".into(),
                 interval: 1,
                 count: Some(4),
+                ..EventRepeat::default()
             };
             cal.put_event_full(&weekly, None, None, Some(Some(&repeat)), None)
                 .await?;
@@ -133,6 +134,61 @@ async fn main() -> Result<()> {
                 );
             }
             println!("{} events in {}", events.len(), found.guid);
+        }
+        Some("raw") => {
+            // Apple's whole record of each test event that repeats: its Recurrence objects as
+            // Apple writes them, every field, to read Apple's own shape from.
+            let Some(found) = calendars.iter().find(|c| c.title == TITLE) else {
+                bail!("no {TITLE:?} calendar");
+            };
+            let (a, b) = (
+                today.to_string(),
+                today.checked_add(jiff::Span::new().days(400))?.to_string(),
+            );
+            let snap = quince_icloud::sync::fetch_calendar(
+                client.http(),
+                &root,
+                client.service_params(),
+                &a,
+                &b,
+                "UTC",
+            )
+            .await?;
+            let mut seen = std::collections::HashSet::new();
+            for e in snap.events.iter().filter(|e| e.calendar_guid == found.guid) {
+                let series = e.guid.split("__").next().unwrap_or(&e.guid).to_string();
+                if !quince_icloud::calendar::is_occurrence(&e.guid) || !seen.insert(series) {
+                    continue;
+                }
+                let day = jiff::Timestamp::from_second(e.starts_at)?
+                    .to_zoned(jiff::tz::TimeZone::UTC)
+                    .date()
+                    .to_string();
+                if let Some(body) = cal.event_detail_body(e, &day).await? {
+                    let r = &body["Recurrence"][0];
+                    let days: Vec<String> = snap
+                        .events
+                        .iter()
+                        .filter(|o| o.guid.starts_with(e.guid.split("__").next().unwrap_or("")))
+                        .map(|o| {
+                            jiff::Timestamp::from_second(o.starts_at)
+                                .map(|t| {
+                                    t.to_zoned(jiff::tz::TimeZone::UTC)
+                                        .strftime("%a %d")
+                                        .to_string()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect();
+                    println!(
+                        "{} | {} | {} | {}",
+                        e.title,
+                        r["localizedRecurrenceRuleDisplayString"],
+                        serde_json::to_string(r)?,
+                        days.join(" ")
+                    );
+                }
+            }
         }
         Some("edit") => {
             // The timed test event, found in the test calendar by its title there, renamed and

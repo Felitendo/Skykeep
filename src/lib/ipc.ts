@@ -609,7 +609,6 @@ export type EventWrite = {
   base?: CalendarEvent;
 };
 
-/** How an event repeats, in icloud.com's words. */
 /** Someone invited to an event. `status` is "pending" until they answer. */
 export type Guest = {
   name: string | null;
@@ -619,7 +618,20 @@ export type Guest = {
   isOrganizer: boolean;
 };
 
-export type EventRepeat = { freq: "daily" | "weekly" | "monthly" | "yearly"; interval: number; count: number | null };
+/** How an event repeats, in icloud.com's words (the engine's `EventRepeat`). Beyond every N of
+ *  a unit: a weekly one's `weekDays` ("MO" … "SU"); a monthly or yearly one's `position` weekday
+ *  ("2nd" with weekDays ["TU"]); a monthly one's `monthDays`; a yearly one's `months`; and an
+ *  end, `count` times or `until` a day ("YYYY-MM-DD"). Absent fields mean none. */
+export type EventRepeat = {
+  freq: "daily" | "weekly" | "monthly" | "yearly";
+  interval: number;
+  count: number | null;
+  weekDays?: string[];
+  position?: string | null;
+  monthDays?: number[];
+  months?: number[];
+  until?: string | null;
+};
 
 export type CalendarEvent = {
   guid: string;

@@ -442,7 +442,6 @@ pub fn is_occurrence(guid: &str) -> bool {
     guid.contains("__")
 }
 
-/// How an event repeats, in icloud.com's words: `freq` is `daily`, `weekly`, `monthly` or
 /// Someone invited to an event, as Apple holds them: their name and address when Apple has
 /// them, their answer, and whether they are the person signed in or the one who invited.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -563,14 +562,114 @@ pub fn guests_from(body: &Value, event_guid: &str) -> Vec<Guest> {
     guests
 }
 
-/// `yearly`; every `interval` of them; ending after `count` times, or never.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// How an event repeats, in icloud.com's words: `freq` is `daily`, `weekly`, `monthly` or
+/// `yearly`; every `interval` of them; ending after `count` times, on the day `until`, or never.
+/// A weekly one may fall on several `week_days`; a monthly one on several `month_days`, or on
+/// the `position` weekday of the month (the second Tuesday); a yearly one in several `months`,
+/// or on the `position` weekday of its month (the fourth Thursday of November). With none of
+/// those it falls on its start's weekday, day or date. That is all Apple's repeat holds
+/// (docs/icloud-web/calendar.md §5, each form proven against Apple 10 Nov 2026); rules saying
+/// more are read by [`crate::rrule`], which refuses what this cannot hold.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventRepeat {
     pub freq: String,
     pub interval: i64,
     #[serde(default)]
     pub count: Option<i64>,
+    /// A weekly repeat's weekdays, `MO` … `SU`, its start's among them; with `position`, the
+    /// one weekday it names (Apple's `weekDays`). Empty: the start's weekday alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub week_days: Vec<String>,
+    /// Which of the month's `week_days` it is: `1st`, `2nd`, `3rd`, `4th` or `last` (Apple's
+    /// `frequencyDays`). Monthly, or yearly in its one month.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    /// A monthly repeat's days of the month, 1–31, its start's among them (Apple's `byDay`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub month_days: Vec<i64>,
+    /// A yearly repeat's months, 1–12, its start's among them (Apple's `byMonth`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub months: Vec<i64>,
+    /// The last day it may fall on, `YYYY-MM-DD` on the event's own clock (Apple's `until`).
+    /// Never together with `count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+/// A `Recurrence` object Apple holds, read whole: frequency, interval, end, and its days,
+/// position and months.
+fn repeat_from_apple(r: &Value) -> Option<EventRepeat> {
+    let numbers = |key: &str| -> Vec<i64> {
+        r.get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_i64)
+            .collect()
+    };
+    Some(EventRepeat {
+        freq: r.get("freq")?.as_str()?.to_string(),
+        interval: r.get("interval").and_then(Value::as_i64).unwrap_or(1),
+        count: r.get("count").and_then(Value::as_i64),
+        week_days: r
+            .get("weekDays")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|d| Some(d.as_str()?.to_ascii_uppercase()))
+            .collect(),
+        position: r
+            .get("frequencyDays")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string),
+        month_days: numbers("byDay"),
+        months: numbers("byMonth"),
+        // Apple's dates are `[yyyymmdd, year, month, day, hour, minute, minute of the day]`.
+        until: r
+            .get("until")
+            .and_then(Value::as_array)
+            .and_then(|a| {
+                Some((
+                    a.get(1)?.as_i64()?,
+                    a.get(2)?.as_i64()?,
+                    a.get(3)?.as_i64()?,
+                ))
+            })
+            .map(|(y, m, d)| format!("{y:04}-{m:02}-{d:02}")),
+    })
+}
+
+/// A repeat written into a new `Recurrence` object as icloud.com writes one. An end day is
+/// Apple's own shape for it: the day's last minute, so a time that day still counts.
+fn write_repeat(object: &mut Value, rule: &EventRepeat) {
+    if let Some(day) = rule
+        .until
+        .as_deref()
+        .and_then(|d| d.parse::<jiff::civil::Date>().ok())
+    {
+        let (y, m, d) = (
+            i64::from(day.year()),
+            i64::from(day.month()),
+            i64::from(day.day()),
+        );
+        object["until"] = serde_json::json!([y * 10_000 + m * 100 + d, y, m, d, 23, 59, 1439]);
+    } else if let Some(count) = rule.count {
+        object["count"] = Value::from(count);
+    }
+    if !rule.week_days.is_empty() && (rule.freq == "weekly" || rule.position.is_some()) {
+        object["weekDays"] = Value::from(rule.week_days.clone());
+    }
+    if let Some(position) = &rule.position {
+        object["frequencyDays"] = Value::from(position.clone());
+    }
+    if rule.freq == "monthly" && !rule.month_days.is_empty() {
+        object["byDay"] = Value::from(rule.month_days.clone());
+    }
+    if rule.freq == "yearly" && !rule.months.is_empty() {
+        object["byMonth"] = Value::from(rule.months.clone());
+    }
 }
 
 /// An edit made here, laid over the event as another device has since left it — what a save
@@ -881,9 +980,7 @@ impl<'a> CalendarClient<'a> {
                     "freq": rule.freq,
                     "interval": rule.interval.max(1),
                 });
-                if let Some(count) = rule.count {
-                    object["count"] = Value::from(count);
-                }
+                write_repeat(&mut object, rule);
                 body["Recurrence"] = Value::Array(vec![object]);
                 body["Event"]["recurrence"] = Value::String(guid);
             }
@@ -1002,13 +1099,7 @@ impl<'a> CalendarClient<'a> {
             .into_iter()
             .flatten()
             .find(|r| belongs_to(r, &event.guid))
-            .and_then(|r| {
-                Some(EventRepeat {
-                    freq: r.get("freq")?.as_str()?.to_string(),
-                    interval: r.get("interval").and_then(Value::as_i64).unwrap_or(1),
-                    count: r.get("count").and_then(Value::as_i64),
-                })
-            }))
+            .and_then(repeat_from_apple))
     }
 
     /// An event's guests as Apple holds them, the organizer first. Read only.
@@ -1037,8 +1128,8 @@ impl<'a> CalendarClient<'a> {
     }
 
     /// The whole of `eventdetail`: the event, and beside it its `Alarm`, `Invitee` and
-    /// `Recurrence` objects.
-    async fn event_detail_body(&self, event: &Event, day: &str) -> Result<Option<Value>> {
+    /// `Recurrence` objects. Public for the probes, which read Apple's own shape from it.
+    pub async fn event_detail_body(&self, event: &Event, day: &str) -> Result<Option<Value>> {
         let mut query = self.params.clone();
         query.push(("clientVersion".into(), "5.1".into()));
         query.push(("lang".into(), "en-us".into()));
@@ -2900,5 +2991,61 @@ mod odd_event_tests {
             was.len(),
             "nothing added beyond what Apple holds"
         );
+    }
+
+    /// Apple's repeat object, both ways, in the shape Apple itself returned for a test event
+    /// (10 Nov 2026): every two weeks on Tuesday and Thursday, until a day. Written, it reads
+    /// back as the same repeat; an end day is the day's last minute, as Apple stores it.
+    #[test]
+    fn a_repeat_on_weekdays_until_a_day_is_written_as_apple_holds_it() {
+        let apple = serde_json::json!({
+            "freq": "weekly", "interval": 2, "weekStart": "MO",
+            "weekDays": ["TU", "TH"],
+            "until": [20261215, 2026, 12, 15, 23, 59, 1439],
+            "localizedRecurrenceRuleDisplayString": "Repeats every 2 weeks on Tuesday and Thursday",
+        });
+        let read = repeat_from_apple(&apple).unwrap();
+        assert_eq!(
+            read,
+            EventRepeat {
+                freq: "weekly".into(),
+                interval: 2,
+                count: None,
+                week_days: vec!["TU".into(), "TH".into()],
+                until: Some("2026-12-15".into()),
+                ..EventRepeat::default()
+            }
+        );
+        let mut written = serde_json::json!({ "freq": "weekly", "interval": 2 });
+        write_repeat(&mut written, &read);
+        assert_eq!(written["weekDays"], apple["weekDays"]);
+        assert_eq!(written["until"], apple["until"]);
+        assert!(
+            written.get("count").is_none(),
+            "an end day, never a count beside it"
+        );
+        // Each other form, in the shape Apple returned for it: written, it is Apple's own.
+        for apple in [
+            serde_json::json!({ "freq": "monthly", "interval": 1, "frequencyDays": "2nd", "weekDays": ["TU"] }),
+            serde_json::json!({ "freq": "monthly", "interval": 1, "byDay": [1, 15] }),
+            serde_json::json!({ "freq": "yearly", "interval": 1, "byMonth": [11], "frequencyDays": "4th", "weekDays": ["TH"] }),
+        ] {
+            let read = repeat_from_apple(&apple).unwrap();
+            let mut written = serde_json::json!({ "freq": read.freq, "interval": read.interval });
+            write_repeat(&mut written, &read);
+            assert_eq!(written, apple);
+        }
+        // A plain repeat writes neither.
+        let mut plain = serde_json::json!({});
+        write_repeat(
+            &mut plain,
+            &EventRepeat {
+                freq: "monthly".into(),
+                interval: 1,
+                count: Some(3),
+                ..EventRepeat::default()
+            },
+        );
+        assert_eq!(plain, serde_json::json!({ "count": 3 }));
     }
 }

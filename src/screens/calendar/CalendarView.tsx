@@ -76,13 +76,41 @@ const REPEATS = [
 ];
 function repeatKey(r: EventRepeat | null): string {
   if (!r) return "never";
-  return r.interval === 1 && r.count === null ? r.freq : "custom";
+  const plain = !r.weekDays?.length && !r.position && !r.monthDays?.length && !r.months?.length && !r.until;
+  return r.interval === 1 && r.count === null && plain ? r.freq : "custom";
 }
+/** A weekday code's name in the person's language: 5 Jan 2026 was a Monday. */
+const DAY_CODES = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+const dayName = (code: string, width: "long" | "short") =>
+  dateText(new Date(2026, 0, 5 + Math.max(0, DAY_CODES.indexOf(code))), { weekday: width });
+const monthName = (m: number) => dateText(new Date(2026, m - 1, 1), { month: "long" });
+const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
+const listed = (items: string[]) =>
+  items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+/** The repeat in words, as Apple's own Calendar says it: "Every 2 weeks on Tue and Thu",
+ *  "Every month on the 2nd Tuesday", "Every year on the 4th Thursday of November". */
 function repeatText(r: EventRepeat | null): string {
   if (!r) return "Never";
   const unit = { daily: "day", weekly: "week", monthly: "month", yearly: "year" }[r.freq];
-  const every = r.interval === 1 ? `Every ${unit}` : `Every ${r.interval} ${unit}s`;
-  return r.count ? `${every}, ${r.count} times` : every;
+  let text = r.interval === 1 ? `Every ${unit}` : `Every ${r.interval} ${unit}s`;
+  const days = r.weekDays ?? [];
+  if (r.position && days.length) {
+    const which = `the ${r.position} ${dayName(days[0], "long")}`;
+    text += r.freq === "yearly" && r.months?.length ? ` on ${which} of ${monthName(r.months[0])}` : ` on ${which}`;
+  } else if (r.freq === "weekly" && days.length) {
+    text += ` on ${listed(days.map((d) => dayName(d, "short")))}`;
+  } else if (r.freq === "monthly" && r.monthDays?.length) {
+    text += ` on the ${listed(r.monthDays.map(ordinal))}`;
+  } else if (r.freq === "yearly" && r.months?.length) {
+    text += ` in ${listed(r.months.map(monthName))}`;
+  }
+  if (r.until) {
+    const [y, m, d] = r.until.split("-").map(Number);
+    text += `, until ${dateText(new Date(y, m - 1, d), { day: "numeric", month: "short", year: "numeric" })}`;
+  } else if (r.count) {
+    text += `, ${r.count} times`;
+  }
+  return text;
 }
 
 /** icloud.com's alert presets, minutes before the start; an all-day event's are by the day. */

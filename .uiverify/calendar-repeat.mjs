@@ -97,5 +97,21 @@ await page.getByRole("button", { name: "Delete All Future Events" }).click();
 await page.waitForTimeout(300);
 const gone = await page.evaluate(() => window.__eventDeletes?.at(-1));
 ok(gone?.scope === "future", `"delete all future events" sends that  ${JSON.stringify(gone)}`);
+
+// Repeats Apple holds beyond "every week" are shown in words, as Apple's Calendar says them,
+// never as a plain "Every Week".
+for (const [repeat, words] of [
+  [{ freq: "monthly", interval: 1, count: null, position: "2nd", weekDays: ["TU"] }, "Every month on the 2nd Tuesday"],
+  [{ freq: "weekly", interval: 2, count: null, weekDays: ["TU", "TH"], until: "2026-12-15" }, "Every 2 weeks on Tue and Thu, until"],
+  [{ freq: "monthly", interval: 1, count: 6, monthDays: [1, 15] }, "Every month on the 1st and 15th, 6 times"],
+  [{ freq: "yearly", interval: 1, count: null, position: "4th", weekDays: ["TH"], months: [11] }, "Every year on the 4th Thursday of November"],
+]) {
+  await page.keyboard.press("Escape");
+  await page.evaluate((r) => { window.__repeat = r; }, repeat);
+  await page.locator(".cx-block", { hasText: "Weekly" }).first().click();
+  await page.waitForTimeout(350);
+  const shown = await page.getByText(words).count();
+  ok(shown > 0, `a ${repeat.freq} repeat reads "${words}…"`);
+}
 await b.close();
 process.exitCode = failures ? 1 : 0;

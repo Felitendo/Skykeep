@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Mutex as StdMutex;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-use jiff::civil::{Date, DateTime, Weekday};
+use jiff::civil::{Date, DateTime};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 use quince_icloud::calendar::EventRepeat;
@@ -837,19 +837,9 @@ fn event_of(
     })
 }
 
-const WEEKDAYS: [(&str, Weekday); 7] = [
-    ("MO", Weekday::Monday),
-    ("TU", Weekday::Tuesday),
-    ("WE", Weekday::Wednesday),
-    ("TH", Weekday::Thursday),
-    ("FR", Weekday::Friday),
-    ("SA", Weekday::Saturday),
-    ("SU", Weekday::Sunday),
-];
-
-/// How an event repeats, as Apple's repeat holds it — every N days, weeks, months or years,
-/// for a number of times or for ever. A rule saying more than that (several weekdays, the
-/// second Tuesday, skipped dates) is refused rather than brought in as something else.
+/// How an event repeats, as Apple's repeat holds it ([`quince_icloud::rrule`], the one reading
+/// every way in shares). A rule saying more than that (the second Tuesday, skipped or extra
+/// dates) is refused rather than brought in as something else.
 fn repeat_of(c: &Component, start: &When, here: &TimeZone) -> Result<Option<EventRepeat>, String> {
     let rules: Vec<&Property> = c.all("RRULE").collect();
     if c.get("RDATE").is_some() || rules.len() > 1 {
@@ -861,143 +851,16 @@ fn repeat_of(c: &Component, start: &When, here: &TimeZone) -> Result<Option<Even
     if c.get("EXDATE").is_some() {
         return Err("Its repeat skips some dates, which Skykeep can’t set up.".into());
     }
-    let mut freq = None;
-    let mut interval = 1i64;
-    let mut count = None;
-    let mut until = None;
-    let first = start.civil(here);
-    for part in rule.value.trim().split(';').filter(|p| !p.is_empty()) {
-        let (key, value) = part.split_once('=').ok_or("Its repeat can’t be read.")?;
-        let value = value.trim();
-        match key.trim().to_ascii_uppercase().as_str() {
-            "FREQ" => {
-                freq = Some(match value.to_ascii_uppercase().as_str() {
-                    "DAILY" => "daily",
-                    "WEEKLY" => "weekly",
-                    "MONTHLY" => "monthly",
-                    "YEARLY" => "yearly",
-                    "HOURLY" | "MINUTELY" | "SECONDLY" => {
-                        return Err(
-                            "It repeats more than once a day, which Skykeep can’t set up.".into(),
-                        )
-                    }
-                    _ => return Err("Its repeat can’t be read.".into()),
-                });
-            }
-            "INTERVAL" => {
-                interval = value
-                    .parse::<i64>()
-                    .ok()
-                    .filter(|n| *n >= 1)
-                    .ok_or("Its repeat can’t be read.")?;
-            }
-            "COUNT" => {
-                count = Some(
-                    value
-                        .parse::<i64>()
-                        .ok()
-                        .filter(|n| *n >= 1)
-                        .ok_or("Its repeat can’t be read.")?,
-                );
-            }
-            "UNTIL" => until = Some(value.to_string()),
-            "WKST" => {}
-            // Saying again what the start already says — weekly on the start's own weekday,
-            // monthly on its own day — is the same repeat.
-            "BYDAY" => {
-                let same = WEEKDAYS
-                    .iter()
-                    .find(|(code, _)| code.eq_ignore_ascii_case(value))
-                    .is_some_and(|(_, day)| *day == first.weekday());
-                if !same {
-                    return Err(if value.contains(',') {
-                        "It repeats on several days of the week, which Skykeep can’t set up yet."
-                            .into()
-                    } else if value
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_digit() || c == '-' || c == '+')
-                    {
-                        "It repeats on a weekday of the month (like the second Tuesday), which Skykeep can’t set up yet.".into()
-                    } else {
-                        "It repeats on a different weekday than it starts on, which Skykeep can’t set up.".into()
-                    });
-                }
-            }
-            "BYMONTHDAY" => {
-                if value.parse::<i8>().ok() != Some(first.day()) {
-                    return Err("It repeats on other days of the month than it starts on, which Skykeep can’t set up yet.".into());
-                }
-            }
-            "BYMONTH" => {
-                if value.parse::<i8>().ok() != Some(first.month()) {
-                    return Err("It repeats in other months than it starts in, which Skykeep can’t set up yet.".into());
-                }
-            }
-            _ => return Err("It repeats in a way Skykeep can’t set up yet.".into()),
-        }
-    }
-    let freq = freq.ok_or("Its repeat can’t be read.")?;
-    if count.is_some() && until.is_some() {
-        return Err("Its repeat can’t be read.".into());
-    }
-    if let Some(until) = until {
-        // Apple's repeat ends after a number of times: the times there are up to the date.
-        let last = until_civil(&until, start, here).ok_or("Its repeat can’t be read.")?;
-        let times = occurrences_until(first, freq, interval, last);
-        if times <= 1 {
-            return Ok(None);
-        }
-        count = Some(times);
-    }
-    Ok(Some(EventRepeat {
-        freq: freq.to_string(),
-        interval,
-        count,
-    }))
-}
-
-/// The repeat's end, as a clock time on the event's own clock.
-fn until_civil(until: &str, start: &When, here: &TimeZone) -> Option<DateTime> {
-    if let Some(day) = parse_date(until) {
-        // A day: every time on it counts.
-        return Some(day.to_datetime(jiff::civil::Time::constant(23, 59, 59, 0)));
-    }
-    let (dt, utc) = parse_datetime(until)?;
-    if !utc {
-        return Some(dt);
-    }
-    let instant = dt.to_zoned(TimeZone::UTC).ok()?.timestamp();
     let zone = match start {
         When::Zoned(_, tz, _) => tz.clone(),
         _ => here.clone(),
     };
-    Some(instant.to_zoned(zone).datetime())
-}
-
-/// How many times a repeat starting at `first` falls on or before `last`. A month without
-/// the start's day (the 31st) is skipped, as RFC 5545 has it.
-fn occurrences_until(first: DateTime, freq: &str, interval: i64, last: DateTime) -> i64 {
-    let mut times = 0;
-    for k in 0..10_000i64 {
-        let step = k * interval;
-        let span = match freq {
-            "daily" => Span::new().days(step),
-            "weekly" => Span::new().weeks(step),
-            "monthly" => Span::new().months(step),
-            _ => Span::new().years(step),
-        };
-        let Ok(next) = first.checked_add(span) else {
-            break;
-        };
-        if next > last {
-            break;
-        }
-        if next.day() == first.day() {
-            times += 1;
-        }
-    }
-    times
+    quince_icloud::rrule::from_rrule(
+        &rule.value,
+        start.civil(here),
+        &zone,
+        matches!(start, When::Day(_)),
+    )
 }
 
 /// The event's alerts: minutes before its start, from each `VALARM` that rings at or before
@@ -1083,7 +946,8 @@ mod tests {
                 "Gym",
                 "Rent",
                 "Team sync",
-                "Floating lunch"
+                "Floating lunch",
+                "Classes"
             ]
         );
 
@@ -1100,16 +964,18 @@ mod tests {
             Some(EventRepeat {
                 freq: "weekly".into(),
                 interval: 1,
-                count: Some(10)
+                count: Some(10),
+                ..EventRepeat::default()
             })
         );
-        // Monthly until a date: counted — 1 Jan to 1 Jun is six times.
+        // Monthly until a date: the end day kept as Apple's repeat holds one.
         assert_eq!(
             events[2].repeat,
             Some(EventRepeat {
                 freq: "monthly".into(),
                 interval: 1,
-                count: Some(6)
+                until: Some("2027-06-01".into()),
+                ..EventRepeat::default()
             })
         );
         assert!(events[2].all_day);
@@ -1119,7 +985,7 @@ mod tests {
             Some(EventRepeat {
                 freq: "daily".into(),
                 interval: 2,
-                count: None
+                ..EventRepeat::default()
             })
         );
         assert_eq!(events[3].starts_at, at("2026-11-02T04:30:00Z"));
@@ -1132,13 +998,22 @@ mod tests {
             .iter()
             .map(|r| (r.title.as_str(), r.reason.as_str()))
             .collect();
-        assert_eq!(reasons.len(), 6, "{reasons:?}");
-        assert!(reasons[0].0 == "Classes" && reasons[0].1.contains("several days of the week"));
-        assert!(reasons[1].0 == "Book club" && reasons[1].1.contains("weekday of the month"));
-        assert!(reasons[2].0 == "Standup" && reasons[2].1.contains("skips some dates"));
-        assert!(reasons[3].0 == "Standup" && reasons[3].1.contains("one day of a repeating"));
-        assert!(reasons[4].0 == "Cancelled thing" && reasons[4].1.contains("cancelled"));
-        assert!(reasons[5].0 == "Buy milk" && reasons[5].1.contains("to-do"));
+        // Monday, Wednesday and Friday each week: Apple's repeat holds that.
+        assert_eq!(
+            events[5].repeat,
+            Some(EventRepeat {
+                freq: "weekly".into(),
+                interval: 1,
+                week_days: vec!["MO".into(), "WE".into(), "FR".into()],
+                ..EventRepeat::default()
+            })
+        );
+        assert_eq!(reasons.len(), 5, "{reasons:?}");
+        assert!(reasons[0].0 == "Book club" && reasons[0].1.contains("weekday of the month"));
+        assert!(reasons[1].0 == "Standup" && reasons[1].1.contains("skips some dates"));
+        assert!(reasons[2].0 == "Standup" && reasons[2].1.contains("one day of a repeating"));
+        assert!(reasons[3].0 == "Cancelled thing" && reasons[3].1.contains("cancelled"));
+        assert!(reasons[4].0 == "Buy milk" && reasons[4].1.contains("to-do"));
     }
 
     #[test]

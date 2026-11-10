@@ -283,14 +283,7 @@ fn when_differs(a: &Event, b: &Event) -> bool {
 }
 
 fn rule_line(r: &EventRepeat) -> String {
-    let mut line = format!("RRULE:FREQ={}", r.freq.to_ascii_uppercase());
-    if r.interval > 1 {
-        line.push_str(&format!(";INTERVAL={}", r.interval));
-    }
-    if let Some(n) = r.count {
-        line.push_str(&format!(";COUNT={n}"));
-    }
-    line
+    format!("RRULE:{}", crate::rrule::to_rrule(r))
 }
 
 fn alarm(minutes: i64) -> Part {
@@ -922,15 +915,29 @@ pub fn remove(
     Ok(Removal::Kept(doc.text()))
 }
 
-/// How the file's series repeats, as the event form shows it.
+/// How the file's series repeats, as the event form shows it: read as every way in reads a rule
+/// ([`crate::rrule`]). A rule saying more than Apple's repeat holds (the second Tuesday) still
+/// shows its frequency, as the form can say no more; the file's own rule stays as it is unless
+/// the repeat is changed.
 #[must_use]
 pub fn repeat_of(ics: &str, here: &TimeZone) -> Option<EventRepeat> {
     let doc = Doc::read(ics, here, 0).ok()?;
-    let rule = doc.event(doc.master_at()?).prop("RRULE")?;
+    let master = doc.event(doc.master_at()?);
+    let rule = master.prop("RRULE")?;
+    let (first, zone, all_day) = match doc.start_of(master).ok()?.1 {
+        When::Day(d) => (
+            d.to_datetime(jiff::civil::Time::midnight()),
+            here.clone(),
+            true,
+        ),
+        When::At(at, tz) => (at, tz, false),
+    };
+    if let Ok(found) = crate::rrule::from_rrule(&rule.value, first, &zone, all_day) {
+        return found;
+    }
     let mut repeat = EventRepeat {
-        freq: String::new(),
         interval: 1,
-        count: None,
+        ..EventRepeat::default()
     };
     for part in rule.value.split(';') {
         let (name, value) = part.split_once('=')?;
@@ -1393,6 +1400,7 @@ DTEND;TZID=Europe/Berlin:20261102T093000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nE
             freq: "weekly".into(),
             interval: 2,
             count: Some(3),
+            ..EventRepeat::default()
         };
         let c = Change {
             alerts: Some(&[10]),
@@ -1488,7 +1496,7 @@ DTEND;TZID=Europe/Berlin:20261102T093000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nE
             Some(EventRepeat {
                 freq: "weekly".into(),
                 interval: 1,
-                count: None
+                ..EventRepeat::default()
             })
         );
         assert_eq!(repeat_of(SINGLE, &berlin()), None);

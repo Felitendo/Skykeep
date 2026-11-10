@@ -290,7 +290,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           window.__cals = (window.__cals ?? calendars.map((c) => ({ ...c }))).filter((c) => c.guid !== args.guid);
           return null;
         }
-        case "event_repeat": return String(args.guid).startsWith("SERIES__") ? { freq: "weekly", interval: 1, count: null } : null;
+        // A test sets __repeat to give the series another repeat.
+        case "event_repeat": return String(args.guid).startsWith("SERIES__") ? (window.__repeat ?? { freq: "weekly", interval: 1, count: null }) : null;
         case "event_alerts": return args.guid === "e2" ? [15] : [];
         // A test sets __guests[guid] to give an event its guests.
         case "event_guests": return (window.__guests ?? {})[args.guid] ?? [];

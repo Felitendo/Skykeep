@@ -35,6 +35,7 @@ pub mod photos;
 pub mod photos_upload;
 pub mod push;
 pub mod reminders;
+pub mod rrule;
 pub mod shared_albums;
 pub mod shared_collections;
 pub mod sync;
