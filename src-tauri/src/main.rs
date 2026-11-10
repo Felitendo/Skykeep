@@ -6344,19 +6344,80 @@ fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: 
     if LAUNCHED_AS_APP.load(Ordering::SeqCst) && !MAIN_ASKED.load(Ordering::SeqCst) {
         return;
     }
-    // Started at login, with nothing for the person to do: everything runs, the window waits
-    // in the tray.
-    // Never without the tray to come back from.
-    // Asked in this order: started any other way the answer is no, and the tray's question —
+    // Started at login, with nothing for the person to do and Start in Tray on: everything
+    // runs, the window waits in the tray.
+    // Never without the tray to come back from: one not there yet is waited for, hidden.
+    // Asked in this order: started any other way the answer is Show, and the tray's question —
     // a call on the session bus — was asked on the main thread just before every launch's show.
-    if login::stay_hidden(needs_you.unwrap_or(true), || tray_reachable(&app)) {
+    let first = login::first_window(
+        needs_you.unwrap_or(true),
+        || login::start_in_tray(&app),
+        || tray_reachable(&app),
+    );
+    match first {
+        login::FirstWindow::Show => {
+            show_window(&app);
+        }
         // Its page has done what a launch needs of it (the session taken up again): put away,
         // as a closed window is — opened from the tray soon, it is there at once; otherwise
         // its web view is given back and the engine runs on behind the tray (#11).
-        apps::put_away(&window.as_ref().window());
-        return;
+        login::FirstWindow::Hide => apps::put_away(&window.as_ref().window()),
+        login::FirstWindow::HideUntilTray => {
+            apps::put_away(&window.as_ref().window());
+            await_tray(&app);
+        }
     }
-    show_window(&app);
+}
+
+/// How long a launch at login waits, its window put away, for a tray to come up before it shows
+/// the window after all. Plasma starts the autostart entries while its panel is still loading,
+/// and the panel's tray registers seconds later — longer on a slow disk. Shorter than a put-away
+/// window is kept (`apps::KEPT`), so the window is still there to show.
+#[cfg(target_os = "linux")]
+const TRAY_WAIT: Duration = Duration::from_secs(30);
+#[cfg(target_os = "linux")]
+const _: () = assert!(TRAY_WAIT.as_secs() < apps::KEPT.as_secs());
+
+/// The window put away at login before a tray was there: the tray asked for again every second,
+/// off the main thread, and the window shown if none has come within [`TRAY_WAIT`] (stock
+/// GNOME has none) — never left running with no way back to it. A window shown meanwhile (a
+/// launch from the menu, a search result) ends the wait.
+#[cfg(target_os = "linux")]
+fn await_tray(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("tray-wait".into())
+        .spawn(move || {
+            let since = std::time::Instant::now();
+            while since.elapsed() < TRAY_WAIT {
+                std::thread::sleep(Duration::from_secs(1));
+                if login::was_shown() {
+                    return;
+                }
+                if linux_tray::made() && status_notifier_host().unwrap_or(true) {
+                    TRAY_HOST.keep(true);
+                    return;
+                }
+            }
+            quiet!("no tray came up within {TRAY_WAIT:?} of login, so the window shows");
+            let app = handle.clone();
+            handle
+                .run_on_main_thread(move || {
+                    if !login::was_shown() {
+                        show_window(&app);
+                    }
+                })
+                .ok();
+        });
+    if spawned.is_err() {
+        show_window(app);
+    }
+}
+
+/// Elsewhere the tray is made at launch or not at all: none now, none later.
+#[cfg(not(target_os = "linux"))]
+fn await_tray(app: &tauri::AppHandle) {
+    show_window(app);
 }
 
 /// Started from one app's launcher entry (`--app notes`): that app's window is what shows.
@@ -7422,6 +7483,7 @@ fn main() {
             mount::drive_kept,
             mount::drive_keep,
             login::login_item_set,
+            login::login_start_in_tray_set,
             account_services,
             account_info,
             settings_get,

@@ -722,6 +722,41 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
               </button>
             </div>
           )}
+          {/* Only where Skykeep starts itself at login, with the flag this setting is read for. */}
+          {login?.available !== false && login?.on && (
+            <div className="settings-row">
+              <span className="settings-label settings-stack">
+                Start in Tray
+                <span className="settings-hint">
+                  {login.startInTray !== false
+                    ? "At login, the window stays closed until you open it from the tray"
+                    : "At login, the window opens"}
+                </span>
+              </span>
+              <button
+                className="switch"
+                role="switch"
+                aria-checked={login.startInTray !== false}
+                aria-label="Start in Tray"
+                disabled={loginBusy}
+                onClick={() => {
+                  const was = login;
+                  const on = was.startInTray === false;
+                  setLogin({ ...was, startInTray: on });
+                  setLoginBusy(true);
+                  api
+                    .loginStartInTraySet(on)
+                    .then(setLogin, (e) => {
+                      setLogin(was);
+                      setError(messageOf(e));
+                    })
+                    .finally(() => setLoginBusy(false));
+                }}
+              >
+                <span className="switch-knob" />
+              </button>
+            </div>
+          )}
         </section>
         <section className="dash-card" aria-labelledby="card-notifications">
           <h2 id="card-notifications" className="dash-title">Notifications</h2>

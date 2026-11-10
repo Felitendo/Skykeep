@@ -7,6 +7,11 @@
 //! through uwsm). There Settings says so, with the one line that does the same in their
 //! own startup — written by the person, never by Quince into their config.
 //!
+//! Start in Tray (on unless turned off): a launch at login keeps its window put away behind
+//! the tray. Plasma starts the autostart entries while its panel is still loading, so the tray
+//! is often not there yet when the window has drawn; such a launch waits for it, hidden, and
+//! shows the window only if no tray comes. Before, the window opened, full size, on every login.
+//!
 //! On Windows it is the standard place too: a value under the user's own `Run` key, which
 //! Windows reads at sign-in (and lists in Task Manager's Startup apps, where it can be turned
 //! off as any other). From an MSIX package (the Microsoft Store, package.rs) the registry is
@@ -65,21 +70,96 @@ pub fn was_shown() -> bool {
     SHOWN.load(Ordering::SeqCst)
 }
 
-/// Whether the window should stay hidden now: started at login and nothing needs the person
-/// (a code to enter, a sign-in), with a tray to come back from; or started for a search,
-/// whatever it needs — nobody asked for a window. Only the first answer can be yes; after
-/// that the window shows as usual.
-pub fn stay_hidden(needs_you: bool, tray: impl FnOnce() -> bool) -> bool {
-    if !(background() || search_only()) || ASKED.swap(true, Ordering::SeqCst) {
-        return false;
-    }
-    hides(search_only(), needs_you, tray)
+/// What a launch does with the whole-library window once it has drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirstWindow {
+    /// On screen, as any launch.
+    Show,
+    /// Put away: everything runs behind the tray, or — started for a search — with no window.
+    Hide,
+    /// Put away while the tray comes up: shown after all if none does in time.
+    HideUntilTray,
 }
 
-/// [`stay_hidden`]'s answer for a first launch started hidden. The tray is asked last, and
-/// only when it matters: it is a call on the session bus.
-fn hides(search_only: bool, needs_you: bool, tray: impl FnOnce() -> bool) -> bool {
-    search_only || (!needs_you && tray())
+/// The first window_ready's answer: hidden when started at login with Start in Tray on and
+/// nothing needing the person (a code to enter, a sign-in) — waiting for the tray if it is not
+/// there yet; or started for a search, whatever it needs — nobody asked for a window. Only the
+/// first answer can be other than [`FirstWindow::Show`]; after it the window shows as usual.
+pub fn first_window(
+    needs_you: bool,
+    in_tray: impl FnOnce() -> bool,
+    tray: impl FnOnce() -> bool,
+) -> FirstWindow {
+    if !(background() || search_only()) || ASKED.swap(true, Ordering::SeqCst) {
+        return FirstWindow::Show;
+    }
+    decide(search_only(), needs_you, in_tray, tray)
+}
+
+/// [`first_window`]'s answer for a first launch started hidden. The setting is read before the
+/// tray is asked, and the tray only when it matters: it is a call on the session bus.
+fn decide(
+    search_only: bool,
+    needs_you: bool,
+    in_tray: impl FnOnce() -> bool,
+    tray: impl FnOnce() -> bool,
+) -> FirstWindow {
+    if search_only {
+        return FirstWindow::Hide;
+    }
+    if needs_you || !in_tray() {
+        return FirstWindow::Show;
+    }
+    if tray() {
+        FirstWindow::Hide
+    } else {
+        FirstWindow::HideUntilTray
+    }
+}
+
+/// Start in Tray, kept for this computer in `login.json` beside the library. On unless turned
+/// off.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Prefs {
+    #[serde(default = "on")]
+    start_in_tray: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+fn prefs_path(app: &AppHandle) -> PathBuf {
+    crate::state_dir(app).join("login.json")
+}
+
+/// Whether a launch at login keeps its window in the tray. A file that cannot be read is the
+/// default: on.
+pub fn start_in_tray(app: &AppHandle) -> bool {
+    std::fs::read(prefs_path(app))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Prefs>(&b).ok())
+        .is_none_or(|p| p.start_in_tray)
+}
+
+fn keep_start_in_tray(app: &AppHandle, on: bool) -> Result<(), String> {
+    let path = prefs_path(app);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text =
+        serde_json::to_vec_pretty(&Prefs { start_in_tray: on }).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// Turn Start in Tray on or off; Open at Login as it then is.
+#[tauri::command]
+pub async fn login_start_in_tray_set(on: bool, app: AppHandle) -> Result<LoginItem, String> {
+    keep_start_in_tray(&app, on)?;
+    login_item_status(app).await
 }
 
 /// How long a Skykeep started for a search goes on with no window shown and no search asked
@@ -110,6 +190,8 @@ pub struct LoginItem {
     /// Why the switch cannot change it here: Windows holds the package's startup task turned
     /// off in Task Manager, or on or off by policy. `None` anywhere else.
     pub elsewhere: Option<String>,
+    /// Whether a launch at login keeps its window in the tray (Start in Tray).
+    pub start_in_tray: bool,
 }
 
 /// What Windows says of a package's startup task: its `StartupTaskState`.
@@ -325,7 +407,7 @@ mod startup_task {
 
 /// The item Settings shows for the package's startup task in `state`.
 #[cfg(windows)]
-fn startup_item(state: Startup) -> LoginItem {
+fn startup_item(state: Startup, app: &AppHandle) -> LoginItem {
     let (on, elsewhere) = state.item();
     LoginItem {
         on,
@@ -333,17 +415,18 @@ fn startup_item(state: Startup) -> LoginItem {
         honoured: true,
         available: true,
         elsewhere: elsewhere.map(str::to_string),
+        start_in_tray: start_in_tray(app),
     }
 }
 
 #[cfg(windows)]
 #[tauri::command]
-pub async fn login_item_status(_app: AppHandle) -> Result<LoginItem, String> {
+pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
     if uses_startup_task(crate::package::family_name().is_some()) {
         let state = tauri::async_runtime::spawn_blocking(startup_task::state)
             .await
             .map_err(|e| e.to_string())??;
-        return Ok(startup_item(state));
+        return Ok(startup_item(state, &app));
     }
     let on = tauri::async_runtime::spawn_blocking(|| {
         reg(&["query", RUN_KEY, "/v", RUN_VALUE]).is_ok_and(|s| s.success())
@@ -356,6 +439,7 @@ pub async fn login_item_status(_app: AppHandle) -> Result<LoginItem, String> {
         honoured: true,
         available: true,
         elsewhere: None,
+        start_in_tray: start_in_tray(&app),
     })
 }
 
@@ -366,7 +450,7 @@ pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, Strin
         let state = tauri::async_runtime::spawn_blocking(move || startup_task::set(on))
             .await
             .map_err(|e| e.to_string())??;
-        return Ok(startup_item(state));
+        return Ok(startup_item(state, &app));
     }
     let line = command();
     let done = tauri::async_runtime::spawn_blocking(move || {
@@ -398,6 +482,7 @@ pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
             honoured: true,
             available: false,
             elsewhere: None,
+            start_in_tray: start_in_tray(&app),
         });
     }
     let on = entry(&app).is_some_and(|p| p.exists());
@@ -410,6 +495,7 @@ pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
         honoured,
         available: true,
         elsewhere: None,
+        start_in_tray: start_in_tray(&app),
     })
 }
 
@@ -495,12 +581,41 @@ mod search_launch_tests {
     /// the main window — or the sign-in screen — on every search after a quit.
     #[test]
     fn a_launch_for_a_search_shows_nothing() {
-        assert!(hides(true, true, || false));
-        assert!(hides(true, false, || false));
-        // At login: hidden only with a tray to come back from, and nothing needing the person.
-        assert!(hides(false, false, || true));
-        assert!(!hides(false, false, || false));
-        assert!(!hides(false, true, || true));
+        use FirstWindow::Hide;
+        assert_eq!(decide(true, true, || false, || false), Hide);
+        assert_eq!(decide(true, false, || false, || false), Hide);
+        assert_eq!(decide(true, false, || true, || true), Hide);
+    }
+
+    /// At login with Start in Tray on: in the tray when it is there; still hidden, waiting for
+    /// it, when the panel has not come up yet — it opened full size on every login before.
+    /// Shown when the person is needed, or Start in Tray is off.
+    #[test]
+    fn a_launch_at_login_waits_in_the_tray() {
+        use FirstWindow::{Hide, HideUntilTray, Show};
+        assert_eq!(decide(false, false, || true, || true), Hide);
+        assert_eq!(decide(false, false, || true, || false), HideUntilTray);
+        assert_eq!(decide(false, true, || true, || true), Show);
+        assert_eq!(decide(false, false, || false, || true), Show);
+        // Neither the setting nor the tray is asked where the answer does not need them.
+        assert_eq!(
+            decide(true, false, || unreachable!(), || unreachable!()),
+            Hide
+        );
+        assert_eq!(
+            decide(false, true, || unreachable!(), || unreachable!()),
+            Show
+        );
+        assert_eq!(decide(false, false, || false, || unreachable!()), Show);
+    }
+
+    /// Start in Tray is on in a new install, and stays as it was set.
+    #[test]
+    fn start_in_tray_is_on_unless_turned_off() {
+        let read = |text: &str| serde_json::from_str::<Prefs>(text).unwrap().start_in_tray;
+        assert!(read("{}"));
+        assert!(read(r#"{"startInTray":true}"#));
+        assert!(!read(r#"{"startInTray":false}"#));
     }
 
     #[test]
