@@ -33,22 +33,34 @@ class AuthenticatorService : Service() {
 }
 
 /**
- * Android asking for Calendar: iCloud's calendars and a year of events written in. The only
- * place a calendar sync runs — the app's button asks Android for one rather than running its
- * own beside it, so Apple is asked once, in turn, with Android's backoff after a failure.
+ * Android asking for Calendar: what changed on the phone sent to iCloud first, then iCloud's
+ * calendars and a year of events read and written in. The only place a calendar sync runs — the
+ * app's button asks Android for one — so Apple is asked once, in turn, with Android's backoff
+ * after a failure. Android starts one when an event is changed on the phone (supportsUploading).
  */
 private class Adapter(context: Context) : AbstractThreadedSyncAdapter(context, true) {
   override fun onPerformSync(a: Account, e: Bundle, authority: String, p: ContentProviderClient, r: SyncResult) {
+    val engine = io.github.yashwanthkamireddi.skykeep.Engine.account(context)
     try {
       val (from, to) = CalendarSync.span()
-      val window = io.github.yashwanthkamireddi.skykeep.Engine.account(context)
-        .calendarWindow(from, to, java.util.TimeZone.getDefault().id)
-      val done = CalendarSync.sync(context.contentResolver, a, window, from, to)
+      val tz = java.util.TimeZone.getDefault().id
+      val confirmed = Outcome.massRemovalConfirmed(context, authority)
+      val sent = CalendarSync.send(context.contentResolver, a, confirmed) { engine.saveEvents(it, from, to, tz) }
+      if (sent.later > 0) r.stats.numIoExceptions++
+      val window = engine.calendarWindow(from, to, tz)
+      val done = CalendarSync.sync(context.contentResolver, a, window, from, to, confirmed)
       r.stats.numInserts += done.added.toLong()
       r.stats.numUpdates += done.updated.toLong()
       r.stats.numDeletes += done.removed.toLong()
-      Outcome.record(context, authority, true,
-        "${done.calendars} calendars, ${window.events.size} events · ${done.added} added, ${done.updated} updated, ${done.removed} removed")
+      val said = buildList {
+        add("${done.calendars} calendars, ${window.events.size} events · ${done.added} added, ${done.updated} updated, ${done.removed} removed")
+        if (sent.sent > 0) add("${sent.sent} sent to iCloud")
+        if (sent.later > 0) add("${sent.later} to send again")
+        if (sent.failed > 0) add("${sent.failed} not saved: ${sent.reason}")
+        if (sent.held > 0) add("${sent.held} changes on this phone held until you confirm")
+        if (done.held > 0) add("${done.held} no longer in iCloud, kept on this phone until you confirm")
+      }.joinToString(" · ")
+      Outcome.record(context, authority, sent.failed == 0, said, held = done.held + sent.held)
     } catch (x: uniffi.quince_mobile.EngineException) {
       // Apple busy or unreachable, or the session gone: Android tries again later, backing off.
       r.stats.numIoExceptions++

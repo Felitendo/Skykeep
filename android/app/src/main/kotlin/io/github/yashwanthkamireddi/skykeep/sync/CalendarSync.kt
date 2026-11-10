@@ -9,25 +9,45 @@ import android.net.Uri
 import android.provider.CalendarContract
 import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.TimeZone
+import org.json.JSONObject
 import uniffi.quince_mobile.Cal
 import uniffi.quince_mobile.CalendarWindow
+import uniffi.quince_mobile.ChangeKind
+import uniffi.quince_mobile.ChangeOutcome
 import uniffi.quince_mobile.Ev
+import uniffi.quince_mobile.EventChange
+import uniffi.quince_mobile.Repeat
 
 /**
- * iCloud's calendars and their events into Android's Calendar, one way, for the span the
- * engine read: each calendar a calendar under the Skykeep account (found again by Apple's id,
- * `_SYNC_ID`), each event or occurrence an event found again the same way, rewritten only
- * when its etag (`SYNC_DATA1`) changed, and removed when it is gone from iCloud. Every event
- * iCloud sends is matched by its id against all of the account's events, wherever they start —
- * an event that began before the span but runs into it comes back too, and matched only within
- * the span it was put in again on every sync. Only removal keeps to the span: outside it
- * nothing was read, so nothing is known.
+ * iCloud's calendars and Android's Calendar, both ways, for the span the engine reads: each
+ * calendar a calendar under the Skykeep account (found again by Apple's id, `_SYNC_ID`), editable
+ * here where iCloud lets it be; each event, and each occurrence of a repeating one, an event found
+ * again the same way.
+ *
+ * Each sync sends first, then reads. Sending: what Android marks changed (DIRTY), new (no
+ * `_SYNC_ID`) or deleted goes to iCloud through the engine — an edit as only what changed from the
+ * event as last synced (its base, in SYNC_DATA2), one occurrence of a repeat changed alone, as
+ * "This Event" on an iPhone. Reading: an event rewritten only when its etag (SYNC_DATA1) changed,
+ * never one still waiting to be sent, and removed when gone from iCloud — events outside the span
+ * are left alone, since nothing was read about them. Every event iCloud sends is matched against
+ * all of the account's, wherever they start: matched only within the span, one that began before
+ * it (or on its last day) was put in again on every sync.
  */
 object CalendarSync {
-  data class Result(val calendars: Int, val added: Int, val updated: Int, val removed: Int, val unchanged: Int)
+  data class Result(val calendars: Int, val added: Int, val updated: Int, val removed: Int, val unchanged: Int, val held: Int)
+
+  data class Sent(val sent: Int, val failed: Int, val later: Int, val reason: String?, val held: Int)
+
+  /** The circuit breaker: more than this many events at once, and a tenth of them, waits. */
+  private const val MASS = 25
+
+  /** How rows are written here (SYNC_DATA3): an older one is rewritten from iCloud on the next sync. */
+  private const val FORMAT = "2"
 
   /** The span read: a month back and a year ahead, both days included, in the phone's zone. */
   fun span(today: LocalDate = LocalDate.now()): Pair<String, String> =
@@ -39,10 +59,175 @@ object CalendarSync {
     .appendQueryParameter(Calendars.ACCOUNT_TYPE, a.type)
     .build()
 
-  fun sync(cr: ContentResolver, account: Account, window: CalendarWindow, from: String, to: String): Result =
-    synchronized(this) { syncLocked(cr, account, window, from, to) }
+  fun sync(cr: ContentResolver, account: Account, window: CalendarWindow, from: String, to: String, confirmed: Boolean): Result =
+    synchronized(this) { download(cr, account, window, from, to, confirmed) }
 
-  private fun syncLocked(cr: ContentResolver, account: Account, window: CalendarWindow, from: String, to: String): Result {
+  fun send(cr: ContentResolver, account: Account, confirmed: Boolean, save: (List<EventChange>) -> List<ChangeOutcome>): Sent =
+    synchronized(this) { upload(cr, account, confirmed, save) }
+
+  // --- Sending ---------------------------------------------------------------------------------
+
+  private data class Change(val rowId: Long, val change: EventChange)
+
+  private fun upload(cr: ContentResolver, account: Account, confirmed: Boolean, save: (List<EventChange>) -> List<ChangeOutcome>): Sent {
+    // Android's calendar row id → Apple's calendar id.
+    val guidOf = HashMap<Long, String>()
+    cr.query(
+      Calendars.CONTENT_URI.asAdapter(account), arrayOf(Calendars._ID, Calendars._SYNC_ID),
+      "${Calendars.ACCOUNT_TYPE}=? AND ${Calendars.ACCOUNT_NAME}=?", arrayOf(account.type, account.name), null,
+    )?.use { c -> while (c.moveToNext()) c.getString(1)?.let { guidOf[c.getLong(0)] = it } }
+
+    val changes = ArrayList<Change>()
+    val dropped = ArrayList<Long>()
+    val unknown = ArrayList<Long>()
+    val refused = ArrayList<Pair<Long, String>>()
+    cr.query(
+      Events.CONTENT_URI.asAdapter(account),
+      arrayOf(
+        Events._ID, Events._SYNC_ID, Events.SYNC_DATA2, Events.DELETED, Events.CALENDAR_ID, Events.TITLE,
+        Events.EVENT_LOCATION, Events.DESCRIPTION, Events.DTSTART, Events.DTEND, Events.DURATION,
+        Events.ALL_DAY, Events.EVENT_TIMEZONE, Events.RRULE,
+      ),
+      "${Events.ACCOUNT_TYPE}=? AND ${Events.ACCOUNT_NAME}=? AND (${Events.DIRTY}=1 OR ${Events.DELETED}=1)",
+      arrayOf(account.type, account.name), null,
+    )?.use { c ->
+      while (c.moveToNext()) {
+        val rowId = c.getLong(0)
+        val sync = c.getString(1)
+        val base = c.getString(2)?.let(::evFromJson)
+        val deleted = c.getInt(3) != 0
+        val calendar = guidOf[c.getLong(4)]
+        fun ev(guid: String) = Ev(
+          guid = guid, calendarGuid = calendar ?: "", title = c.getString(5) ?: "",
+          location = c.getString(6)?.takeIf { it.isNotBlank() }, startsAt = 0, endsAt = 0,
+          allDay = c.getInt(11) != 0, timezone = c.getString(12), notes = c.getString(7)?.takeIf { it.isNotBlank() },
+          etag = base?.etag,
+        ).let { e -> times(e, c.getLong(8), if (c.isNull(9)) null else c.getLong(9), c.getString(10)) }
+        when {
+          deleted && sync == null -> dropped += rowId
+          // Changed with no base (an event written before bases were kept): never sent; read again.
+          base == null && sync != null -> unknown += rowId
+          deleted -> changes += Change(rowId, EventChange(ChangeKind.DELETE, sync!!, null, base, null))
+          calendar == null -> refused += rowId to "This event's calendar isn't an iCloud calendar."
+          sync == null -> {
+            val rule = c.getString(13)
+            val repeat = rule?.let(::repeatOf)
+            if (rule != null && repeat == null) {
+              refused += rowId to "This event repeats in a way iCloud can't keep. Set it in iCloud on another device."
+            } else {
+              // New here: its id chosen now and kept, so a send repeated after a lost answer
+              // finds the event made rather than making a second.
+              val guid = java.util.UUID.randomUUID().toString().uppercase()
+              cr.update(
+                Events.CONTENT_URI.asAdapter(account), ContentValues().apply { put(Events._SYNC_ID, guid) },
+                "${Events._ID}=?", arrayOf(rowId.toString()),
+              )
+              changes += Change(rowId, EventChange(ChangeKind.CREATE, guid, ev(guid), null, repeat))
+            }
+          }
+          else -> changes += Change(rowId, EventChange(ChangeKind.UPDATE, sync, ev(sync), base, null))
+        }
+      }
+    }
+    for (id in dropped) removeRow(cr, account, id)
+    for (id in unknown) restore(cr, account, id)
+    for ((id, _) in refused) settled(cr, account, id, null)
+    val refusedReason = refused.firstOrNull()?.second
+    if (changes.isEmpty()) return Sent(0, refused.size, 0, refusedReason, 0)
+    if (!confirmed && changes.size > MASS && changes.size * 10 > count(cr, account)) {
+      return Sent(0, refused.size, 0, refusedReason, changes.size)
+    }
+    val outcomes = save(changes.map { it.change })
+    var sent = 0; var failed = refused.size; var later = 0; var reason = refusedReason
+    for ((i, c) in changes.withIndex()) {
+      when (val o = outcomes.getOrNull(i)) {
+        is ChangeOutcome.Saved -> {
+          sent++
+          if (c.change.kind == ChangeKind.DELETE) removeRow(cr, account, c.rowId) else settled(cr, account, c.rowId, null)
+        }
+        is ChangeOutcome.Recreated -> { sent++; settled(cr, account, c.rowId, o.guid) }
+        is ChangeOutcome.Failed -> {
+          reason = o.reason
+          if (o.later) later++ else { failed++; settled(cr, account, c.rowId, null) }
+        }
+        null -> later++
+      }
+    }
+    return Sent(sent, failed, later, reason, 0)
+  }
+
+  /**
+   * An event's moments as the engine keeps them: a timed one as the instant; an all-day one as
+   * midnight on this phone's clock of its date, where Android keeps the date at UTC midnight —
+   * the inverse of [values]. An end given as a DURATION (a repeating event's) is worked out.
+   */
+  private fun times(e: Ev, startMs: Long, endMs: Long?, duration: String?): Ev {
+    val end = endMs ?: (startMs + (duration?.let(::durationMs) ?: 3_600_000))
+    return if (e.allDay) {
+      fun local(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toLocalDate()
+        .atStartOfDay(ZoneId.systemDefault()).toEpochSecond()
+      e.copy(startsAt = local(startMs), endsAt = local(end), timezone = null)
+    } else {
+      e.copy(startsAt = startMs / 1000, endsAt = end / 1000)
+    }
+  }
+
+  /**
+   * An RFC 5545 duration in milliseconds: "P1W", "P1D", "PT1H30M", "P1DT2H", and the "P3600S"
+   * Android's own Calendar writes (seconds with no T). None for anything else.
+   */
+  private fun durationMs(d: String): Long? {
+    Regex("^P(\\d+)S$").matchEntire(d)?.let { return it.groupValues[1].toLong() * 1000 }
+    val m = Regex("^P(?:(\\d+)W)?(?:(\\d+)D)?(?:T(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?)?$").matchEntire(d) ?: return null
+    val (w, day, h, min, sec) = m.destructured
+    fun n(x: String) = x.toLongOrNull() ?: 0
+    val total = ((n(w) * 7 + n(day)) * 86_400 + n(h) * 3_600 + n(min) * 60 + n(sec)) * 1000
+    return total.takeIf { it > 0 }
+  }
+
+  /** A repeat iCloud can keep: FREQ with INTERVAL and COUNT only; anything else (BYDAY, UNTIL…) none. */
+  private fun repeatOf(rule: String): Repeat? {
+    val parts = rule.split(';').filter { it.isNotBlank() }.associate { p -> p.substringBefore('=').uppercase() to p.substringAfter('=') }
+    if (parts.keys.any { it !in setOf("FREQ", "INTERVAL", "COUNT", "WKST") }) return null
+    val freq = when (parts["FREQ"]?.uppercase()) {
+      "DAILY" -> "daily"; "WEEKLY" -> "weekly"; "MONTHLY" -> "monthly"; "YEARLY" -> "yearly"; else -> return null
+    }
+    return Repeat(freq, parts["INTERVAL"]?.toLongOrNull() ?: 1, parts["COUNT"]?.toLongOrNull())
+  }
+
+  private fun settled(cr: ContentResolver, account: Account, rowId: Long, newGuid: String?) {
+    cr.update(
+      Events.CONTENT_URI.asAdapter(account),
+      ContentValues().apply {
+        put(Events.DIRTY, 0)
+        putNull(Events.SYNC_DATA1)
+        newGuid?.let { put(Events._SYNC_ID, it) }
+      },
+      "${Events._ID}=?", arrayOf(rowId.toString()),
+    )
+  }
+
+  private fun restore(cr: ContentResolver, account: Account, rowId: Long) {
+    cr.update(
+      Events.CONTENT_URI.asAdapter(account),
+      ContentValues().apply { put(Events.DIRTY, 0); put(Events.DELETED, 0); putNull(Events.SYNC_DATA1) },
+      "${Events._ID}=?", arrayOf(rowId.toString()),
+    )
+  }
+
+  private fun removeRow(cr: ContentResolver, account: Account, rowId: Long) {
+    cr.delete(Events.CONTENT_URI.asAdapter(account), "${Events._ID}=?", arrayOf(rowId.toString()))
+  }
+
+  private fun count(cr: ContentResolver, account: Account): Int =
+    cr.query(
+      Events.CONTENT_URI.asAdapter(account), arrayOf(Events._ID),
+      "${Events.ACCOUNT_TYPE}=? AND ${Events.ACCOUNT_NAME}=?", arrayOf(account.type, account.name), null,
+    )?.use { it.count } ?: 0
+
+  // --- Reading ---------------------------------------------------------------------------------
+
+  private fun download(cr: ContentResolver, account: Account, window: CalendarWindow, from: String, to: String, confirmed: Boolean): Result {
     val ids = calendars(cr, account, window.calendars)
     val zone = ZoneId.systemDefault()
     // The span's bounds as moments: its first day's start to the day after its last. An
@@ -51,23 +236,23 @@ object CalendarSync {
     val after = LocalDate.parse(to).plusDays(1)
     val start = first.atStartOfDay(zone).toInstant().toEpochMilli()
     val end = after.atStartOfDay(zone).toInstant().toEpochMilli()
-    val startUtc = first.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
-    val endUtc = after.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+    val startUtc = first.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+    val endUtc = after.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
 
-    // Every event of this account here, by Apple's id; a second row with the same id is extra.
-    data class Local(val id: Long, val etag: String?, val starts: Long, val allDay: Boolean)
+    data class Local(val id: Long, val etag: String?, val starts: Long, val allDay: Boolean, val pending: Boolean, val format: String?)
     val local = HashMap<String, Local>()
     val extra = ArrayList<Long>()
     cr.query(
       Events.CONTENT_URI.asAdapter(account),
-      arrayOf(Events._ID, Events._SYNC_ID, Events.SYNC_DATA1, Events.DTSTART, Events.ALL_DAY),
+      arrayOf(Events._ID, Events._SYNC_ID, Events.SYNC_DATA1, Events.DTSTART, Events.ALL_DAY, Events.DIRTY, Events.DELETED, Events.SYNC_DATA3),
       "${Events.ACCOUNT_TYPE}=? AND ${Events.ACCOUNT_NAME}=?",
       arrayOf(account.type, account.name), null,
     )?.use { c ->
       while (c.moveToNext()) {
         val sync = c.getString(1) ?: continue
-        if (sync in local) { extra += c.getLong(0); continue }
-        local[sync] = Local(c.getLong(0), c.getString(2), c.getLong(3), c.getInt(4) != 0)
+        val pending = c.getInt(5) != 0 || c.getInt(6) != 0
+        if (sync in local) { if (!pending) extra += c.getLong(0); continue }
+        local[sync] = Local(c.getLong(0), c.getString(2), c.getLong(3), c.getInt(4) != 0, pending, c.getString(7))
       }
     }
     fun inSpan(l: Local) = if (l.allDay) l.starts in startUtc until endUtc else l.starts in start until end
@@ -78,7 +263,9 @@ object CalendarSync {
     for (e in window.events) {
       val calendarId = ids[e.calendarGuid] ?: continue
       val have = local.remove(e.guid)
-      if (have != null && have.etag != null && have.etag == e.etag) { unchanged++; continue }
+      // Changed here and not yet in iCloud: left as it is, sent on the next sync.
+      if (have != null && have.pending) continue
+      if (have != null && have.etag != null && have.etag == e.etag && have.format == FORMAT) { unchanged++; continue }
       if (ops.size > 300) flush()
       val values = values(e, calendarId)
       ops += if (have == null) {
@@ -90,15 +277,18 @@ object CalendarSync {
           .withSelection("${Events._ID}=?", arrayOf(have.id.toString())).withValues(values).build()
       }
     }
-    // Gone from iCloud: those in the span that iCloud did not send. Outside it, left alone.
-    val gone = local.values.filter(::inSpan).map { it.id }
-    for (id in gone + extra) {
+    // Gone from iCloud: those in the span that iCloud did not send (never one waiting to be
+    // sent). Outside it, left alone. Far fewer than here at once is held until confirmed.
+    val gone = local.values.filter { !it.pending && inSpan(it) }.map { it.id }
+    val massive = gone.size > MASS && gone.size * 10 > (window.events.size + gone.size)
+    val removing = if (massive && !confirmed) emptyList() else gone
+    for (id in removing + extra) {
       if (ops.size > 300) flush()
       ops += ContentProviderOperation.newDelete(Events.CONTENT_URI.asAdapter(account))
         .withSelection("${Events._ID}=?", arrayOf(id.toString())).build()
     }
     flush()
-    return Result(ids.size, added, updated, gone.size + extra.size, unchanged)
+    return Result(ids.size, added, updated, removing.size + extra.size, unchanged, gone.size - removing.size)
   }
 
   /** The account's calendars made to match iCloud's; Apple's id → Android's row id. */
@@ -113,8 +303,9 @@ object CalendarSync {
       val values = ContentValues().apply {
         put(Calendars.CALENDAR_DISPLAY_NAME, k.title)
         put(Calendars.CALENDAR_COLOR, k.colour?.let { runCatching { Color.parseColor(it) }.getOrNull() } ?: Color.rgb(0x1E, 0x88, 0xE5))
-        // Read here for now: changes are made in iCloud until two-way sync.
-        put(Calendars.CALENDAR_ACCESS_LEVEL, Calendars.CAL_ACCESS_READ)
+        // Editable here where iCloud lets it be; a subscription or a calendar shared read-only
+        // stays read-only.
+        put(Calendars.CALENDAR_ACCESS_LEVEL, if (k.writable) Calendars.CAL_ACCESS_OWNER else Calendars.CAL_ACCESS_READ)
         put(Calendars.VISIBLE, 1)
         put(Calendars.SYNC_EVENTS, 1)
       }
@@ -143,6 +334,8 @@ object CalendarSync {
     put(Events.CALENDAR_ID, calendarId)
     put(Events._SYNC_ID, e.guid)
     put(Events.SYNC_DATA1, e.etag)
+    put(Events.SYNC_DATA2, evJson(e))
+    put(Events.SYNC_DATA3, FORMAT)
     put(Events.TITLE, e.title)
     put(Events.EVENT_LOCATION, e.location)
     put(Events.DESCRIPTION, e.notes)
@@ -150,8 +343,8 @@ object CalendarSync {
       // The engine gives an all-day event as midnight on this phone's clock; Android keeps
       // them as the same dates at midnight UTC, or they show a day early west of Greenwich.
       fun utcMidnight(seconds: Long): Long {
-        val day = java.time.Instant.ofEpochSecond(seconds).atZone(ZoneId.systemDefault()).toLocalDate()
-        return day.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        val day = Instant.ofEpochSecond(seconds).atZone(ZoneId.systemDefault()).toLocalDate()
+        return day.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
       }
       val startDay = utcMidnight(e.startsAt)
       put(Events.DTSTART, startDay)
@@ -165,4 +358,22 @@ object CalendarSync {
       put(Events.EVENT_TIMEZONE, e.timezone ?: TimeZone.getDefault().id)
     }
   }
+
+  // --- The base, as kept in SYNC_DATA2 -------------------------------------------------------
+
+  private fun evJson(e: Ev): String = JSONObject().apply {
+    put("guid", e.guid); put("calendar", e.calendarGuid); put("title", e.title); put("location", e.location)
+    put("starts", e.startsAt); put("ends", e.endsAt); put("allDay", e.allDay); put("tz", e.timezone)
+    put("notes", e.notes); put("etag", e.etag)
+  }.toString()
+
+  private fun evFromJson(s: String): Ev? = runCatching {
+    val o = JSONObject(s)
+    fun str(k: String) = if (o.isNull(k)) null else o.optString(k)
+    Ev(
+      guid = o.getString("guid"), calendarGuid = o.getString("calendar"), title = o.optString("title"),
+      location = str("location"), startsAt = o.getLong("starts"), endsAt = o.getLong("ends"),
+      allDay = o.optBoolean("allDay"), timezone = str("tz"), notes = str("notes"), etag = str("etag"),
+    )
+  }.getOrNull()
 }

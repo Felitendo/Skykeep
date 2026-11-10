@@ -185,6 +185,27 @@ pub enum ChangeOutcome {
     Failed { reason: String, later: bool },
 }
 
+/// One change made on the phone to an event (or to one occurrence of a repeating event, whose id
+/// is `<series>__<start>`), to be sent to iCloud.
+#[derive(uniffi::Record)]
+pub struct EventChange {
+    pub kind: ChangeKind,
+    pub guid: String,
+    pub event: Option<Ev>,
+    pub base: Option<Ev>,
+    /// A new event's repeat, when the phone gave it one iCloud can keep.
+    pub repeat: Option<Repeat>,
+}
+
+/// How a new event repeats, in iCloud's terms: `daily`, `weekly`, `monthly` or `yearly`, every
+/// `interval`, `count` times or for ever.
+#[derive(uniffi::Record)]
+pub struct Repeat {
+    pub freq: String,
+    pub interval: i64,
+    pub count: Option<i64>,
+}
+
 /// An iCloud calendar, as Android's Calendar will list it.
 #[derive(uniffi::Record)]
 pub struct Cal {
@@ -217,6 +238,23 @@ pub struct Ev {
 pub struct CalendarWindow {
     pub calendars: Vec<Cal>,
     pub events: Vec<Ev>,
+}
+
+/// An event from the phone as the engine's, under `guid`, at Apple's `etag` when known.
+fn event_of(e: &Ev, guid: &str, etag: Option<String>) -> quince_core::calendar::Event {
+    quince_core::calendar::Event {
+        guid: guid.to_string(),
+        calendar_guid: e.calendar_guid.clone(),
+        title: e.title.clone(),
+        location: e.location.clone(),
+        starts_at: e.starts_at,
+        ends_at: e.ends_at,
+        all_day: e.all_day,
+        timezone: e.timezone.clone(),
+        url: None,
+        notes: e.notes.clone(),
+        etag: etag.or_else(|| e.etag.clone()),
+    }
 }
 
 /// A person as the engine's contact, under `guid`. The photo is never touched from here: the
@@ -589,6 +627,158 @@ impl Account {
                 })
                 .collect(),
         })
+    }
+
+    /// The phone's changes to events sent to iCloud. Apple's copies read once for the span
+    /// (`from`..=`to` in `tz`, as [`Self::calendar_window`] reads it). A new event under the id
+    /// the phone chose, made at most once; an edit laid over Apple's copy as it is now with
+    /// `merge_edit` — a field changed only on another device keeps that change — and, for one
+    /// occurrence of a repeating event, saved for that occurrence alone, as "This Event" does on
+    /// an iPhone; a deletion likewise. An edit to an event deleted elsewhere is kept as a new
+    /// one. One outcome per change, in order.
+    pub fn save_events(
+        &self,
+        changes: Vec<EventChange>,
+        from: String,
+        to: String,
+        tz: String,
+    ) -> Result<Vec<ChangeOutcome>, EngineError> {
+        use quince_icloud::calendar::{self as k, CalendarClient, EventRepeat, Scope};
+        let client = self.client.lock().map_err(failed)?;
+        let root = client
+            .session()
+            .service_url("calendar")
+            .ok_or_else(|| failed("Apple hasn't offered a calendar service for this account."))?;
+        let (http, params) = (client.http().clone(), client.service_params());
+        drop(client);
+        let theirs: std::collections::HashMap<String, quince_core::calendar::Event> = runtime()
+            .block_on(quince_icloud::sync::fetch_calendar(
+                &http,
+                &root,
+                params.clone(),
+                &from,
+                &to,
+                &tz,
+            ))
+            .map_err(failed)?
+            .events
+            .into_iter()
+            .map(|e| (e.guid.clone(), e))
+            .collect();
+        let cal = CalendarClient::new(&http, &root, params);
+        let scope = |guid: &str| k::is_occurrence(guid).then_some(Scope::This);
+        let mut out = Vec::with_capacity(changes.len());
+        for change in changes {
+            let current = theirs.get(&change.guid);
+            let sent: quince_icloud::Result<ChangeOutcome> = runtime().block_on(async {
+                match change.kind {
+                    ChangeKind::Delete => match current {
+                        None => Ok(ChangeOutcome::Saved),
+                        Some(event) => cal
+                            .delete_event_scoped(event, None, scope(&event.guid))
+                            .await
+                            .map(|()| ChangeOutcome::Saved),
+                    },
+                    ChangeKind::Create => {
+                        if current.is_some() {
+                            return Ok(ChangeOutcome::Saved);
+                        }
+                        let ev = change.event.as_ref().ok_or_else(|| {
+                            quince_icloud::Error::Protocol("a new event with nothing in it".into())
+                        })?;
+                        let repeat = change.repeat.as_ref().map(|r| EventRepeat {
+                            freq: r.freq.clone(),
+                            interval: r.interval,
+                            count: r.count,
+                        });
+                        cal.put_event_full(
+                            &event_of(ev, &change.guid, None),
+                            None,
+                            None,
+                            repeat.as_ref().map(Some),
+                            None,
+                        )
+                        .await
+                        .map(|_| ChangeOutcome::Saved)
+                    }
+                    ChangeKind::Update => {
+                        let ev = change.event.as_ref().ok_or_else(|| {
+                            quince_icloud::Error::Protocol("an edit with nothing in it".into())
+                        })?;
+                        match current {
+                            // Deleted in iCloud while edited here: kept, as an event of its own.
+                            None => {
+                                let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+                                cal.put_event(&event_of(ev, &guid, None), None)
+                                    .await
+                                    .map(|_| ChangeOutcome::Recreated { guid })
+                            }
+                            Some(now) => {
+                                let mut mine = event_of(ev, &change.guid, now.etag.clone());
+                                // The link is not on the phone: Apple's kept (the merge keeps it
+                                // as unchanged here; with no base it is carried over).
+                                mine.url.clone_from(&now.url);
+                                let mut merged = match &change.base {
+                                    Some(b) => {
+                                        let mut base = event_of(b, &change.guid, None);
+                                        base.url.clone_from(&now.url);
+                                        k::merge_edit(&base, &mine, now)
+                                    }
+                                    None => mine,
+                                };
+                                if merged.calendar_guid != now.calendar_guid
+                                    && !k::is_occurrence(&change.guid)
+                                {
+                                    // Moved to another calendar here: moved at Apple, as
+                                    // icloud.com moves one — never a second copy in the new one.
+                                    cal.put_event_moved(
+                                        &merged,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        Some((now.calendar_guid.as_str(), None)),
+                                    )
+                                    .await
+                                    .map(|_| ChangeOutcome::Saved)
+                                } else {
+                                    // One occurrence keeps its series' calendar: Apple moves a
+                                    // series, never one of its occurrences alone.
+                                    merged.calendar_guid.clone_from(&now.calendar_guid);
+                                    cal.put_event_full(
+                                        &merged,
+                                        None,
+                                        None,
+                                        None,
+                                        scope(&change.guid),
+                                    )
+                                    .await
+                                    .map(|_| ChangeOutcome::Saved)
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            out.push(match sent {
+                Ok(done) => done,
+                Err(e) => {
+                    log::error(&format!("{e:?}"));
+                    let later = matches!(
+                        e,
+                        quince_icloud::Error::Network(_)
+                            | quince_icloud::Error::Busy
+                            | quince_icloud::Error::Conflict
+                            | quince_icloud::Error::ReauthRequired
+                    );
+                    ChangeOutcome::Failed {
+                        reason: e.to_string(),
+                        later,
+                    }
+                }
+            });
+        }
+        Ok(out)
     }
 
     /// Signs out here: the session forgotten on this phone, its secrets deleted.

@@ -101,6 +101,39 @@ async fn main() -> Result<()> {
                 day(4)?
             );
         }
+        Some("peek") => {
+            // The test calendar's events as Apple holds them now: title, id, start, where, notes.
+            let Some(found) = calendars.iter().find(|c| c.title == TITLE) else {
+                bail!("no {TITLE:?} calendar");
+            };
+            let (a, b) = (
+                today.checked_sub(jiff::Span::new().days(31))?.to_string(),
+                today.checked_add(jiff::Span::new().days(60))?.to_string(),
+            );
+            let snap = quince_icloud::sync::fetch_calendar(
+                client.http(),
+                &root,
+                client.service_params(),
+                &a,
+                &b,
+                "UTC",
+            )
+            .await?;
+            let mut events: Vec<_> = snap
+                .events
+                .into_iter()
+                .filter(|e| e.calendar_guid == found.guid)
+                .collect();
+            events.sort_by_key(|e| e.starts_at);
+            for e in &events {
+                let at = jiff::Timestamp::from_second(e.starts_at)?;
+                println!(
+                    "{} | {} | {} | at {:?} | notes {:?}",
+                    e.title, e.guid, at, e.location, e.notes
+                );
+            }
+            println!("{} events in {}", events.len(), found.guid);
+        }
         Some("edit") => {
             // The timed test event, found in the test calendar by its title there, renamed and
             // moved an hour later.

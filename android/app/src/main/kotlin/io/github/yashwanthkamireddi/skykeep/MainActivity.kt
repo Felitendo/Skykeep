@@ -100,7 +100,7 @@ private fun SignedIn(account: Account) {
       authorities.any { (Outcome.last(context, it)?.at ?: 0) < asked }
     busy = waiting || authorities.any { ContentResolver.isSyncActive(a, it) }
     status = authorities.mapNotNull { Outcome.last(context, it)?.said }.joinToString("\n").ifEmpty { null }
-    held = Outcome.held(context, ContactsContract.AUTHORITY)
+    held = authorities.sumOf { Outcome.held(context, it) }
   }
   DisposableEffect(androidAccount) {
     val handle = ContentResolver.addStatusChangeListener(
@@ -150,9 +150,9 @@ private fun SignedIn(account: Account) {
     ) { Text("Show iCloud in Contacts and Calendar") }
     if (held > 0 && !busy) {
       OutlinedButton(onClick = {
-        Outcome.confirmMassRemoval(context, ContactsContract.AUTHORITY)
+        authorities.forEach { Outcome.confirmMassRemoval(context, it) }
         syncNow()
-      }) { Text("Confirm $held held contact changes") }
+      }) { Text("Confirm $held held changes") }
     }
     if (busy) CircularProgressIndicator()
     status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
