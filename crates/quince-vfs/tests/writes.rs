@@ -17,6 +17,8 @@ struct World {
     folders: Mutex<HashMap<String, Vec<DriveItem>>>,
     bytes: Mutex<HashMap<String, Vec<u8>>>,
     uploads: Mutex<Vec<String>>,
+    /// Files whose contents were written in place, by id.
+    replaced: Mutex<Vec<String>>,
     /// Apple refusing every change, as when it is down.
     refuse: Mutex<bool>,
     /// How long each step at "Apple" takes: slow, as on a real connection.
@@ -137,6 +139,42 @@ impl Remote for Apple {
             Ok(world.file(&folder, &name, &bytes))
         })
     }
+    /// New contents into the same file, refused when it is no longer the version named — as
+    /// Apple's `modify_file` with its etag (probe `drive_modify_in_place`).
+    fn replace(&self, it: &DriveItem, path: &Path) -> Fut<Option<DriveItem>> {
+        if *self.0.refuse.lock().unwrap() {
+            return Box::pin(async { Err("iCloud is busy right now".to_string()) });
+        }
+        let bytes = std::fs::read(path).unwrap();
+        self.0.replaced.lock().unwrap().push(it.drivewsid.clone());
+        let slow = *self.0.slow.lock().unwrap();
+        let (world, it) = (Arc::clone(&self.0), it.clone());
+        Box::pin(async move {
+            tokio::time::sleep(slow).await;
+            let mut n = world.next.lock().unwrap();
+            *n += 1;
+            let mut folders = world.folders.lock().unwrap();
+            let Some(now) = folders
+                .values_mut()
+                .flat_map(|l| l.iter_mut())
+                .find(|x| x.drivewsid == it.drivewsid)
+            else {
+                return Err("no such file".to_string());
+            };
+            if now.etag != it.etag {
+                return Ok(None);
+            }
+            now.etag = Some(format!("v{n}"));
+            now.size = Some(bytes.len() as i64);
+            let now = now.clone();
+            world
+                .bytes
+                .lock()
+                .unwrap()
+                .insert(now.drivewsid.clone(), bytes);
+            Ok(Some(now))
+        })
+    }
     fn rename(&self, it: &DriveItem, name: &str) -> Fut<()> {
         // A name already taken is refused, as Apple refuses it.
         let folder = it.parent_id.clone().unwrap_or_default();
@@ -213,7 +251,7 @@ fn writes_reach_apple_safely() {
         .lock()
         .unwrap()
         .insert(ROOT.into(), Vec::new());
-    world.file(ROOT, "Notes.txt", b"first line\n");
+    let notes = world.file(ROOT, "Notes.txt", b"first line\n");
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (cache, staging, at) = (
         tempfile::tempdir().unwrap(),
@@ -245,8 +283,8 @@ fn writes_reach_apple_safely() {
         "listed once, not twice: {listed:?}"
     );
 
-    // An append: Apple ends with the whole of it under the same name, the old version in
-    // Recently Deleted (never overwritten in place), nothing named "Notes 2.txt" left behind.
+    // An append: Apple ends with the whole of it written into the same file (#24) — its id
+    // kept, nothing in Recently Deleted, nothing named "Notes 2.txt" left behind.
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(root.join("Notes.txt"))
@@ -259,10 +297,20 @@ fn writes_reach_apple_safely() {
         world.names(ROOT)
     );
     assert_eq!(world.names(ROOT), ["Hello.txt", "Notes.txt"]);
+    assert!(
+        world.deleted.lock().unwrap().is_empty(),
+        "nothing into Recently Deleted"
+    );
+    let id_now = |world: &World| {
+        world.folders.lock().unwrap()[ROOT]
+            .iter()
+            .find(|i| i.display_name() == "Notes.txt")
+            .map(|i| i.drivewsid.clone())
+    };
     assert_eq!(
-        world.deleted.lock().unwrap().len(),
-        1,
-        "the old version into Recently Deleted"
+        id_now(&world),
+        Some(notes.drivewsid.clone()),
+        "the same file at Apple"
     );
 
     // An editor's save: a temporary file written, then renamed over the old one.
@@ -283,6 +331,12 @@ fn writes_reach_apple_safely() {
         "the temporary never went to Apple"
     );
     assert_eq!(world.names(ROOT), ["Hello.txt", "Notes.txt"]);
+    // KeePass, LibreOffice and most editors save this way: still the same file at Apple.
+    assert_eq!(
+        id_now(&world),
+        Some(notes.drivewsid.clone()),
+        "an editor's save keeps the file"
+    );
 
     // Changed on another device while open here: both kept, theirs untouched.
     let mut f = std::fs::OpenOptions::new()
@@ -390,7 +444,7 @@ fn a_save_during_a_send_waits_its_turn() {
     drop(f);
     // Until the first send has begun at Apple…
     for _ in 0..60 {
-        if !world.uploads.lock().unwrap().is_empty() {
+        if !world.uploads.lock().unwrap().is_empty() || !world.replaced.lock().unwrap().is_empty() {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));

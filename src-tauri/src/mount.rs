@@ -144,6 +144,45 @@ impl Remote for AppRemote {
         })
     }
 
+    fn replace(&self, item: &DriveItem, path: &std::path::Path) -> Fut<Option<DriveItem>> {
+        let (app, item, path) = (self.app.clone(), item.clone(), path.to_path_buf());
+        Box::pin(async move {
+            let (http, docws, params) = context(&app, "docws").await?;
+            let drivews = context(&app, "drivews").await?.1;
+            // Only what it grows by needs room: the old contents are replaced, not kept beside.
+            let len = tokio::fs::metadata(&path).await.map_or(0, |m| m.len());
+            let grows =
+                len.saturating_sub(item.size.and_then(|s| u64::try_from(s).ok()).unwrap_or(0));
+            if grows > 0 {
+                let setup = app
+                    .state::<Auth>()
+                    .client
+                    .lock()
+                    .await
+                    .setup_url()
+                    .to_string();
+                if let Ok(s) = quince_icloud::drive::storage(&http, &setup, params.clone()).await {
+                    if s.total_bytes > 0 && s.used_bytes.saturating_add(grows) > s.total_bytes {
+                        return Err(
+                            "Your iCloud storage is full. It uploads when there's room.".into()
+                        );
+                    }
+                }
+            }
+            let progress: quince_icloud::drive::Progress = Arc::new(|_, _| {});
+            match quince_icloud::drive::replace_contents(
+                &http, &docws, &drivews, params, &item, &path, progress,
+            )
+            .await
+            {
+                Ok(now) => Ok(Some(now)),
+                // Changed on another device first: nothing written, and the caller keeps both.
+                Err(quince_icloud::Error::Conflict) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+    }
+
     fn space(&self) -> Fut<(u64, u64)> {
         let app = self.app.clone();
         Box::pin(async move {

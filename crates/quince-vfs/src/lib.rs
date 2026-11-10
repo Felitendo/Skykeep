@@ -82,6 +82,12 @@ pub trait Remote: Send + Sync + 'static {
     fn upload(&self, _folder: &DriveItem, _path: &Path) -> Fut<DriveItem> {
         Box::pin(async { Err("read-only".to_string()) })
     }
+    /// New contents for `item`, written into that same file at Apple: its id, shares and
+    /// history kept. Refused by Apple when the file is no longer the version `item` names —
+    /// changed on another device — and then `Ok(None)`, nothing written. Read-only by default.
+    fn replace(&self, _item: &DriveItem, _path: &Path) -> Fut<Option<DriveItem>> {
+        Box::pin(async { Err("read-only".to_string()) })
+    }
     /// Whether new files may be written into `folder`. Every folder by default; a folder that
     /// is a view, not a place (the Photos folder's Favorites), says no.
     fn accepts(&self, _folder: &DriveItem) -> bool {

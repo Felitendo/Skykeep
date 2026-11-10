@@ -28,6 +28,7 @@ export const SHORTCUTS: { app: string; key: string; rows: Row[] }[] = [
       [[["↑"], ["↓"]], "Previous / next note"],
       [[["Ctrl", "Delete"]], "Delete note"],
       [[["Ctrl", "S"]], "Finish editing"],
+      [[["Ctrl", "K"]], "Add or edit a link"],
       [[["Ctrl", "Shift", "L"], ["Ctrl", "Shift", "U"]], "Checklist / tick the item"],
     ],
   },

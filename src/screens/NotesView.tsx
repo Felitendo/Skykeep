@@ -1738,6 +1738,7 @@ export function NotesView() {
                         onColour={(c) => editorRef.current?.setColour(c)}
                         onIndent={(by) => editorRef.current?.indent(by)}
                         onMove={(by) => editorRef.current?.moveLines(by)}
+                        onLink={() => editorRef.current?.openLink()}
                       />
                     )}
                   </>
