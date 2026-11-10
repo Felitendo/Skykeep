@@ -14,6 +14,7 @@ use quince_core::outbox::Pending;
 use quince_core::Library;
 use quince_icloud::contacts::{self as c, merge as apple};
 use quince_icloud::Error;
+use quince_media::{photo_for_apple as encode_photo, APPLE_PHOTO_LIMIT as PHOTO_LIMIT};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::State;
@@ -313,9 +314,6 @@ pub async fn send(
     Ok(())
 }
 
-/// The largest picture Apple's web editor sends, as a `data:` URL's length.
-const PHOTO_LIMIT: usize = 229_376;
-
 /// Another card's picture, as an image of the kept card's own: fetched, and sent as a JPEG
 /// under Apple's size, its chosen square scaled with it — what icloud.com sends for a picture
 /// chosen there. `None` when it cannot be had; the merge goes ahead without it rather than
@@ -326,17 +324,7 @@ async fn carry_photo(
     photo: &serde_json::Value,
 ) -> Option<serde_json::Value> {
     let url = photo.get("url")?.as_str()?;
-    let bytes = if let Some(data) = url.strip_prefix("data:") {
-        use base64::Engine;
-        let (_, b64) = data.split_once(',')?;
-        base64::engine::general_purpose::STANDARD.decode(b64).ok()?
-    } else {
-        let response = http.get(url).query(params).send().await.ok()?;
-        if !response.status().is_success() {
-            return None;
-        }
-        response.bytes().await.ok()?.to_vec()
-    };
+    let bytes = c::photo_bytes(http, params, url).await.ok()?;
     let crop = photo.get("crop").and_then(|c| {
         let at = |k: &str| c.get(k).and_then(serde_json::Value::as_i64);
         Some((at("x")?, at("y")?, at("width")?, at("height")?))
@@ -350,48 +338,6 @@ async fn carry_photo(
         (s(x), s(y), s(w).max(1), s(h).max(1))
     });
     Some(apple::photo_entry(&data_url, scaled))
-}
-
-/// An image as a JPEG `data:` URL no longer than `limit`: quality stepped down first, then
-/// size, as icloud.com does. Answers the URL and the scale the image was drawn at.
-pub fn encode_photo(bytes: &[u8], limit: usize) -> Option<(String, f64)> {
-    use base64::Engine;
-    let image = image::load_from_memory(bytes).ok()?.to_rgb8();
-    let (w, h) = image.dimensions();
-    let (mut scale, mut quality) = (1.0_f64, 90_u8);
-    for _ in 0..24 {
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss
-        )]
-        let (sw, sh) = (
-            ((f64::from(w) * scale).round() as u32).max(1),
-            ((f64::from(h) * scale).round() as u32).max(1),
-        );
-        let drawn = if (sw, sh) == (w, h) {
-            image.clone()
-        } else {
-            image::imageops::resize(&image, sw, sh, image::imageops::FilterType::Triangle)
-        };
-        let mut out = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
-            .encode_image(&drawn)
-            .ok()?;
-        let url = format!(
-            "data:image/jpeg;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(&out)
-        );
-        if url.len() <= limit {
-            return Some((url, f64::from(sw) / f64::from(w)));
-        }
-        if quality > 40 {
-            quality -= 15;
-        } else {
-            scale *= 0.8;
-        }
-    }
-    None
 }
 
 // --- Commands.

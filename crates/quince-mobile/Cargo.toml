@@ -23,6 +23,9 @@ bindgen = ["uniffi/cli"]
 quince-auth = { path = "../quince-auth" }
 quince-icloud = { path = "../quince-icloud" }
 quince-core = { path = "../quince-core" }
+# Contact pictures only: cut and sized for the phone, sent at Apple's size. No HEIC (libheif
+# would have to be built for Android for nothing).
+quince-media = { path = "../quince-media", default-features = false }
 serde_json.workspace = true
 uuid = { workspace = true }
 uniffi = "0.32"

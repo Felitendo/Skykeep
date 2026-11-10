@@ -7,6 +7,10 @@
 //!       that test card's notes set to <text>, as an edit made on another device
 //!   cargo run -p quince-probe --example contacts_test_cards -- delete <id>
 //!       that test card deleted
+//!   cargo run -p quince-probe --example contacts_test_cards -- create
+//!       a new test card, "Skykeep Test Photo", with a picture (a blue square); prints its id
+//!   cargo run -p quince-probe --example contacts_test_cards -- photo <id> <red|green|blue>
+//!       that test card's picture replaced with a square of that colour, as another device would
 use anyhow::{anyhow, bail, Result};
 use quince_icloud::contacts as c;
 
@@ -46,11 +50,14 @@ async fn main() -> Result<()> {
         Some("peek") => {
             for p in &tests {
                 println!(
-                    "{} | {} {} | notes {:?}",
+                    "{} | {} {} | notes {:?} | picture {:?}",
                     p.guid,
                     p.first_name.as_deref().unwrap_or(""),
                     p.last_name.as_deref().unwrap_or(""),
-                    p.notes
+                    p.notes,
+                    p.photo_url
+                        .as_deref()
+                        .map(|u| &u[u.len().saturating_sub(16)..]),
                 );
                 for m in &p.methods {
                     println!("    {} {:?} {}", m.kind, m.label, m.value);
@@ -84,7 +91,64 @@ async fn main() -> Result<()> {
             c::delete(&http, &root, params, &c::Ledger::new(), &card).await?;
             println!("deleted {id}");
         }
-        _ => bail!("peek, notes <id> <text>, or delete <id>"),
+        Some("create") => {
+            let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+            let card = quince_core::contacts::Contact {
+                guid: guid.clone(),
+                first_name: Some(format!("{PREFIX} Photo")),
+                middle_name: None,
+                photo_url: Some(square("blue")?),
+                photo_signature: None,
+                photo_crop: None,
+                last_name: None,
+                company: None,
+                is_company: false,
+                birthday: None,
+                notes: None,
+                etag: None,
+                methods: Vec::new(),
+            };
+            c::create_named(&http, &root, params, &c::Ledger::new(), &guid, &card).await?;
+            println!("created {guid}");
+        }
+        Some("photo") => {
+            let id = args.get(1).ok_or_else(|| anyhow!("which id?"))?;
+            let colour = args.get(2).ok_or_else(|| anyhow!("which colour?"))?;
+            let base = test(id)?.clone();
+            let mut edited = base.clone();
+            edited.photo_url = Some(square(colour)?);
+            edited.photo_crop = None;
+            let ledger = c::Ledger::new();
+            let current = c::card(&http, &root, params.clone(), &ledger, id).await?;
+            c::update_from(
+                &http,
+                &root,
+                params,
+                &ledger,
+                &edited,
+                current.as_ref(),
+                Some(&base),
+            )
+            .await?;
+            println!("picture of {id} set to {colour}");
+        }
+        _ => bail!("peek, notes <id> <text>, delete <id>, create, or photo <id> <colour>"),
     }
     Ok(())
+}
+
+/// A 400px square of one colour, as a picture is sent to Apple (a JPEG `data:` URL).
+fn square(colour: &str) -> Result<String> {
+    let rgb = match colour {
+        "red" => [220, 40, 40],
+        "green" => [40, 170, 70],
+        "blue" => [40, 90, 220],
+        other => bail!("{other}: red, green or blue"),
+    };
+    let image = image::RgbImage::from_pixel(400, 400, image::Rgb(rgb));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut png, image::ImageFormat::Png)?;
+    let (url, _) = quince_media::photo_for_apple(png.get_ref(), quince_media::APPLE_PHOTO_LIMIT)
+        .ok_or_else(|| anyhow!("the picture could not be made"))?;
+    Ok(url)
 }

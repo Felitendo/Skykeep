@@ -4320,6 +4320,7 @@ dependencies = [
 name = "quince-media"
 version = "0.1.20"
 dependencies = [
+ "base64 0.22.1",
  "fast_image_resize",
  "gstreamer",
  "gstreamer-app",
@@ -4338,6 +4339,7 @@ dependencies = [
  "quince-auth",
  "quince-core",
  "quince-icloud",
+ "quince-media",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",

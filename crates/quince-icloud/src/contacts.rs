@@ -341,6 +341,39 @@ fn crop_value(crop: Option<&str>) -> Option<Value> {
         .then(|| serde_json::json!({ "x": x, "y": y, "width": width, "height": height }))
 }
 
+/// A contact's picture as Apple serves it, whole: fetched from its `url` with the session's
+/// parameters, or decoded where the url is the picture itself (a `data:` URL, as one chosen
+/// on this device and not yet at Apple is). Shared by the desktop's faces and the phone's sync.
+///
+/// # Errors
+/// When Apple can't be reached or refuses, or a `data:` URL can't be read.
+pub async fn photo_bytes(
+    http: &reqwest::Client,
+    params: &[(String, String)],
+    url: &str,
+) -> Result<Vec<u8>> {
+    if let Some(data) = url.strip_prefix("data:") {
+        use base64::Engine;
+        let (_, encoded) = data
+            .split_once(',')
+            .ok_or_else(|| Error::Protocol("that picture could not be read".into()))?;
+        return base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|e| Error::Protocol(format!("that picture could not be read: {e}")));
+    }
+    let response = http.get(url).query(params).send().await?;
+    let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        return Err(Error::Busy);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "Apple returned {status} for a contact's picture"
+        )));
+    }
+    Ok(response.bytes().await?.to_vec())
+}
+
 #[must_use]
 /// Apple's own address book service appends a vCard property to some picture URLs, leaving
 /// `.../card/<32 hex>X-SHARED-PHOTO-DISPLAY-PREF:ALWAYS_ASK`. That URL answers 404. Four of

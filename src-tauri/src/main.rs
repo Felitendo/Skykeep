@@ -6040,25 +6040,14 @@ async fn contact_photo(
         }
     }
 
-    // A picture chosen here and not yet at Apple is the image itself, as icloud.com sends it.
-    let bytes = if let Some(data) = photo.url.strip_prefix("data:") {
-        use base64::Engine;
-        let (_, encoded) = data
-            .split_once(',')
-            .ok_or("that picture could not be read")?;
-        base64::engine::general_purpose::STANDARD.decode(encoded)?
-    } else {
-        let (http, params) = {
-            let auth = app.state::<Auth>();
-            let client = auth.client.lock().await;
-            (client.http().clone(), client.service_params())
-        };
-        let response = http.get(&photo.url).query(&params).send().await?;
-        if !response.status().is_success() {
-            return Err(format!("Apple returned {}", response.status()).into());
-        }
-        response.bytes().await?.to_vec()
+    // A picture chosen here and not yet at Apple is the image itself, as icloud.com sends it;
+    // any other is fetched from Apple (quince_icloud::contacts::photo_bytes reads both).
+    let (http, params) = {
+        let auth = app.state::<Auth>();
+        let client = auth.client.lock().await;
+        (client.http().clone(), client.service_params())
     };
+    let bytes = quince_icloud::contacts::photo_bytes(&http, &params, &photo.url).await?;
 
     // Cut to the square its owner chose and sized for a face, off the interface's thread.
     // Apple stores these whole — one of them is 1696x2528 — and a list of them has to scroll.

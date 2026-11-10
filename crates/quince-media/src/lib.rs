@@ -66,6 +66,52 @@ pub fn avatar(bytes: &[u8], crop: Option<Crop>, size: u32) -> Result<Vec<u8>, im
     encode(&scaled)
 }
 
+/// The largest contact picture Apple's web editor sends, as a `data:` URL's length.
+pub const APPLE_PHOTO_LIMIT: usize = 229_376;
+
+/// A contact picture as Apple takes one, for the desktop's editor and merge and the phone's
+/// sync alike: a JPEG `data:` URL no longer than `limit`, quality stepped down first and then
+/// size, as icloud.com does. Answers the URL and the scale the image was drawn at.
+pub fn photo_for_apple(bytes: &[u8], limit: usize) -> Option<(String, f64)> {
+    use base64::Engine;
+    let image = image::load_from_memory(bytes).ok()?.to_rgb8();
+    let (w, h) = image.dimensions();
+    let (mut scale, mut quality) = (1.0_f64, 90_u8);
+    for _ in 0..24 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let (sw, sh) = (
+            ((f64::from(w) * scale).round() as u32).max(1),
+            ((f64::from(h) * scale).round() as u32).max(1),
+        );
+        let drawn = if (sw, sh) == (w, h) {
+            image.clone()
+        } else {
+            image::imageops::resize(&image, sw, sh, image::imageops::FilterType::Triangle)
+        };
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
+            .encode_image(&drawn)
+            .ok()?;
+        let url = format!(
+            "data:image/jpeg;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&out)
+        );
+        if url.len() <= limit {
+            return Some((url, f64::from(sw) / f64::from(w)));
+        }
+        if quality > 40 {
+            quality -= 15;
+        } else {
+            scale *= 0.8;
+        }
+    }
+    None
+}
+
 /// Cuts out the chosen square, ignoring a rectangle that does not fit the picture it came with.
 ///
 /// A crop is only trusted where it actually lands inside the image. Apple's own API has been
@@ -115,13 +161,14 @@ pub fn heic_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out.into_inner())
 }
 
-#[cfg(all(windows, target_env = "gnu"))]
+#[cfg(not(all(feature = "heic", not(all(windows, target_env = "gnu")))))]
 fn heic_rgb(_bytes: &[u8]) -> Result<image::RgbImage, String> {
     Err("HEIC pictures are not decoded in this build.".into())
 }
 
-/// A HEIC picture's pixels, upright (see the variant above for the one build where it is not).
-#[cfg(not(all(windows, target_env = "gnu")))]
+/// A HEIC picture's pixels, upright (see the variant above for the builds where it is not: the
+/// MinGW cross-check, and the phone's engine, which only ever draws contact photos).
+#[cfg(all(feature = "heic", not(all(windows, target_env = "gnu"))))]
 fn heic_rgb(bytes: &[u8]) -> Result<image::RgbImage, String> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
     let lib = LibHeif::new();
@@ -813,7 +860,7 @@ mod tests {
 
     /// Copy's picture from a HEIC: a PNG, whole and in its colours (red left, blue right — a
     /// 64×32 HEIC made with libheif's own heif-enc).
-    #[cfg(not(all(windows, target_env = "gnu")))]
+    #[cfg(all(feature = "heic", not(all(windows, target_env = "gnu"))))]
     #[test]
     fn a_heic_is_copied_as_a_png() {
         let heic = include_bytes!("../fixtures/two.heic");

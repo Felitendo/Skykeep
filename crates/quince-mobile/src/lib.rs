@@ -149,6 +149,29 @@ pub struct Person {
     pub birthday: Option<String>,
     pub notes: Option<String>,
     pub methods: Vec<Method>,
+    /// The card's picture as Apple holds it, if it has one; fetched with
+    /// [`Account::contact_photo`] only when its `key` is not the one the phone has.
+    pub photo: Option<PhotoRef>,
+}
+
+/// Where a card's picture is and which picture it is.
+#[derive(uniffi::Record, Clone)]
+pub struct PhotoRef {
+    pub url: String,
+    /// The square its owner chose, `x,y,width,height`, as Apple keeps it.
+    pub crop: Option<String>,
+    /// Changes when the picture does (Apple's signature, or the url where Apple gives none).
+    pub key: String,
+}
+
+/// A picture changed on the phone, sent with the card.
+#[derive(uniffi::Enum)]
+pub enum PhotoEdit {
+    /// The picture the phone's Contacts now holds for the card, as an image file.
+    Set {
+        image: Vec<u8>,
+    },
+    Removed,
 }
 
 /// What changed on the phone to one contact, to be sent to iCloud.
@@ -170,6 +193,8 @@ pub struct ContactChange {
     pub guid: String,
     pub person: Option<Person>,
     pub base: Option<Person>,
+    /// The card's picture changed on the phone; `None`: left as Apple has it.
+    pub photo: Option<PhotoEdit>,
 }
 
 /// How one change went.
@@ -353,6 +378,52 @@ fn contact_of(p: &Person, guid: &str) -> quince_core::contacts::Contact {
 /// What went wrong, for the screen: the engine's sentence. The whole of it — Apple's status,
 /// the connection's own error — goes to the phone's log (`adb logcat -s Skykeep`), where it was
 /// lost: "the connection dropped" on screen said nothing of which request or why.
+/// The card with the phone's picture change in it: a picture chosen goes as icloud.com sends
+/// one, the image itself under Apple's size; a picture taken away is none. No change: the card
+/// carries no picture, and the base none either, so Apple's is left exactly as it is.
+fn with_photo(
+    mut card: quince_core::contacts::Contact,
+    edit: Option<&PhotoEdit>,
+) -> quince_icloud::Result<quince_core::contacts::Contact> {
+    match edit {
+        None => {}
+        Some(PhotoEdit::Removed) => {
+            card.photo_url = None;
+            card.photo_crop = None;
+        }
+        Some(PhotoEdit::Set { image }) => {
+            let (url, _) = quince_media::photo_for_apple(image, quince_media::APPLE_PHOTO_LIMIT)
+                .ok_or_else(|| {
+                    quince_icloud::Error::Refused(
+                        "This contact's picture couldn't be read, so it wasn't sent.".into(),
+                    )
+                })?;
+            card.photo_url = Some(url);
+            card.photo_crop = None;
+        }
+    }
+    Ok(card)
+}
+
+/// The base an edit is laid against. With the picture changed on the phone it holds the picture
+/// Apple has now, so the merge sees exactly that change, made against what is really there (a
+/// picture changed on an iPhone meanwhile is replaced only because one was chosen here).
+fn base_with_photo(
+    base: Option<quince_core::contacts::Contact>,
+    edit: Option<&PhotoEdit>,
+    card: &serde_json::Value,
+) -> Option<quince_core::contacts::Contact> {
+    let mut base = base?;
+    if edit.is_some() {
+        base.photo_url = card
+            .pointer("/photo/url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        base.photo_crop = None;
+    }
+    Some(base)
+}
+
 fn failed(e: impl std::fmt::Display + std::fmt::Debug) -> EngineError {
     log::error(&format!("{e:?}"));
     EngineError::Failed {
@@ -510,8 +581,30 @@ impl Account {
                         value: m.value,
                     })
                     .collect(),
+                photo: p.photo_url.map(|url| PhotoRef {
+                    key: p.photo_signature.unwrap_or_else(|| url.clone()),
+                    url,
+                    crop: p.photo_crop,
+                }),
             })
             .collect())
+    }
+
+    /// A card's picture for the phone's Contacts: cut to the square its owner chose and `size`
+    /// pixels on a side, as the desktop draws faces (`quince_media::avatar`). Android makes its
+    /// own smaller copy for lists from this one.
+    pub fn contact_photo(&self, photo: PhotoRef, size: u32) -> Result<Vec<u8>, EngineError> {
+        let (http, params) = {
+            let c = self.client.lock().map_err(failed)?;
+            (c.http().clone(), c.service_params())
+        };
+        let bytes = runtime()
+            .block_on(quince_icloud::contacts::photo_bytes(
+                &http, &params, &photo.url,
+            ))
+            .map_err(failed)?;
+        let crop = photo.crop.as_deref().and_then(quince_media::Crop::parse);
+        quince_media::avatar(&bytes, crop, size).map_err(failed)
     }
 
     /// The phone's changes to contacts sent to iCloud, as the desktop sends its own (outbox.rs):
@@ -566,16 +659,11 @@ impl Account {
                                 "a new contact with nothing in it".into(),
                             )
                         })?;
-                        c::create_named(
-                            &http,
-                            &root,
-                            params.clone(),
-                            &ledger,
-                            &change.guid,
-                            &contact_of(person, &change.guid),
-                        )
-                        .await
-                        .map(|()| ChangeOutcome::Saved)
+                        let card =
+                            with_photo(contact_of(person, &change.guid), change.photo.as_ref())?;
+                        c::create_named(&http, &root, params.clone(), &ledger, &change.guid, &card)
+                            .await
+                            .map(|()| ChangeOutcome::Saved)
                     }
                     ChangeKind::Update => {
                         let person = change.person.as_ref().ok_or_else(|| {
@@ -585,26 +673,28 @@ impl Account {
                             // Deleted in iCloud while edited here: kept as a new card.
                             None => {
                                 let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
-                                c::create_named(
-                                    &http,
-                                    &root,
-                                    params.clone(),
-                                    &ledger,
-                                    &guid,
-                                    &contact_of(person, &guid),
-                                )
-                                .await
-                                .map(|()| ChangeOutcome::Recreated { guid })
+                                let card =
+                                    with_photo(contact_of(person, &guid), change.photo.as_ref())?;
+                                c::create_named(&http, &root, params.clone(), &ledger, &guid, &card)
+                                    .await
+                                    .map(|()| ChangeOutcome::Recreated { guid })
                             }
                             Some(card) => {
-                                let base =
-                                    change.base.as_ref().map(|b| contact_of(b, &change.guid));
+                                let base = base_with_photo(
+                                    change.base.as_ref().map(|b| contact_of(b, &change.guid)),
+                                    change.photo.as_ref(),
+                                    card,
+                                );
+                                let mine = with_photo(
+                                    contact_of(person, &change.guid),
+                                    change.photo.as_ref(),
+                                )?;
                                 c::update_from(
                                     &http,
                                     &root,
                                     params.clone(),
                                     &ledger,
-                                    &contact_of(person, &change.guid),
+                                    &mine,
                                     Some(card),
                                     base.as_ref(),
                                 )

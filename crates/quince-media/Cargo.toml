@@ -10,15 +10,22 @@ fast_image_resize = "6.1.0"
 # attack surface for no gain.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 png = "0.17"
+base64 = "0.22"
 
 # HEIC decoded with libheif: the system's on Linux, and on Windows one built in by vcpkg
 # (`libheif[core,libde265]`, decoding only; see the Windows workflow) — not Windows' own
 # decoder, which needs two Store extensions most machines do not have. Left out only of the
 # MinGW cross-check, which has no vcpkg.
+# The phone's engine (quince-mobile) turns `heic` off: it only draws contact photos, and libheif
+# would have to be built for Android for nothing.
 [target.'cfg(not(all(windows, target_env = "gnu")))'.dependencies]
 # Only what libheif 1.17 has, the oldest in the distributions Skykeep ships for (Ubuntu 24.04);
 # the crate's default asks for 1.23, which none of their packages carry yet.
-libheif-rs = { version = "3.0.0", default-features = false, features = ["v1_17"] }
+libheif-rs = { version = "3.0.0", default-features = false, features = ["v1_17"], optional = true }
+
+[features]
+default = ["heic"]
+heic = ["dep:libheif-rs"]
 
 # A video's poster when Apple's is blank (poster.rs): one frame read with GStreamer, which
 # WebKitGTK already needs, so nothing new is installed. Linux only: elsewhere Apple's poster
