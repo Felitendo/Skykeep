@@ -62,6 +62,15 @@ impl Remote for Apple {
         sent.parent_id = Some(folder.drivewsid.clone());
         Box::pin(async move { Ok(sent) })
     }
+    /// New contents into the same file, as Apple's modify_file writes them (#24).
+    fn replace(&self, item: &DriveItem, path: &Path) -> Fut<Option<DriveItem>> {
+        let len = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
+        self.said(format!("replace {} {len}", item.display_name()));
+        let mut now = item.clone();
+        now.size = Some(len);
+        now.etag = Some(format!("{}+", item.etag.clone().unwrap_or_default()));
+        Box::pin(async move { Ok(Some(now)) })
+    }
     fn rename(&self, item: &DriveItem, name: &str) -> Fut<()> {
         self.said(format!("rename {} {name}", item.display_name()));
         Box::pin(async { Ok(()) })
@@ -306,13 +315,22 @@ fn explorer_lists_and_opens_icloud_drive() {
     cmd("mkdir NewFolder && echo inside> NewFolder\\a.txt");
     until("mkdir NewFolder");
     until("upload a.txt");
+    // Saved over: written into the same file at Apple (#24) — never a second file uploaded
+    // beside it with the old one deleted.
     cmd("echo more>> \"size 4096.bin\"");
-    until("upload size 4096.bin");
-    until("delete size 4096.bin");
+    until("replace size 4096.bin");
     cmd("ren \"size 1.bin\" renamed.bin");
     until("rename size 1.bin renamed.bin");
     cmd("del \"size 4095.bin\"");
     until("delete size 4095.bin");
+    assert!(
+        !log.lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("upload size 4096.bin") || l == "delete size 4096.bin"),
+        "a save over a file is no upload and delete: {:?}",
+        log.lock().unwrap()
+    );
     // Nothing a person didn't do: no delete of a file that is still there.
     assert!(
         !log.lock().unwrap().iter().any(|l| l == "delete size 0.bin"),
