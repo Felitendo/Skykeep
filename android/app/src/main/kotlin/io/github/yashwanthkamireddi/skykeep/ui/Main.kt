@@ -371,6 +371,16 @@ private fun SettingsPage(engine: uniffi.quince_mobile.Account, account: Account?
       if (on) askMedia.launch(media) else { backup = false; io.github.yashwanthkamireddi.skykeep.sync.PhotoBackup.set(context, false) }
     })
   }
+  if (backup) {
+    var cellular by remember { mutableStateOf(io.github.yashwanthkamireddi.skykeep.sync.PhotoBackup.mobileData(context)) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Column(Modifier.weight(1f)) {
+        Text("Use mobile data", style = MaterialTheme.typography.bodyMedium)
+        Text("Off: photos wait for Wi-Fi.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      }
+      androidx.compose.material3.Switch(cellular, { cellular = it; io.github.yashwanthkamireddi.skykeep.sync.PhotoBackup.setMobileData(context, it) })
+    }
+  }
   Text("Sync every", style = MaterialTheme.typography.titleSmall)
   var every by remember { mutableLongStateOf(syncEvery(context)) }
   for ((seconds, label) in listOf(3_600L to "Hour", 3 * 3_600L to "3 hours", 6 * 3_600L to "6 hours", 12 * 3_600L to "12 hours", 86_400L to "Day")) {

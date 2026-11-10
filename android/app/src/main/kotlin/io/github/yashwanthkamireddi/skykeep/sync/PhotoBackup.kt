@@ -20,6 +20,18 @@ object PhotoBackup {
 
   fun on(context: Context) = prefs(context).getBoolean("on", false)
 
+  /** Whether backing up may use mobile data. Off by default: Wi-Fi (or any unmetered network) only. */
+  fun mobileData(context: Context) = prefs(context).getBoolean("mobileData", false)
+
+  fun setMobileData(context: Context, allowed: Boolean) = prefs(context).edit().putBoolean("mobileData", allowed).apply()
+
+  /** On a network that costs nothing per byte, or one the person allowed. */
+  private fun mayUpload(context: Context): Boolean {
+    if (mobileData(context)) return true
+    val cm = context.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+    return !cm.isActiveNetworkMetered
+  }
+
   /** Turned on (from now) or off. */
   fun set(context: Context, on: Boolean) {
     prefs(context).edit().putBoolean("on", on).apply {
@@ -48,7 +60,9 @@ object PhotoBackup {
 
   /** One sync's backing up: until it is done, or one can't be sent now (tried again next sync). */
   fun run(context: Context) {
-    if (!on(context)) return
+    // Photos are large: never over mobile data unless the person said so; the next sync on
+    // Wi-Fi carries on from where this one stopped.
+    if (!on(context) || !mayUpload(context)) return
     val engine = io.github.yashwanthkamireddi.skykeep.Engine.account(context)
     val p = prefs(context)
     for (t in newer(context, p.getLong("since", Long.MAX_VALUE))) {
