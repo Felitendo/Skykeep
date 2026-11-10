@@ -1,5 +1,7 @@
 //! Live cleanup: any folder at the top of Drive named "Quince … test" that a probe left
-//! behind, moved to Recently Deleted and deleted for good — nothing else is touched.
+//! behind, moved to Recently Deleted and deleted for good; and any folder named exactly
+//! "Skykeep test" (the Android Files test's, DriveProviderLiveTest) already in Recently Deleted,
+//! deleted for good. Nothing else is touched.
 use anyhow::{anyhow, Result};
 use quince_icloud::drive;
 const ROOT: &str = "FOLDER::com.apple.CloudDocs::root";
@@ -33,8 +35,12 @@ async fn main() -> Result<()> {
     let t: Vec<_> = drive::trash(&http, &dws, p.clone())
         .await?
         .into_iter()
-        .filter(|i| ids.contains(&i.drivewsid))
+        .filter(|i| ids.contains(&i.drivewsid) || (i.is_container() && i.name == "Skykeep test"))
         .collect();
+    println!(
+        "in Recently Deleted to purge: {:?}",
+        t.iter().map(|i| &i.name).collect::<Vec<_>>()
+    );
     println!(
         "purged, refused: {:?}",
         drive::delete_forever_many(&http, &dws, p.clone(), &t).await?

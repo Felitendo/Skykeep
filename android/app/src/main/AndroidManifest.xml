@@ -71,6 +71,16 @@
             <meta-data android:name="android.content.SyncAdapter"
                 android:resource="@xml/sync_notes" />
         </service>
+        <!-- iCloud Drive in the Files app and every app's pickers (DriveProvider.kt). Only the
+             system's document UI may call it (MANAGE_DOCUMENTS). -->
+        <provider android:name=".sync.DriveProvider"
+            android:authorities="${applicationId}.drive"
+            android:exported="true" android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
         <receiver android:name=".sync.ReminderAlertReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

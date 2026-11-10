@@ -9,7 +9,9 @@ license.workspace = true
 quince-core = { path = "../quince-core" }
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 libc = "0.2"
-quince-media = { path = "../quince-media" }
+# HEIC comes from the desktop app's own quince-media dependency (features unify); the phone's
+# engine (quince-mobile) builds this without it.
+quince-media = { path = "../quince-media", default-features = false }
 md-5 = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true }

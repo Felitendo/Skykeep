@@ -27,9 +27,13 @@ quince-core = { path = "../quince-core" }
 # would have to be built for Android for nothing).
 quince-media = { path = "../quince-media", default-features = false }
 quince-sync = { path = "../quince-sync" }
+# iCloud Drive in the Files app: the desktop's file tree and write-back (writes::send), not its
+# FUSE or Explorer layers, which are Linux- and Windows-only.
+quince-vfs = { path = "../quince-vfs" }
 serde_json.workspace = true
 uuid = { workspace = true }
 uniffi = "0.32"
 jiff = "0.2.37"
+reqwest.workspace = true
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread"] }
