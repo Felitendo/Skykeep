@@ -1449,6 +1449,14 @@ impl<'a> CalendarClient<'a> {
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
+    /// A window of the calendar is a few kilobytes: one not answered in this long is a stalled
+    /// connection, asked again (sync.rs) rather than waited on for the client's minute.
+    pub(crate) const READ_TIMEOUT: std::time::Duration = if cfg!(test) {
+        std::time::Duration::from_secs(1)
+    } else {
+        std::time::Duration::from_secs(20)
+    };
+
     async fn get(&self, path: &str, from: &str, to: &str, tz: &str) -> Result<Value> {
         let mut query = self.params.clone();
         // Apple's calendar service returns an empty body unless the web client's own
@@ -1465,6 +1473,7 @@ impl<'a> CalendarClient<'a> {
             .http
             .get(format!("{}{path}", self.root))
             .query(&query)
+            .timeout(Self::READ_TIMEOUT)
             .send()
             .await?;
         let status = response.status();

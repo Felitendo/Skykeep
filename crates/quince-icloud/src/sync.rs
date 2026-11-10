@@ -97,11 +97,24 @@ pub async fn fetch_calendar(
     let client = &client;
     let mut answers = futures_util::stream::iter(windows)
         .map(|(start, end)| async move {
-            futures_util::future::try_join(
-                client.startup(&start, &end, timezone),
-                client.events(&start, &end, timezone),
-            )
-            .await
+            // A window whose connection stalls is asked again, twice, before the read fails:
+            // one stalled request out of thirty failed a whole year's read (seen on Android).
+            // Only a connection that failed; Apple refusing is an answer.
+            let mut tries = 0u64;
+            loop {
+                let answer = futures_util::future::try_join(
+                    client.startup(&start, &end, timezone),
+                    client.events(&start, &end, timezone),
+                )
+                .await;
+                match answer {
+                    Err(Error::Network(_)) if tries < 2 => {
+                        tries += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * tries)).await;
+                    }
+                    other => break other,
+                }
+            }
         })
         .buffered(CALENDAR_WINDOWS_AT_ONCE);
     while let Some(answer) = answers.next().await {
@@ -503,6 +516,49 @@ mod tests {
             ["ev-1", "ev-2"],
             "each event once, in the order first seen"
         );
+    }
+
+    /// A window whose connection stalls is asked again, not the whole read failed: the first
+    /// answer for it never comes in time, the second does. (On Android one stalled request out
+    /// of thirty failed a year's read.)
+    #[tokio::test]
+    async fn a_stalled_window_is_asked_again() {
+        let server = MockServer::start().await;
+        let stall = CalendarClient::READ_TIMEOUT * 3;
+        Mock::given(method("GET"))
+            .and(path("/ca/startup"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(body())
+                    .set_delay(stall),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ca/startup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ca/events"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "Event": body()["Event"].clone() })),
+            )
+            .mount(&server)
+            .await;
+        let snapshot = fetch_calendar(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "2026-11-01",
+            "2026-11-10",
+            "UTC",
+        )
+        .await
+        .expect("asked again, the window answers");
+        assert_eq!(snapshot.events.len(), 2);
     }
 
     /// A save answers with nothing (measured on the account); what is stored is Apple's own
