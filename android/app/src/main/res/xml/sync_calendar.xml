@@ -3,6 +3,6 @@
     android:contentAuthority="com.android.calendar"
     android:accountType="io.github.yashwanthkamireddi.skykeep.account"
     android:userVisible="true"
-    android:supportsUploading="true"
+    android:supportsUploading="false"
     android:allowParallelSyncs="false"
     android:isAlwaysSyncable="true" />

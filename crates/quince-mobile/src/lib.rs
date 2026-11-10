@@ -151,10 +151,78 @@ pub struct Person {
     pub methods: Vec<Method>,
 }
 
-fn failed(e: impl std::fmt::Display) -> EngineError {
+/// An iCloud calendar, as Android's Calendar will list it.
+#[derive(uniffi::Record)]
+pub struct Cal {
+    pub guid: String,
+    pub title: String,
+    /// `#rrggbb`, or none for Apple's default.
+    pub colour: Option<String>,
+    /// False for a subscription or a calendar shared read-only.
+    pub writable: bool,
+}
+
+/// One event, or one occurrence of a repeating event (its own id), in a calendar.
+#[derive(uniffi::Record)]
+pub struct Ev {
+    pub guid: String,
+    pub calendar_guid: String,
+    pub title: String,
+    pub location: Option<String>,
+    /// Unix seconds, UTC.
+    pub starts_at: i64,
+    pub ends_at: i64,
+    pub all_day: bool,
+    pub timezone: Option<String>,
+    pub notes: Option<String>,
+    pub etag: Option<String>,
+}
+
+/// The calendars, and every event in a span of days, read in one call.
+#[derive(uniffi::Record)]
+pub struct CalendarWindow {
+    pub calendars: Vec<Cal>,
+    pub events: Vec<Ev>,
+}
+
+/// What went wrong, for the screen: the engine's sentence. The whole of it — Apple's status,
+/// the connection's own error — goes to the phone's log (`adb logcat -s Skykeep`), where it was
+/// lost: "the connection dropped" on screen said nothing of which request or why.
+fn failed(e: impl std::fmt::Display + std::fmt::Debug) -> EngineError {
+    log::error(&format!("{e:?}"));
     EngineError::Failed {
         reason: e.to_string(),
     }
+}
+
+/// The phone's own log, through Android's `liblog`; nothing elsewhere.
+mod log {
+    #[cfg(target_os = "android")]
+    pub fn error(text: &str) {
+        use std::ffi::{c_char, c_int, CString};
+        #[link(name = "log")]
+        extern "C" {
+            fn __android_log_write(
+                priority: c_int,
+                tag: *const c_char,
+                text: *const c_char,
+            ) -> c_int;
+        }
+        const ERROR: c_int = 6;
+        let (Ok(tag), Ok(text)) = (
+            CString::new("Skykeep"),
+            CString::new(text.replace('\0', " ")),
+        ) else {
+            return;
+        };
+        // SAFETY: both are valid, NUL-terminated strings that outlive the call.
+        unsafe {
+            __android_log_write(ERROR, tag.as_ptr(), text.as_ptr());
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    pub fn error(_text: &str) {}
 }
 
 /// One Apple Account, signed in or being signed in: the desktop app's own sign-in (SRP,
@@ -279,6 +347,62 @@ impl Account {
                     .collect(),
             })
             .collect())
+    }
+
+    /// The calendars and the events between two days (`YYYY-MM-DD`, both included) in the
+    /// time zone `tz`, read exactly as the desktop reads them (`sync::fetch_calendar`): in
+    /// windows Apple accepts, each asked of `/ca/startup` and `/ca/events` and merged — one
+    /// `/ca/startup` for thirteen months was refused (400), and startup alone sometimes brings
+    /// no events. Repeating events come as their occurrences, each with its own id.
+    pub fn calendar_window(
+        &self,
+        from: String,
+        to: String,
+        tz: String,
+    ) -> Result<CalendarWindow, EngineError> {
+        let c = self.client.lock().map_err(failed)?;
+        let root = c
+            .session()
+            .service_url("calendar")
+            .ok_or_else(|| failed("Apple hasn't offered a calendar service for this account."))?;
+        let snap = runtime()
+            .block_on(quince_icloud::sync::fetch_calendar(
+                c.http(),
+                &root,
+                c.service_params(),
+                &from,
+                &to,
+                &tz,
+            ))
+            .map_err(failed)?;
+        Ok(CalendarWindow {
+            calendars: snap
+                .calendars
+                .into_iter()
+                .map(|k| Cal {
+                    guid: k.guid,
+                    title: k.title,
+                    colour: k.colour,
+                    writable: k.writable,
+                })
+                .collect(),
+            events: snap
+                .events
+                .into_iter()
+                .map(|e| Ev {
+                    guid: e.guid,
+                    calendar_guid: e.calendar_guid,
+                    title: e.title,
+                    location: e.location,
+                    starts_at: e.starts_at,
+                    ends_at: e.ends_at,
+                    all_day: e.all_day,
+                    timezone: e.timezone,
+                    notes: e.notes,
+                    etag: e.etag,
+                })
+                .collect(),
+        })
     }
 
     /// Signs out here: the session forgotten on this phone, its secrets deleted.

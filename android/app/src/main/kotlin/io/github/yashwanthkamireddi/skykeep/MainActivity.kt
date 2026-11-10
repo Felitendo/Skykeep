@@ -1,7 +1,10 @@
 package io.github.yashwanthkamireddi.skykeep
 
 import android.Manifest
+import android.content.ContentResolver
 import android.content.pm.PackageManager
+import android.provider.CalendarContract
+import android.provider.ContactsContract
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -18,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,14 +32,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import io.github.yashwanthkamireddi.skykeep.sync.ContactsSync
+import io.github.yashwanthkamireddi.skykeep.sync.Outcome
 import io.github.yashwanthkamireddi.skykeep.sync.ensureAccount
 import io.github.yashwanthkamireddi.skykeep.ui.theme.SkykeepTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.quince_mobile.Account
-import uniffi.quince_mobile.EngineException
 
 private enum class Phase { Starting, SignedOut, SignedIn }
 
@@ -67,32 +70,70 @@ class MainActivity : ComponentActivity() {
   }
 }
 
-/** Signed in: iCloud contacts into Android's Contacts, once Contacts access is allowed. */
+/**
+ * Signed in: iCloud's contacts and calendars in Android's own apps. The button asks Android to
+ * sync now — the adapters (sync/Services.kt) are the one place a sync runs, so a tap never runs
+ * a second one beside Android's — and the screen follows Android's sync while it runs, then
+ * says what each last did (sync/Outcome.kt).
+ */
 @Composable
 private fun SignedIn(account: Account) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var status by remember { mutableStateOf<String?>(null) }
   var busy by remember { mutableStateOf(false) }
+  val authorities = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY)
+  // Made by an earlier tap: its last outcomes shown at once.
+  var androidAccount by remember {
+    mutableStateOf(android.accounts.AccountManager.get(context).getAccountsByType(io.github.yashwanthkamireddi.skykeep.sync.ACCOUNT_TYPE).firstOrNull())
+  }
+  // When this screen last asked for a sync: busy until both have answered since, or two minutes
+  // pass. Not `isSyncPending`, which counts the hourly syncs Android always holds as pending —
+  // the button stayed disabled for good.
+  var asked by remember { mutableStateOf(0L) }
+  fun refresh() {
+    val a = androidAccount ?: return
+    val waiting = asked > 0 && System.currentTimeMillis() - asked < 120_000 &&
+      authorities.any { (Outcome.last(context, it)?.at ?: 0) < asked }
+    busy = waiting || authorities.any { ContentResolver.isSyncActive(a, it) }
+    status = authorities.mapNotNull { Outcome.last(context, it)?.said }.joinToString("\n").ifEmpty { null }
+  }
+  DisposableEffect(androidAccount) {
+    val handle = ContentResolver.addStatusChangeListener(
+      ContentResolver.SYNC_OBSERVER_TYPE_ACTIVE or ContentResolver.SYNC_OBSERVER_TYPE_PENDING,
+    ) { scope.launch { refresh() } }
+    val unwatch = Outcome.watch(context) { scope.launch { refresh() } }
+    refresh()
+    onDispose {
+      ContentResolver.removeStatusChangeListener(handle)
+      unwatch()
+    }
+  }
   fun syncNow() {
     busy = true
+    asked = System.currentTimeMillis()
     scope.launch {
-      status = withContext(Dispatchers.IO) {
-        try {
-          val id = account.appleId() ?: "iCloud"
-          val androidAccount = ensureAccount(context, id)
-          val people = account.contacts()
-          val r = ContactsSync.sync(context.contentResolver, androidAccount, people)
-          "${people.size} contacts in Android's Contacts · ${r.added} added, ${r.updated} updated, ${r.removed} removed"
-        } catch (e: EngineException.Failed) { e.reason }
+      val a = withContext(Dispatchers.IO) { ensureAccount(context, account.appleId() ?: "iCloud") }
+      androidAccount = a
+      val now = Bundle().apply {
+        putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true)
+        putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
       }
-      busy = false
+      for (authority in authorities) ContentResolver.requestSync(a, authority, now)
+      refresh()
+      // Never left waiting on an answer that does not come.
+      kotlinx.coroutines.delay(120_000)
+      refresh()
     }
   }
   val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-    if (granted.values.all { it }) syncNow() else status = "Contacts access is needed to show iCloud contacts in Contacts."
+    if (granted.values.all { it }) syncNow() else status = "Contacts and Calendar access is needed to show iCloud's in them."
   }
-  val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED
+  val needed = arrayOf(
+    Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS,
+    Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR,
+  )
+  val allowed = needed.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
   Column(Modifier.padding(32.dp).padding(top = 64.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
     Text("Signed in", style = MaterialTheme.typography.headlineSmall)
     account.appleId()?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
@@ -100,9 +141,9 @@ private fun SignedIn(account: Account) {
       enabled = !busy,
       onClick = {
         if (allowed) syncNow()
-        else ask.launch(arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS))
+        else ask.launch(needed)
       },
-    ) { Text("Show iCloud contacts in Contacts") }
+    ) { Text("Show iCloud in Contacts and Calendar") }
     if (busy) CircularProgressIndicator()
     status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
   }

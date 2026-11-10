@@ -32,9 +32,29 @@ class AuthenticatorService : Service() {
   override fun onBind(intent: Intent): IBinder = authenticator.iBinder
 }
 
-/** Where Android asks for a sync of Calendar. Filled in when calendars are synced. */
+/**
+ * Android asking for Calendar: iCloud's calendars and a year of events written in. The only
+ * place a calendar sync runs — the app's button asks Android for one rather than running its
+ * own beside it, so Apple is asked once, in turn, with Android's backoff after a failure.
+ */
 private class Adapter(context: Context) : AbstractThreadedSyncAdapter(context, true) {
-  override fun onPerformSync(a: Account, e: Bundle, authority: String, p: ContentProviderClient, r: SyncResult) = Unit
+  override fun onPerformSync(a: Account, e: Bundle, authority: String, p: ContentProviderClient, r: SyncResult) {
+    try {
+      val (from, to) = CalendarSync.span()
+      val window = io.github.yashwanthkamireddi.skykeep.Engine.account(context)
+        .calendarWindow(from, to, java.util.TimeZone.getDefault().id)
+      val done = CalendarSync.sync(context.contentResolver, a, window, from, to)
+      r.stats.numInserts += done.added.toLong()
+      r.stats.numUpdates += done.updated.toLong()
+      r.stats.numDeletes += done.removed.toLong()
+      Outcome.record(context, authority, true,
+        "${done.calendars} calendars, ${window.events.size} events · ${done.added} added, ${done.updated} updated, ${done.removed} removed")
+    } catch (x: uniffi.quince_mobile.EngineException) {
+      // Apple busy or unreachable, or the session gone: Android tries again later, backing off.
+      r.stats.numIoExceptions++
+      Outcome.record(context, authority, false, (x as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "Calendar couldn't be read.")
+    }
+  }
 }
 
 /** Android asking for Contacts: iCloud's address book read through the engine and written in. */
@@ -46,9 +66,12 @@ private class ContactsAdapter(context: Context) : AbstractThreadedSyncAdapter(co
       r.stats.numInserts += done.added.toLong()
       r.stats.numUpdates += done.updated.toLong()
       r.stats.numDeletes += done.removed.toLong()
+      Outcome.record(context, authority, true,
+        "${people.size} contacts · ${done.added} added, ${done.updated} updated, ${done.removed} removed")
     } catch (x: uniffi.quince_mobile.EngineException) {
-      // Apple unreachable or the session gone: Android retries later with backoff.
+      // Apple busy or unreachable, or the session gone: Android tries again later, backing off.
       r.stats.numIoExceptions++
+      Outcome.record(context, authority, false, (x as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "Contacts couldn't be read.")
     }
   }
 }
