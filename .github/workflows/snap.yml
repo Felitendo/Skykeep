@@ -34,7 +34,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 90
     outputs:
       snap: ${{ steps.name.outputs.snap }}
     steps:
@@ -58,7 +58,7 @@ jobs:
         run: |
           packaging/snap/store-install.sh snapcraft --classic
           packaging/snap/store-install.sh core24
-          packaging/snap/store-install.sh gnome-46-2404-sdk
+          STORE_MINUTES=15 packaging/snap/store-install.sh gnome-46-2404-sdk
       # snapcraft fetches the stage-packages from archive.ubuntu.com, which now and then stops
       # answering a runner (v0.1.16's snap failed on one .deb): a second try goes on from where
       # the first stopped. Each try is limited, so a hang is a failure and is tried again.
@@ -81,10 +81,10 @@ jobs:
           [ -f "$SNAP_FILE" ] || { echo "::error::no snap was built"; exit 1; }
           echo "snap=$SNAP_FILE" >> "$GITHUB_OUTPUT"
       - name: It installs and starts
-        timeout-minutes: 20
+        timeout-minutes: 40
         run: |
           # What snapd would fetch for it on install, fetched first the same patient way.
-          for s in gnome-46-2404 gtk-common-themes mesa-2404; do packaging/snap/store-install.sh "$s"; done
+          for s in gnome-46-2404 gtk-common-themes mesa-2404; do STORE_MINUTES=10 packaging/snap/store-install.sh "$s"; done
           sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
           sudo apt-get install -y xvfb dbus-x11 >/dev/null
           # Snaps start only inside a user session's scope, as on a desktop; a runner step sits

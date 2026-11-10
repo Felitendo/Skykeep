@@ -1,6 +1,8 @@
 #!/bin/bash
 # store-install.sh <snap install arguments…>: a snap installed from the Snap Store on a CI runner,
-# made to finish or fail instead of hanging.
+# made to finish or fail instead of hanging. STORE_MINUTES gives each try its limit (5 by
+# default): sized to the snap, as the GNOME SDK is far larger than snapcraft, and on a slow day
+# a limit made for a small snap cut every try of the large one off mid-download (10 Nov).
 #
 # 10 Nov 2026: the Snap Store stopped answering runners mid-install five times in a day (lxd,
 # build snaps, snapcraft itself). A hung install never fails by itself, and when a time limit ends
@@ -9,8 +11,9 @@
 # limit, and a try that runs out aborts every unfinished snapd change and waits for it to clear
 # before the next try.
 set -u
+limit=$(( ${STORE_MINUTES:-5} * 60 ))
 for try in 1 2 3; do
-  if sudo timeout 300 snap install "$@"; then
+  if sudo timeout "$limit" snap install "$@"; then
     exit 0
   fi
   echo "::warning::snap install $* did not finish (try $try of 3): clearing it and trying again"
