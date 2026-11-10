@@ -482,13 +482,9 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                         ctx.account.as_deref(),
                         fetched,
                         move |library, f| {
-                            let (folders, notes, _) =
-                                quince_icloud::notes::apply_cloudkit(library, f)?;
-                            // Edits still on their way to Apple stay as typed here.
-                            crate::outbox::replay(library, crate::outbox::NOTES)?;
-                            if full {
-                                library.mark_full_sync("notes")?;
-                            }
+                            // Stored, with every edit still on its way laid back over it
+                            // (shared with the phone: quince_sync::notes::apply).
+                            let (folders, notes) = quince_sync::notes::apply(library, f, full)?;
                             Ok(format!(
                                 "{notes} note{} in {folders} folder{}",
                                 plural(notes),

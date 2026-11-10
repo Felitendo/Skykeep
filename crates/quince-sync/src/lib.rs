@@ -1,6 +1,7 @@
 //! A service's sync, shared by the desktop app and the phone's engine (see Cargo.toml).
 
 pub mod library_lock;
+pub mod notes;
 pub mod queue;
 pub mod reminders;
 
