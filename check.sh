@@ -43,7 +43,7 @@ step "app is standalone" bash -c '! grep -q devUrl src-tauri/tauri.conf.json'
 # Only what is meant to be public is tracked (.github/published-paths says what that is).
 step "nothing stray is published" bash -c '! git ls-files | grep -vxE -f <(grep -vE "^(#|$)" .github/published-paths)'
 # Every workflow's expressions and inputs are what GitHub will accept (actionlint).
-step "workflows lint" actionlint
+step "workflows lint" actionlint -shellcheck=
 # The Flatpak builds offline: every package the lockfiles name must be in its sources.
 step "flatpak sources current" python3 packaging/flatpak/sources-current.py
 

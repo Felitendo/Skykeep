@@ -10,6 +10,14 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 # The scale tests make tens of thousands of files or rows: one at a time, so they measure
 # themselves and not each other.
 scale = { max-threads = 1 }
+# Stress tests: randomised runs with simulated crashes against a real database. Slow on Windows'
+# disk (one passed 2 minutes there), so given 6; they still run everywhere.
+stress = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = "test(/random_use_and_crashes/)"
+test-group = "stress"
+slow-timeout = { period = "120s", terminate-after = 3 }
 
 [[profile.default.overrides]]
 filter = "test(/hundred_thousand|forty_thousand|of_thousands_arrives/)"

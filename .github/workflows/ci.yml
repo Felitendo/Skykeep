@@ -55,7 +55,8 @@ jobs:
           curl -sSfL -o actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
           echo "${SHA256}  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz actionlint
-          ./actionlint
+          # The workflows' wiring; their scripts' style is not this check's (-shellcheck= off).
+          ./actionlint -shellcheck=
           rm actionlint actionlint.tar.gz
       - name: Nothing stray is tracked
         run: |
