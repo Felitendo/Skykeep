@@ -746,6 +746,16 @@ let failures = 0;
     console.log(said ? `PASS it says ${what}` : `FAIL it does not say ${what}`);
     if (!said) failures++;
   }
+  // Open, it is shown whole: no scroll box of its own inside the scrolling sheet, and nothing
+  // wider than it (10 Nov: capped at 210px it scrolled both ways, and the data folder's path,
+  // one long word, pushed it sideways and cut every line's first letters off).
+  const fit = await page.locator(".disclosure-body").evaluate((el) => ({
+    across: el.scrollWidth - el.clientWidth,
+    down: el.scrollHeight - el.clientHeight,
+  }));
+  const whole = fit.across <= 0 && fit.down <= 0;
+  console.log(whole ? "PASS the opened disclosure is shown whole, with no scrolling of its own" : `FAIL the opened disclosure scrolls on its own  ${JSON.stringify(fit)}`);
+  if (!whole) failures++;
   await page.close();
 }
 

@@ -1236,14 +1236,18 @@
   color: var(--text-2);
   font-size: var(--t-12);
   background: color-mix(in srgb, var(--text) 4%, transparent);
-  max-height: min(210px, 34vh);
-  overflow-y: auto;
+  /* Open, it is shown whole: the sign-in screen (.shell) already scrolls when it grows past
+     the window. A height cap here made a scroll box inside a scroll box, with bars of its own
+     on both sides (10 Nov). */
 }
 
 .disclosure-body p { margin: 0 0 8px; line-height: 1.5; }
 .disclosure-body p:last-child { margin-bottom: 0; }
 .disclosure-body strong { color: var(--text); font-weight: 600; }
 .disclosure-body code {
+  /* The data folder's path is one long word: broken where it must be, never wider than the
+     box (unbroken, it pushed the box sideways and cut every line's first letters off). */
+  overflow-wrap: anywhere;
   font-size: 0.95em;
   padding: 1px 4px;
   border-radius: 4px;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Mark } from "../components/Mark";
 import { Spinner } from "../components/Spinner";
 import { StatusLine } from "../components/StatusLine";
@@ -6,6 +6,15 @@ import { api, messageOf, type SignInResult } from "../lib/ipc";
 import { onWindows } from "../lib/platform";
 
 // Where the copy is kept, as this system names it.
+/** A path that may wrap only after a separator or a dot, as macOS wraps one, never mid-name. */
+const breakable = (path: string) =>
+  (path.match(/[^\\/.]*[\\/.]?/g) ?? []).filter(Boolean).map((part, i) => (
+    <Fragment key={i}>
+      {part}
+      <wbr />
+    </Fragment>
+  ));
+
 const STORE = onWindows ? "%APPDATA%\\io.github.yashwanthkamireddi.Skykeep" : "~/.local/share/io.github.yashwanthkamireddi.Skykeep";
 
 /**
@@ -174,7 +183,7 @@ export function SignIn({
           </p>
           <p>
             <strong>Your iCloud, right here.</strong> Your calendar, reminders, notes, contacts
-            and Drive live on this computer in <code>{STORE}</code>, so everything opens
+            and Drive live on this computer in <code>{breakable(STORE)}</code>, so everything opens
             instantly and works offline.
           </p>
           <p>
