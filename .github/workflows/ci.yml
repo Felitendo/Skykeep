@@ -45,12 +45,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # Every workflow's expressions, inputs and job wiring checked before GitHub runs them.
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: actionlint
+      # Every workflow's expressions, inputs and job wiring checked before GitHub runs them:
+      # actionlint's own release, pinned and checked against its published checksum.
       - name: Workflows are well formed
-        run: actionlint
+        env:
+          VERSION: "1.7.12"
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -sSfL -o actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "${SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint
+          rm actionlint actionlint.tar.gz
       - name: Nothing stray is tracked
         run: |
           stray=$(git ls-files | grep -vxE -f <(grep -vE '^(#|$)' .github/published-paths) || true)
@@ -128,7 +134,7 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --workspace --locked --profile ci
+      - run: cargo nextest run --workspace --lib --bins --tests --locked --profile ci
         env:
           TZ: America/Chicago
       # The keyring code against a real, throwaway gnome-keyring on a private bus (check.sh's

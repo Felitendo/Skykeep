@@ -81,7 +81,7 @@ rust_lane() {
     step "real keyring"   real_keyring
   fi
   # nextest, as CI runs it (.config/nextest.toml): every core, hung tests stopped, slow ones named.
-  step "rust tests"       cargo nextest run --workspace --profile ci --hide-progress-bar
+  step "rust tests"       cargo nextest run --workspace --lib --bins --tests --profile ci --hide-progress-bar
   # Windows-only code compiles here too, so a change to shared code cannot break the Windows
   # build unseen (cfg(windows) files are never compiled for Linux).
   step "windows compiles" cargo check --workspace --tests --target x86_64-pc-windows-gnu
