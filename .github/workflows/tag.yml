@@ -1,0 +1,80 @@
+# A release, started with one button: Actions → Tag a release → Run workflow.
+# It tags only a commit that is on main, whose version is not released yet, and on which both
+# CI (ci.yml) and the Windows checks (windows-checks.yml) succeeded — looked up by that exact
+# SHA, so another commit's green run can never stand in for it (9 and 10 Nov: a run of a
+# different commit was read as this one's, by a script and then by hand). Then it starts the
+# release (release.yml) and the Linux compatibility check on the new tag: a tag made with the
+# workflow's own token starts no workflow by itself, so they are started here, by name.
+# The tag is the version bump's commit; its message becomes the update's notes.
+name: Tag a release
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "The commit to release (empty: the latest on main)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Only check: say whether it could be released, tag nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One at a time: two presses never race to the same tag.
+concurrency:
+  group: tag-a-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Ready to release
+        id: ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GIVEN: ${{ inputs.sha }}
+          DRY: ${{ inputs.dry_run }}
+        run: |
+          SHA=$(git rev-parse --verify "${GIVEN:-HEAD}^{commit}") || { echo "::error::no such commit: $GIVEN"; exit 1; }
+          export SHA
+          if ! git merge-base --is-ancestor "$SHA" HEAD; then echo "::error::$SHA is not on main"; exit 1; fi
+          version=$(git show "$SHA:src-tauri/tauri.conf.json" | jq -r .version)
+          tag="v$version"
+          for w in ci.yml windows-checks.yml; do
+            run=$(gh api "repos/$REPO/actions/workflows/$w/runs?head_sha=$SHA&status=success&per_page=1" \
+              -q '.workflow_runs[0] | select(.head_sha == env.SHA) | .html_url')
+            if [ -z "$run" ]; then echo "::error::$w has not succeeded on $SHA (still running, failed, or never ran)"; exit 1; fi
+            echo "$w succeeded on $SHA: $run"
+          done
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            if [ "$DRY" = true ]; then echo "::warning::$tag already exists (dry run)"; else
+              echo "::error::$tag already exists: a release is a new version (bump it on main first)"; exit 1; fi
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Tag, then start the release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.ready.outputs.sha }}
+          TAG: ${{ steps.ready.outputs.tag }}
+        run: |
+          gh api "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null
+          echo "tagged $TAG on $SHA"
+          gh workflow run release.yml --repo "$REPO" --ref "$TAG"
+          gh workflow run linux-compat.yml --repo "$REPO" --ref "$TAG"
+          echo "release and Linux compatibility started on $TAG"

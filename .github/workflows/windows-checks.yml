@@ -1,6 +1,6 @@
 # Windows, checked on every push to main, so a commit is ready to release the moment it is green:
 #   windows — the whole Windows pipeline (windows.yml): its tests, the Explorer test, the .msi and
-#             the .exe, the .exe installed and started;
+#             the .exe signed for the updater, the .exe installed and started;
 #   msix    — the Store package packed from that same build and installed (msix.yml, prebuilt):
 #             one Windows build, both checks.
 # A release is tagged only on a commit whose CI and Windows checks both succeeded (by its SHA).
@@ -31,10 +31,16 @@ permissions:
   contents: read
 
 jobs:
+  # Signed for the in-app updater here, once: a release of this commit publishes these very
+  # installers (release.yml promotes them) instead of building Windows a second time.
   windows:
     uses: ./.github/workflows/windows.yml
     with:
       test_first: true
+      updater: true
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
   msix:
     needs: windows
