@@ -2,12 +2,16 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Type, Unlink } from "lucide-react";
 import { Portal } from "../../components/Portal";
 import { useActiveRef } from "../../lib/screen";
+import { api } from "../../lib/ipc";
 import { linkAddress } from "./linking";
 
 /** What the box was opened on: where, the link already there, and whether text is asked for. */
 export type LinkAsk = {
-  /** The selection's foot on screen; the box opens below it, or above when there is no room. */
+  /** Where the selection starts across, and its top and foot on screen: the box opens below
+   * it, left-aligned with it, or above when there is no room below. */
   at: { x: number; top: number; bottom: number };
+  /** The note's own area: the box stays inside it, never over the list or the sidebar. */
+  within: { left: number; right: number; top: number; bottom: number };
   /** The address of the link the cursor stands in, to change or take off. */
   href: string | null;
   /** Nothing selected and no link there: the words to show are asked for too. */
@@ -36,17 +40,45 @@ export function LinkBox({
   const [address, setAddress] = useState(ask.href ?? "");
   const [text, setText] = useState("");
   const [wrong, setWrong] = useState(false);
-  const [pos, setPos] = useState({ left: ask.at.x, top: ask.at.bottom + 6 });
+  const field = useRef<HTMLInputElement | null>(null);
+  const [pos, setPos] = useState({ left: ask.at.x, top: ask.at.bottom + 6, width: 280 });
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
-    const width = el.offsetWidth;
+    // Inside the note: as wide as there is room for, up to 280, never over the list beside it.
+    const area = ask.within;
+    const room = Math.max(200, area.right - area.left - 16);
+    const width = Math.min(280, room);
     const height = el.offsetHeight;
-    const left = Math.max(8, Math.min(ask.at.x - width / 2, window.innerWidth - width - 8));
+    const lo = Math.max(8, area.left + 8);
+    const hi = Math.min(window.innerWidth, area.right) - width - 8;
+    const left = Math.max(lo, Math.min(ask.at.x - 12, hi));
+    const floor = Math.min(window.innerHeight, area.bottom) - 8;
     const below = ask.at.bottom + 6;
-    const top = below + height <= window.innerHeight - 8 ? below : Math.max(8, ask.at.top - height - 6);
-    setPos({ left, top });
+    const top = below + height <= floor ? below : Math.max(Math.max(8, area.top + 4), ask.at.top - height - 6);
+    setPos({ left, top, width });
   }, [ask, wrong]);
+  // A link just copied is what is wanted nine times in ten: offered in the field, selected, so
+  // Return takes it and typing replaces it — as Mac apps offer the clipboard's address.
+  useEffect(() => {
+    if (ask.href) return;
+    let live = true;
+    api.clipboardRead().then(
+      ({ text }) => {
+        const offered = text?.trim() ?? "";
+        if (!live || !offered || offered.length > 2000 || !linkAddress(offered)) return;
+        setAddress((now) => {
+          if (now) return now;
+          requestAnimationFrame(() => field.current?.select());
+          return offered;
+        });
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [ask.href]);
   const live = useActiveRef();
   useEffect(() => {
     const down = (e: MouseEvent) => {
@@ -77,7 +109,7 @@ export function LinkBox({
         className="link-box popover"
         role="dialog"
         aria-label={title}
-        style={{ left: pos.left, top: pos.top }}
+        style={{ left: pos.left, top: pos.top, width: pos.width }}
         onSubmit={(e) => {
           e.preventDefault();
           const href = linkAddress(address);
@@ -91,6 +123,7 @@ export function LinkBox({
         <div className="search-field link-box-field">
           <Link size={14} strokeWidth={2} aria-hidden="true" />
           <input
+            ref={field}
             autoFocus
             aria-label="Link to"
             value={address}

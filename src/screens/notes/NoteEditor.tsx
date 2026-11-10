@@ -813,10 +813,14 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     if (!v || !v.editable) return;
     const { state } = v;
     const around = linkAt(state);
+    const start = v.coordsAtPos(around && state.selection.empty ? around.from : state.selection.from);
     const foot = v.coordsAtPos(state.selection.to);
+    // The note's own area, as it shows on screen now: the pane the editor scrolls in.
+    const pane = (host.current?.closest(".note-editor") ?? host.current ?? v.dom).getBoundingClientRect();
     linking.current = true;
     setLinkAsk({
-      at: { x: foot.left, top: foot.top, bottom: foot.bottom },
+      at: { x: start.left, top: Math.min(start.top, foot.top), bottom: foot.bottom },
+      within: { left: pane.left, right: pane.right, top: pane.top, bottom: pane.bottom },
       href: around?.href ?? null,
       needsText: state.selection.empty && !around,
     });

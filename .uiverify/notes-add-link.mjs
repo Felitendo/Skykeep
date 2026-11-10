@@ -97,6 +97,43 @@ const r = await box.boundingBox();
 ok(r && r.x >= 0 && r.y >= 0 && r.x + r.width <= 1200 && r.y + r.height <= 800, "on screen");
 await page.keyboard.press("Escape");
 
+// A link just copied is offered, selected: Return takes it.
+await page.evaluate(() => { window.__clipText = "https://www.apple.com/icloud/"; });
+const clock = page.locator(".note-rich .nf-p", { hasText: /^wall clock/ }).first();
+await clock.click();
+await page.keyboard.press("End");
+await page.keyboard.press("Shift+Home");
+await page.keyboard.press("Control+k");
+await page.waitForTimeout(250);
+const field = box.getByLabel("Link to");
+ok((await field.inputValue()) === "https://www.apple.com/icloud/", "a link on the clipboard is offered");
+ok(await field.evaluate((el) => el.selectionStart === 0 && el.selectionEnd === el.value.length), "selected, so typing replaces it");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(150);
+ok((await clock.locator('a[href="https://www.apple.com/icloud/"]').count()) === 1, "and Return links it");
+await page.evaluate(() => { window.__clipText = "just some words"; });
+
+// The box stays in the note: opened at the very start of a line, by the list, in a wide and a
+// narrow window, it never crosses into the list of notes.
+for (const [w, h] of [[1200, 800], [760, 560]]) {
+  await page.setViewportSize({ width: w, height: h });
+  await page.waitForTimeout(300);
+  const line = page.locator(".note-rich .nf-p", { hasText: /^Knife/ }).first();
+  await line.scrollIntoViewIfNeeded();
+  await line.click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Control+k");
+  await page.waitForTimeout(250);
+  const pane = await page.locator(".note-editor").boundingBox();
+  const at = await box.boundingBox();
+  ok(at && pane && at.x >= pane.x && at.x + at.width <= pane.x + pane.width + 1, `${w}x${h}: inside the note, clear of the list  (box ${Math.round(at?.x)}–${Math.round((at?.x ?? 0) + (at?.width ?? 0))}, note ${Math.round(pane?.x)}–${Math.round((pane?.x ?? 0) + (pane?.width ?? 0))})`);
+  ok(at && at.y >= 0 && at.y + at.height <= h, `${w}x${h}: wholly on screen`);
+  ok((await field.inputValue()) === "", `${w}x${h}: words on the clipboard are not offered as a link`);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+}
+await page.setViewportSize({ width: 1200, height: 800 });
+
 // In the shortcuts sheet.
 await page.waitForTimeout(150);
 await page.keyboard.press("Control+/");

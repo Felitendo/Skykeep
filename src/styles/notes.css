@@ -611,7 +611,6 @@ textarea.note-title::placeholder { color: var(--text-3); }
   z-index: 60;
   display: grid;
   gap: 6px;
-  width: 280px;
   padding: 8px;
 }
 .link-box-field { cursor: text; }
