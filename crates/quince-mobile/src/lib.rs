@@ -509,9 +509,11 @@ fn failed(e: impl std::fmt::Display + std::fmt::Debug) -> EngineError {
 /// The phone's own log, through Android's `liblog`; nothing elsewhere.
 mod drive;
 mod notes;
+mod photos;
 mod reminders;
 pub use drive::DItem;
 pub use notes::{NDoc, NFolder, NItem, NSpan, NSync};
+pub use photos::{PAlbum, PIndex, PItem, PSize, PSync, PView};
 pub use reminders::{RCounts, REdit, RItem, RList, RSync, RView};
 
 mod log {

@@ -654,13 +654,11 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                             ctx.account.as_deref(),
                             fetched,
                             move |library, f| {
-                                let records = f.records.len();
-                                let (_, links) = quince_icloud::photos::apply(library, f)?;
-                                // Marked, or every pass after walked the whole library again:
-                                // the daily full read is due when none was ever recorded.
-                                if full {
-                                    library.mark_full_sync(quince_icloud::photos::SERVICE)?;
-                                }
+                                // Stored, and a pass from the start marked (or every pass after
+                                // walked the whole library again): shared with the phone,
+                                // quince_sync::photos::apply.
+                                let (records, links) =
+                                    quince_sync::photos::apply(library, f, full)?;
                                 crate::photos::remember(links);
                                 // Said from what the pass brought: counting the library to
                                 // say it held the writer's lock through each of a refresh's ten

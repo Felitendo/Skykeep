@@ -71,6 +71,17 @@
             <meta-data android:name="android.content.SyncAdapter"
                 android:resource="@xml/sync_notes" />
         </service>
+        <!-- Photos, synced with the account the same way (PhotosSync.kt). -->
+        <provider android:name=".sync.PhotosProvider"
+            android:authorities="io.github.yashwanthkamireddi.skykeep.photos"
+            android:exported="false" android:syncable="true" />
+        <service android:name=".sync.PhotosSyncService" android:exported="true">
+            <intent-filter>
+                <action android:name="android.content.SyncAdapter" />
+            </intent-filter>
+            <meta-data android:name="android.content.SyncAdapter"
+                android:resource="@xml/sync_photos" />
+        </service>
         <!-- iCloud Drive in the Files app and every app's pickers (DriveProvider.kt). Only the
              system's document UI may call it (MANAGE_DOCUMENTS). -->
         <provider android:name=".sync.DriveProvider"

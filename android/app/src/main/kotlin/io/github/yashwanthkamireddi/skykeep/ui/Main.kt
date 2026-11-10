@@ -11,6 +11,7 @@ import android.provider.CalendarContract.Calendars
 import android.provider.ContactsContract
 import android.text.format.DateUtils
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,14 +72,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * The bottom bar: five places, as Material's navigation bar holds (three to five). Contacts and
+ * Calendar live in the phone's own apps; their settings open from their cards on Home.
+ */
 private enum class Tab(val label: String, val icon: Int) {
   Home("Home", R.drawable.ic_home),
-  Contacts("Contacts", R.drawable.ic_person),
-  Calendar("Calendar", R.drawable.ic_calendar),
   Reminders("Reminders", R.drawable.ic_reminders),
   Notes("Notes", R.drawable.ic_notes),
+  Photos("Photos", R.drawable.ic_photos),
   Settings("Settings", R.drawable.ic_settings),
 }
+
+/** A page opened from Home rather than the bar: Contacts' or Calendar's settings. */
+private enum class Page { Contacts, Calendar }
 
 /**
  * Skykeep once set up. The using happens in the phone's own Contacts and Calendar apps; here are
@@ -89,6 +96,8 @@ private enum class Tab(val label: String, val icon: Int) {
 fun MainScreens(engine: uniffi.quince_mobile.Account, onSignedOut: () -> Unit) {
   val context = LocalContext.current
   var tab by remember { mutableStateOf(Tab.Home) }
+  var page by remember { mutableStateOf<Page?>(null) }
+  androidx.activity.compose.BackHandler(enabled = page != null) { page = null }
   var asked by remember { mutableLongStateOf(0L) }
   val account = remember { phoneAccount(context) }
   val sync = rememberSyncView(account, asked)
@@ -99,7 +108,7 @@ fun MainScreens(engine: uniffi.quince_mobile.Account, onSignedOut: () -> Unit) {
         for (t in Tab.entries) {
           NavigationBarItem(
             selected = tab == t,
-            onClick = { tab = t },
+            onClick = { tab = t; page = null },
             icon = { Icon(painterResource(t.icon), contentDescription = null) },
             label = { Text(t.label) },
           )
@@ -107,18 +116,23 @@ fun MainScreens(engine: uniffi.quince_mobile.Account, onSignedOut: () -> Unit) {
       }
     },
   ) { inner ->
-    // Reminders scrolls its own lists (a list can be long); the other pages are one column.
-    if (tab == Tab.Reminders || tab == Tab.Notes) {
-      Box(Modifier.padding(inner).fillMaxSize()) { if (tab == Tab.Notes) NotesPage(engine) else RemindersPage(engine) }
+    // Reminders, Notes and Photos scroll their own lists (they can be long); the rest are one column.
+    if (tab == Tab.Reminders || tab == Tab.Notes || tab == Tab.Photos) {
+      Box(Modifier.padding(inner).fillMaxSize()) {
+        when (tab) {
+          Tab.Notes -> NotesPage(engine)
+          Tab.Photos -> PhotosPage(engine)
+          else -> RemindersPage(engine)
+        }
+      }
     } else {
       Box(Modifier.padding(inner).fillMaxSize().verticalScroll(rememberScrollState())) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-          when (tab) {
-            Tab.Home -> Home(engine, account, sync, onSync = ::now)
-            Tab.Contacts -> ContactsPage(account)
-            Tab.Calendar -> CalendarPage(account)
-            Tab.Reminders, Tab.Notes -> {}
-            Tab.Settings -> SettingsPage(engine, account, onSignedOut)
+          when {
+            page == Page.Contacts -> ContactsPage(account)
+            page == Page.Calendar -> CalendarPage(account)
+            tab == Tab.Home -> Home(engine, account, sync, onSync = ::now, onOpen = { page = it })
+            tab == Tab.Settings -> SettingsPage(engine, account, onSignedOut)
           }
         }
       }
@@ -127,7 +141,7 @@ fun MainScreens(engine: uniffi.quince_mobile.Account, onSignedOut: () -> Unit) {
 }
 
 @Composable
-private fun Home(engine: uniffi.quince_mobile.Account, account: Account?, sync: SyncView, onSync: () -> Unit) {
+private fun Home(engine: uniffi.quince_mobile.Account, account: Account?, sync: SyncView, onSync: () -> Unit, onOpen: (Page) -> Unit) {
   val context = LocalContext.current
   val id = remember { runCatching { engine.appleId() }.getOrNull() }
   Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -161,8 +175,11 @@ private fun Home(engine: uniffi.quince_mobile.Account, account: Account?, sync: 
     ContactsContract.AUTHORITY to "Contacts", CalendarContract.AUTHORITY to "Calendar",
     io.github.yashwanthkamireddi.skykeep.sync.REMINDERS_AUTHORITY to "Reminders",
     io.github.yashwanthkamireddi.skykeep.sync.NOTES_AUTHORITY to "Notes",
+    io.github.yashwanthkamireddi.skykeep.sync.PHOTOS_AUTHORITY to "Photos",
   )) {
-    Health(name, sync.last[authority], sync.busy)
+    // Contacts' and Calendar's cards open their settings (they have no tab of their own).
+    val opens = when (name) { "Contacts" -> Page.Contacts; "Calendar" -> Page.Calendar; else -> null }
+    Health(name, sync.last[authority], sync.busy, onClick = opens?.let { { onOpen(it) } })
   }
   // Phone makers' battery savers pause apps that aren't opened often, and a sync with them. Said
   // only when it has happened: nothing synced cleanly for two days, though Skykeep has synced
@@ -215,7 +232,7 @@ private fun Home(engine: uniffi.quince_mobile.Account, account: Account?, sync: 
 
 /** One service's sync health, in the design's words. */
 @Composable
-private fun Health(name: String, last: Outcome.Last?, busy: Boolean) {
+private fun Health(name: String, last: Outcome.Last?, busy: Boolean, onClick: (() -> Unit)? = null) {
   val (line, detail, trouble) = when {
     last == null && busy -> Triple("Setting up", "The first sync can take a little while. You can keep using your phone.", false)
     last == null -> Triple("Not synced yet", null, false)
@@ -228,7 +245,7 @@ private fun Health(name: String, last: Outcome.Last?, busy: Boolean) {
       true,
     )
   }
-  Card(Modifier.fillMaxWidth()) {
+  Card(Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)) {
     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
       Row(verticalAlignment = Alignment.CenterVertically) {
         Text(name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))

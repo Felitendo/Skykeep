@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Photos, synced with the account like Notes (PhotosSync.kt). -->
+<sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
+    android:contentAuthority="io.github.yashwanthkamireddi.skykeep.photos"
+    android:accountType="io.github.yashwanthkamireddi.skykeep.account"
+    android:userVisible="true"
+    android:supportsUploading="true"
+    android:allowParallelSyncs="false"
+    android:isAlwaysSyncable="true" />
