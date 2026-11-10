@@ -4218,6 +4218,7 @@ dependencies = [
  "quince-core",
  "quince-icloud",
  "quince-media",
+ "quince-sync",
  "quince-thumbs",
  "quince-vfs",
  "reqwest 0.12.28",
@@ -4373,6 +4374,22 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "quince-sync"
+version = "0.1.20"
+dependencies = [
+ "futures-util",
+ "jiff",
+ "libc",
+ "quince-core",
+ "quince-icloud",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

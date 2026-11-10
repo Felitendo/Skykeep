@@ -31,7 +31,8 @@ mod grants;
 mod hello;
 mod intake;
 mod launcher;
-mod library_lock;
+/// The library behind one lock: shared with the phone's engine (crates/quince-sync).
+pub use quince_sync::library_lock;
 mod links;
 mod login;
 mod migrate;
@@ -292,7 +293,7 @@ async fn refresh_reminders(
         tokio::task::block_in_place(|| {
             library.atomically(|library| {
                 quince_icloud::reminders::apply_cloudkit(library, fetched)?;
-                outbox::replay_reminders(library)?;
+                quince_sync::reminders::replay(library)?;
                 Ok::<_, quince_icloud::Error>(())
             })
         })
@@ -1416,7 +1417,8 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
 }
 
 /// Whose data the library holds: a hash of Apple's account id, never the id itself.
-pub const ACCOUNT_KEY: &str = "account";
+/// Where the library names whose it is (shared with the queue that checks it).
+pub use quince_sync::queue::ACCOUNT_KEY;
 
 /// What of an account lives in the data folder beside the session: its library, and every
 /// cache and queue made from it. Moved as one when another account signs in.
@@ -1930,7 +1932,9 @@ fn read_for_search<T>(
     read: impl FnOnce(&Library) -> quince_core::Result<T>,
 ) -> Option<Result<T, String>> {
     let file = dir.join("library.db");
-    let id = std::fs::metadata(&file).ok().map(|m| file_identity(&m))?;
+    let id = std::fs::metadata(&file)
+        .ok()
+        .map(|m| library_lock::file_identity(&m))?;
     let mut reader = SEARCH_READER.lock().unwrap_or_else(|e| e.into_inner());
     if !matches!(&*reader, Some((f, i, _)) if *f == file && *i == id) {
         *reader = Library::open_reader(dir).ok().map(|l| (file, id, l));
@@ -1944,24 +1948,6 @@ fn read_for_search<T>(
         *reader = None;
     }
     Some(found)
-}
-
-/// Which file this is, so one moved into its place is told from it.
-fn file_identity(m: &std::fs::Metadata) -> (u64, u64) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        (m.dev(), m.ino())
-    }
-    #[cfg(not(unix))]
-    {
-        let born = m
-            .created()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-        (born, 0)
-    }
 }
 
 /// One search across every app's library — notes, reminders, events, contacts, files, photos —
@@ -3291,49 +3277,15 @@ async fn set_done(
     _list_guid: &str,
     done: bool,
 ) -> UiResult<()> {
-    let (reminder, last) = {
-        let library = data.0.lock().await;
-        let reminder = reminder_to_write(&library, guid)?;
-        // The last tick of a repeat that ends: completed, as the phone completes it, rather
-        // than moved past its End Repeat date.
-        let end = library
-            .reminder_repeat_end(guid)
-            .map_err(|e| e.to_string())?;
-        let days = library
-            .reminder_repeat_days(guid)
-            .map_err(|e| e.to_string())?;
-        let last =
-            done && reminder.tick_ends_series_on(end, &days, jiff::Timestamp::now().as_second());
-        (reminder, last)
-    };
-    if last || !(done && reminder.repeats()) {
-        let now = jiff::Timestamp::now().as_second();
-        let payload = serde_json::to_string(&outbox::Done {
-            done,
-            at: now,
-            base: quince_icloud::reminders::TickBase::of(&reminder),
-        })
-        .map_err(|e| e.to_string())?;
-        {
-            // Shown and queued together, or neither: a tick shown with nothing queued would
-            // be put back by the next pass.
-            let mut library = data.0.lock().await;
-            library
-                .atomically(|l| {
-                    l.set_reminder_completed(guid, done.then_some(now))?;
-                    l.outbox_push("reminders", guid, "done", &payload)
-                })
-                .map_err(|e| e.to_string())?;
-        }
-        outbox::kick();
-        alerts::changed();
-        return Ok(());
-    }
     {
+        // Shown and queued together (quince_sync::reminders::record_reminder_tick): a repeating
+        // one moves on to its next date, or completes on the last of its series.
         let mut library = data.0.lock().await;
-        outbox::record_reminder_advance(
+        let reminder = reminder_to_write(&library, guid)?;
+        outbox::record_reminder_tick(
             &mut library,
             &reminder,
+            done,
             jiff::Timestamp::now().as_second(),
         )
         .map_err(|e| e.to_string())?;

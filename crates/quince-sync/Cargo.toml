@@ -1,0 +1,26 @@
+[package]
+name = "quince-sync"
+version = "0.1.20"
+edition.workspace = true
+license.workspace = true
+
+# A service's sync, shared by the desktop app and the phone's engine: the library behind one
+# lock, the queue of changes made here (shown at once, sent behind, oldest first), and each
+# service's record, lay, send and refresh. Nothing in it knows about a window.
+[dependencies]
+quince-core = { path = "../quince-core" }
+quince-icloud = { path = "../quince-icloud" }
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+jiff = "0.2.37"
+
+# The library's file lock (library_lock.rs), on Linux, macOS and Android.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }

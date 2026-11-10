@@ -21,21 +21,24 @@
 //! every pass lays the waiting changes over what it read (see [`replay`]).
 
 use crate::{cloudkit_context, Auth, Data};
-use futures_util::FutureExt;
 use quince_core::calendar::Event;
 use quince_core::contacts::{Card, Contact, ContactDetails, PostalAddress};
 use quince_core::outbox::Pending;
+#[cfg(test)]
 use quince_core::reminders::Reminder;
 use quince_core::Library;
 use quince_icloud::calendar::{EventRepeat, Scope};
 use quince_icloud::ckdocument::Run;
 use quince_icloud::contacts::address::{self as postal, AddressEdit};
+#[cfg(test)]
 use quince_icloud::reminders::ReminderEdit;
 use quince_icloud::Error;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::{Mutex, Notify};
+#[cfg(test)]
+use tokio::sync::Mutex;
+use tokio::sync::Notify;
 
 static WAKE: Notify = Notify::const_new();
 
@@ -44,7 +47,19 @@ pub fn kick() {
     WAKE.notify_one();
 }
 
-pub const REMINDERS: &str = "reminders";
+#[cfg(test)]
+use quince_sync::queue::{drain, transient};
+use quince_sync::queue::{drain_as, json, known_gone, last_word, unreadable, Outcome, Report};
+#[cfg(test)]
+use quince_sync::reminders::{
+    record_reminder_advance, replay as replay_reminders, send as send_reminder, Advance, Done, Edit,
+};
+/// Reminders' changes: recorded, laid, sent and refreshed by the code the phone's engine runs
+/// too (crates/quince-sync).
+pub use quince_sync::reminders::{
+    record_reminder_create, record_reminder_delete, record_reminder_edit, record_reminder_tick,
+    Create, REMINDERS,
+};
 pub const NOTES: &str = "notes";
 pub const CONTACTS: &str = "contacts";
 pub const CALENDAR: &str = "calendar";
@@ -71,168 +86,6 @@ fn service_shown(service: &str) -> &str {
     } else {
         service
     }
-}
-
-/// What a waiting change does to a reminder: ticked (`at` the moment) or not, over the copy of
-/// Apple's record it was made from (`base`: what tells a change made elsewhere since from one
-/// sent from here). A tick queued before there was a base has none, and is sent unless Apple
-/// already has it as wanted.
-#[derive(Serialize, Deserialize)]
-pub struct Done {
-    pub done: bool,
-    pub at: i64,
-    #[serde(default)]
-    pub base: quince_icloud::reminders::TickBase,
-}
-
-/// A reminder made here, under the name it was given here.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Create {
-    pub list_guid: String,
-    pub title: String,
-    pub due_at: Option<i64>,
-    pub all_day: Option<bool>,
-    pub flagged: Option<bool>,
-}
-
-/// `Option<Option<T>>` kept whole through JSON: absent is "leave it", null is "clear it".
-mod double {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    #[allow(clippy::ref_option)]
-    pub fn serialize<S: Serializer, T: Serialize>(
-        v: &Option<Option<T>>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
-        match v {
-            Some(inner) => inner.serialize(s),
-            None => s.serialize_none(),
-        }
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
-        d: D,
-    ) -> Result<Option<Option<T>>, D::Error> {
-        Option::<T>::deserialize(d).map(Some)
-    }
-}
-
-/// A reminder edit as queued: [`ReminderEdit`], with "clear" and "leave" kept apart, and the
-/// list the reminder was in before any of it — what a move is made from.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Edit {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
-    pub notes: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
-    pub due_at: Option<Option<i64>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub all_day: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub flagged: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completed: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub list_guid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "double")]
-    pub parent_guid: Option<Option<String>>,
-    pub from_list: String,
-}
-
-impl Edit {
-    fn new(e: &ReminderEdit, from_list: &str) -> Self {
-        Self {
-            title: e.title.clone(),
-            notes: e.notes.clone(),
-            due_at: e.due_at,
-            all_day: e.all_day,
-            flagged: e.flagged,
-            completed: e.completed,
-            priority: e.priority,
-            list_guid: e.list_guid.clone(),
-            parent_guid: e.parent_guid.clone(),
-            from_list: from_list.to_string(),
-        }
-    }
-
-    /// A later edit laid over this one: what it says wins, what it leaves stays.
-    fn then(mut self, later: Self) -> Self {
-        macro_rules! over {
-            ($($f:ident),*) => { $( if later.$f.is_some() { self.$f = later.$f; } )* };
-        }
-        over!(
-            title,
-            notes,
-            due_at,
-            all_day,
-            flagged,
-            completed,
-            priority,
-            list_guid,
-            parent_guid
-        );
-        self
-    }
-
-    fn to_apple(&self) -> ReminderEdit {
-        ReminderEdit {
-            title: self.title.clone(),
-            notes: self.notes.clone(),
-            due_at: self.due_at,
-            all_day: self.all_day,
-            flagged: self.flagged,
-            completed: self.completed,
-            priority: self.priority,
-            list_guid: self.list_guid.clone(),
-            parent_guid: self.parent_guid.clone(),
-        }
-    }
-
-    /// The edit, made to the stored reminder.
-    fn lay_on(&self, r: &mut Reminder) {
-        if let Some(t) = &self.title {
-            r.title = t.trim().to_string();
-        }
-        if let Some(n) = &self.notes {
-            r.notes.clone_from(n);
-        }
-        if let Some(due) = self.due_at {
-            r.due_at = due;
-            r.all_day = self.all_day.unwrap_or(false) && due.is_some();
-        }
-        if let Some(f) = self.flagged {
-            r.flagged = f;
-        }
-        if let Some(c) = self.completed {
-            r.completed_at = if c {
-                r.completed_at.or(Some(jiff::Timestamp::now().as_second()))
-            } else {
-                None
-            };
-        }
-        if let Some(p) = self.priority {
-            r.priority = match p {
-                1..=3 => 1,
-                4..=6 => 5,
-                7..=9 => 9,
-                _ => 0,
-            };
-        }
-        if let Some(l) = &self.list_guid {
-            r.list_guid.clone_from(l);
-        }
-        if let Some(p) = &self.parent_guid {
-            r.parent_guid.clone_from(p);
-        }
-    }
-}
-
-/// A reminder deleted here, with the subtasks that go with it, as they were.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Delete {
-    pub reminder: Reminder,
-    pub children: Vec<Reminder>,
 }
 
 /// A note's text saved here: what was typed, and what it was typed over.
@@ -272,15 +125,6 @@ pub struct ContactAddress {
     pub edits: Vec<AddressEdit>,
     #[serde(default)]
     pub name: String,
-}
-
-/// A repeating reminder ticked here: Apple moves it on to its next date. `from_due` is the
-/// date it was due as it was ticked, so the tick moves it on once — never twice — however
-/// many times it is sent or laid over a pass.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Advance {
-    pub from_due: Option<i64>,
-    pub at: i64,
 }
 
 /// A note made here, under the name it was given here.
@@ -358,26 +202,6 @@ impl EventSave {
 pub struct EventDelete {
     pub event: Event,
     pub scope: Option<Scope>,
-}
-
-fn json<T: Serialize>(v: &T) -> quince_core::Result<String> {
-    serde_json::to_string(v)
-        .map_err(|e| quince_core::Error::Io(std::io::Error::other(e.to_string())))
-}
-
-/// The newest change waiting for `record` in `service`, if it is still the last word on that
-/// record (nothing of another kind queued after it) and of `kind`.
-fn last_word(
-    library: &Library,
-    service: &str,
-    record: &str,
-    kind: &str,
-) -> quince_core::Result<Option<Pending>> {
-    Ok(library
-        .outbox_pending(service)?
-        .into_iter()
-        .rfind(|p| p.record == record)
-        .filter(|p| p.kind == kind))
 }
 
 // --- Recording: the command's half. Each records the change and lays it over the library as
@@ -523,102 +347,6 @@ fn lay_note(
     Ok(())
 }
 
-/// A reminder made here: named now, shown now, sent behind.
-pub fn record_reminder_create(
-    library: &mut Library,
-    create: &Create,
-) -> quince_core::Result<String> {
-    let guid = quince_icloud::reminders::new_reminder_name();
-    library.atomically(|l| {
-        l.outbox_append(REMINDERS, &guid, "create", &json(create)?)?;
-        lay_create(l, &guid, create)?;
-        Ok(guid.clone())
-    })
-}
-
-fn lay_create(l: &mut Library, guid: &str, c: &Create) -> quince_core::Result<()> {
-    if l.reminder(guid)?.is_some() {
-        return Ok(());
-    }
-    // A list deleted since has nowhere to show it.
-    if !l.reminder_lists()?.iter().any(|x| x.guid == c.list_guid) {
-        return Ok(());
-    }
-    l.put_reminder_local(&Reminder {
-        guid: guid.to_string(),
-        list_guid: c.list_guid.clone(),
-        title: c.title.trim().to_string(),
-        due_at: c.due_at,
-        all_day: c.all_day.unwrap_or(false) && c.due_at.is_some(),
-        flagged: c.flagged.unwrap_or(false),
-        ..Default::default()
-    })
-}
-
-/// An edit to a reminder. Edits not yet sent and still the last word on it are one edit.
-pub fn record_reminder_edit(
-    library: &mut Library,
-    reminder: &Reminder,
-    edit: &ReminderEdit,
-) -> quince_core::Result<()> {
-    library.atomically(|l| {
-        let fresh = Edit::new(edit, &reminder.list_guid);
-        let waiting = last_word(l, REMINDERS, &reminder.guid, "edit")?
-            .filter(|p| p.tries == 0)
-            .and_then(|p| {
-                serde_json::from_str::<Edit>(&p.payload)
-                    .ok()
-                    .map(|e| (p, e))
-            });
-        let amended = match waiting {
-            Some((p, before)) => l.outbox_amend(p.id, &json(&before.then(fresh.clone()))?)?,
-            None => false,
-        };
-        if !amended {
-            l.outbox_append(REMINDERS, &reminder.guid, "edit", &json(&fresh)?)?;
-        }
-        lay_edit(l, &reminder.guid, &fresh)
-    })
-}
-
-fn lay_edit(l: &mut Library, guid: &str, e: &Edit) -> quince_core::Result<()> {
-    let Some(mut r) = l.reminder(guid)? else {
-        return Ok(());
-    };
-    e.lay_on(&mut r);
-    l.put_reminder_local(&r)?;
-    // Moved, its subtasks go with it, as on the phone.
-    if let Some(to) = &e.list_guid {
-        for mut child in l.subtasks_of(guid)? {
-            child.list_guid.clone_from(to);
-            l.put_reminder_local(&child)?;
-        }
-    }
-    Ok(())
-}
-
-/// A reminder deleted here, with its subtasks.
-pub fn record_reminder_delete(
-    library: &mut Library,
-    reminder: &Reminder,
-) -> quince_core::Result<()> {
-    library.atomically(|l| {
-        let children = l.subtasks_of(&reminder.guid)?;
-        let delete = Delete {
-            reminder: reminder.clone(),
-            children,
-        };
-        l.outbox_append(REMINDERS, &reminder.guid, "delete", &json(&delete)?)?;
-        lay_delete(l, &delete)
-    })
-}
-
-fn lay_delete(l: &mut Library, d: &Delete) -> quince_core::Result<()> {
-    let mut gone: Vec<String> = d.children.iter().map(|c| c.guid.clone()).collect();
-    gone.push(d.reminder.guid.clone());
-    l.forget_reminders(&gone, &[])
-}
-
 /// A card saved here — made (no id yet: one is given now) or edited. Answers its id. The
 /// shape a save had before the form showed the rest of the name and work: kept for the tests
 /// that queue one, as a window from before would have.
@@ -720,46 +448,6 @@ fn lay_contact_save(
         l.put_contact_details(&[(contact.guid.clone(), d.clone())], false)?;
     }
     Ok(())
-}
-
-/// A repeating reminder ticked: moved on to its next date here at once, and queued for Apple,
-/// which keeps the history and moves its own copy on. Each tick is its own change — two ticks
-/// are two days — and each moves it on from the date it had when it was made, once.
-pub fn record_reminder_advance(
-    library: &mut Library,
-    reminder: &Reminder,
-    at: i64,
-) -> quince_core::Result<()> {
-    library.atomically(|l| {
-        let advance = Advance {
-            from_due: reminder.due_at,
-            at,
-        };
-        l.outbox_append(REMINDERS, &reminder.guid, "advance", &json(&advance)?)?;
-        lay_advance(l, &reminder.guid, &advance)
-    })
-}
-
-fn lay_advance(l: &mut Library, guid: &str, a: &Advance) -> quince_core::Result<()> {
-    let Some(mut r) = l.reminder(guid)? else {
-        return Ok(());
-    };
-    // Moved on already — by this same tick laid before, or by Apple's own answer — stays.
-    if r.due_at != a.from_due {
-        return Ok(());
-    }
-    // Past its End Repeat date there is no next one: the series is done, as on the phone.
-    // Weekdays, Weekends or chosen days: on to the next of those, not a week on.
-    let days = l.reminder_repeat_days(guid)?;
-    if r.tick_ends_series_on(l.reminder_repeat_end(guid)?, &days, a.at) {
-        r.completed_at = Some(a.at);
-        return l.put_reminder_local(&r);
-    }
-    if let Some(next) = r.next_occurrence_on(&days, a.at) {
-        r.due_at = Some(next);
-    }
-    r.completed_at = None;
-    l.put_reminder_local(&r)
 }
 
 /// A note made here: named now (an uppercase UUID, as Apple names one), shown now, sent
@@ -1059,27 +747,10 @@ fn lay_event_delete(l: &mut Library, d: &EventDelete) -> quince_core::Result<()>
 
 /// Lay one waiting change over the library.
 fn lay(l: &mut Library, p: &Pending) -> quince_core::Result<()> {
+    if p.service == REMINDERS {
+        return quince_sync::reminders::lay(l, p);
+    }
     match (service_shown(&p.service), p.kind.as_str()) {
-        (REMINDERS, "done") => {
-            if let Ok(d) = serde_json::from_str::<Done>(&p.payload) {
-                l.set_reminder_completed(&p.record, d.done.then_some(d.at))?;
-            }
-        }
-        (REMINDERS, "create") => {
-            if let Ok(c) = serde_json::from_str::<Create>(&p.payload) {
-                lay_create(l, &p.record, &c)?;
-            }
-        }
-        (REMINDERS, "edit") => {
-            if let Ok(e) = serde_json::from_str::<Edit>(&p.payload) {
-                lay_edit(l, &p.record, &e)?;
-            }
-        }
-        (REMINDERS, "delete") => {
-            if let Ok(d) = serde_json::from_str::<Delete>(&p.payload) {
-                lay_delete(l, &d)?;
-            }
-        }
         (NOTES, "save") => {
             if let Ok(s) = serde_json::from_str::<NoteSave>(&p.payload) {
                 if l.note(&p.record)?.is_some() {
@@ -1088,11 +759,6 @@ fn lay(l: &mut Library, p: &Pending) -> quince_core::Result<()> {
                         l.touch_note(&p.record, at)?;
                     }
                 }
-            }
-        }
-        (REMINDERS, "advance") => {
-            if let Ok(a) = serde_json::from_str::<Advance>(&p.payload) {
-                lay_advance(l, &p.record, &a)?;
             }
         }
         (NOTES, "create") => {
@@ -1164,11 +830,6 @@ pub fn replay_except(library: &mut Library, service: &str, except: i64) -> quinc
         }
     }
     Ok(())
-}
-
-/// The reminder changes still waiting, laid over what a pass stored.
-pub fn replay_reminders(library: &mut Library) -> quince_core::Result<()> {
-    replay(library, REMINDERS)
 }
 
 // --- Sending: the worker's half.
@@ -1257,178 +918,11 @@ fn changed(outcomes: &[(&'static str, Outcome)]) -> Option<Changed> {
     (!services.is_empty()).then_some(Changed { services })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Outcome {
-    /// Nothing was waiting: the pass sent nothing and changed nothing.
-    Idle,
-    Clear,
-    Later,
-}
-
-/// How many times an answer this app does not understand (or a conflict a merge did not
-/// settle) is retried before the change is held as refused — a fault that will never clear
-/// held every change queued after it forever, each shown as made.
-const PROTOCOL_TRIES: i64 = 5;
-
-/// Whether Apple could not be reached (keep it) rather than said no (hold it as refused).
-/// `tries` counts this one.
-fn transient(e: &Error, tries: i64) -> bool {
-    match e {
-        Error::Network(_)
-        | Error::ReauthRequired
-        | Error::StaleCursor
-        | Error::Busy
-        | Error::NeedsDeviceApproval
-        | Error::Io(_)
-        | Error::Storage(_) => true,
-        Error::Protocol(_) | Error::Conflict => tries < PROTOCOL_TRIES,
-        _ => false,
-    }
-}
-
 #[derive(Clone, serde::Serialize)]
 struct RefusedEvent {
     service: &'static str,
     record: String,
     message: String,
-}
-
-/// What one pass over the queue came to.
-struct Report {
-    outcome: Outcome,
-    sent: bool,
-    /// Each refused change: its record and Apple's reason.
-    refused: Vec<(String, String)>,
-}
-
-/// [`drain_as`] without asking whose the library is: the tests' pretend Apple.
-#[cfg(test)]
-async fn drain<F, Fut>(
-    library: &crate::library_lock::LibraryLock,
-    service: &str,
-    pass: &Mutex<()>,
-    send: F,
-) -> Report
-where
-    F: Fn(Pending) -> Fut,
-    Fut: std::future::Future<Output = Result<(), Error>>,
-{
-    drain_checked(library, service, pass, None, send).await
-}
-
-/// Send `service`'s queue with the session of `account` (as the library names accounts), for
-/// as long as the library is still that account's: asked as each change is taken, under the
-/// same lock, so a sign-in of another account while the queue was going — which swaps the
-/// library under it — never has its changes sent with the session captured before.
-async fn drain_as<F, Fut>(
-    library: &crate::library_lock::LibraryLock,
-    service: &str,
-    pass: &Mutex<()>,
-    account: &str,
-    send: F,
-) -> Report
-where
-    F: Fn(Pending) -> Fut,
-    Fut: std::future::Future<Output = Result<(), Error>>,
-{
-    drain_checked(library, service, pass, Some(account), send).await
-}
-
-/// Send what is waiting for `service`, oldest first, with `send`. Stops at the first change
-/// Apple can't be reached for, leaving it and everything after it queued, in order — and,
-/// given an `account`, at the first change taken once the library is no longer its.
-async fn drain_checked<F, Fut>(
-    library: &crate::library_lock::LibraryLock,
-    service: &str,
-    pass: &Mutex<()>,
-    account: Option<&str>,
-    send: F,
-) -> Report
-where
-    F: Fn(Pending) -> Fut,
-    Fut: std::future::Future<Output = Result<(), Error>>,
-{
-    let mut report = Report {
-        outcome: Outcome::Clear,
-        sent: false,
-        refused: Vec::new(),
-    };
-    loop {
-        // No sync pass between sending and taking it off the queue: one fetched just before
-        // the write and stored just after would put the old state back with nothing waiting
-        // to lay over it.
-        let _pass = pass.lock().await;
-        let next = {
-            let mut l = library.lock().await;
-            let theirs = account
-                .is_none_or(|a| l.state(crate::ACCOUNT_KEY).ok().flatten().as_deref() == Some(a));
-            if theirs {
-                l.outbox_take(service)
-            } else {
-                // Another account's library now: what is left waits for its own session.
-                report.outcome = Outcome::Later;
-                return report;
-            }
-        };
-        let p = match next {
-            Ok(Some(p)) => p,
-            Ok(None) => break,
-            Err(_) => {
-                report.outcome = Outcome::Later;
-                return report;
-            }
-        };
-        let (id, tries, record) = (p.id, p.tries, p.record.clone());
-        // A panic while sending one change is that change refused, said with the rest — never
-        // the whole queue stopped behind it, retried for ever, its edit laid back over the
-        // screen each time (an empty note's formatting once did this).
-        let sent = match std::panic::AssertUnwindSafe(send(p)).catch_unwind().await {
-            Ok(sent) => sent,
-            Err(_) => {
-                quiet!("outbox: sending a {service} change panicked; held as refused");
-                Err(Error::Refused(
-                    "Skykeep hit a problem sending this change, so nothing was changed in iCloud. Your text is safe here."
-                        .into(),
-                ))
-            }
-        };
-        match sent {
-            Ok(()) => {
-                let _ = library.lock().await.outbox_done(id);
-                report.sent = true;
-            }
-            Err(e) if transient(&e, tries) => {
-                let _ = library.lock().await.outbox_retry(id, &e.to_string());
-                report.outcome = Outcome::Later;
-                return report;
-            }
-            Err(e) => {
-                let _ = library.lock().await.outbox_refuse(id, &e.to_string());
-                report.refused.push((record, e.to_string()));
-            }
-        }
-    }
-    report
-}
-
-/// A queued change's record missing from the library: gone — deleted here, or on another
-/// device, and a pass has said so — once the library has had a pass of `service`. Before its
-/// first (a library made again after damage, its records not yet brought back) the record is
-/// not known yet, not gone: the change waits for that pass, rather than being dropped as done
-/// or refused as deleted elsewhere.
-async fn known_gone(
-    library: &crate::library_lock::LibraryLock,
-    service: &str,
-) -> Result<(), Error> {
-    if library.lock().await.last_synced(service)?.is_some() {
-        Ok(())
-    } else {
-        Err(Error::Busy)
-    }
-}
-
-fn unreadable(e: &serde_json::Error) -> Error {
-    Error::Refused(format!("A queued change could not be read: {e}"))
 }
 
 fn tell_refused(app: &AppHandle, service: &'static str, report: &Report) {
@@ -1479,7 +973,7 @@ async fn drain_reminders(app: &AppHandle) -> Outcome {
         return Outcome::Later;
     };
     let report = drain_as(&data.0, REMINDERS, &crate::REMINDERS_PASS, &account, |p| {
-        send_reminder(&data.0, &http, &root, params.clone(), p)
+        quince_sync::reminders::send(&data.0, &http, &root, params.clone(), p)
     })
     .await;
     tell_refused(app, REMINDERS, &report);
@@ -1491,144 +985,6 @@ async fn drain_reminders(app: &AppHandle) -> Outcome {
         let _ = app.emit("quince://reminders-synced", ());
     }
     report.outcome
-}
-
-impl Outcome {
-    fn is_clear(&self) -> bool {
-        matches!(self, Outcome::Clear)
-    }
-}
-
-async fn send_reminder(
-    library: &crate::library_lock::LibraryLock,
-    http: &reqwest::Client,
-    root: &str,
-    params: Vec<(String, String)>,
-    p: Pending,
-) -> Result<(), Error> {
-    use quince_icloud::reminders as r;
-    let stored = library.lock().await.reminder(&p.record)?;
-    match p.kind.as_str() {
-        "done" => {
-            let d: Done = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
-            // Gone from the library (deleted here or elsewhere): nothing left to tick.
-            let Some(reminder) = stored else {
-                return known_gone(library, REMINDERS).await;
-            };
-            // A change made on another device after this one was queued wins; the pass after
-            // sending reads Apple's version back.
-            if r::tick_overtaken(http, root, params.clone(), &reminder, d.done, &d.base).await? {
-                return Ok(());
-            }
-            r::set_completed_cloudkit(http, root, params, &reminder, d.done).await
-        }
-        "create" => {
-            let c: Create = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
-            r::create_cloudkit_named(
-                http,
-                root,
-                params.clone(),
-                &p.record,
-                &c.list_guid,
-                &c.title,
-            )
-            .await?;
-            if c.due_at.is_some() || c.flagged.is_some() {
-                let made = Reminder {
-                    guid: p.record.clone(),
-                    list_guid: c.list_guid.clone(),
-                    title: c.title.clone(),
-                    ..Default::default()
-                };
-                let edit = ReminderEdit {
-                    due_at: c.due_at.map(Some),
-                    all_day: c.all_day,
-                    flagged: c.flagged,
-                    ..Default::default()
-                };
-                // The reminder exists at Apple now: its date or flag failing is noted, never
-                // a reason to make it again.
-                if let Err(e) = r::edit_cloudkit(http, root, params, &made, &edit).await {
-                    quiet!("a new reminder's date or flag was not set: {e}");
-                }
-            }
-            Ok(())
-        }
-        "advance" => {
-            let a: Advance = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
-            // Gone from the library (deleted here or elsewhere): nothing left to tick.
-            let Some(reminder) = stored else {
-                return known_gone(library, REMINDERS).await;
-            };
-            // Moved on at Apple already — by an earlier send of this tick, or on another
-            // device since — it is not moved on again.
-            r::advance_cloudkit_once(http, root, params, &reminder, a.from_due).await
-        }
-        "edit" => {
-            let e: Edit = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
-            let Some(mut reminder) = stored else {
-                known_gone(library, REMINDERS).await?;
-                return Err(Error::Refused(
-                    "This reminder was deleted on another device, so the change wasn’t saved."
-                        .into(),
-                ));
-            };
-            // Sent as a move from where it was before any of this edit.
-            reminder.list_guid.clone_from(&e.from_list);
-            let edit = e.to_apple();
-            r::edit_cloudkit(http, root, params.clone(), &reminder, &edit).await?;
-            if let Some(to) = e.list_guid.as_deref().filter(|to| *to != e.from_list) {
-                let children = library.lock().await.subtasks_of(&p.record)?;
-                let follow = ReminderEdit {
-                    list_guid: Some(to.to_string()),
-                    ..Default::default()
-                };
-                for mut child in children {
-                    child.list_guid.clone_from(&e.from_list);
-                    if let Err(e) =
-                        r::edit_cloudkit(http, root, params.clone(), &child, &follow).await
-                    {
-                        quiet!("a subtask did not follow its reminder: {e}");
-                    }
-                }
-            }
-            // A date carries its alert, as on the phone; made all-day, it rings none.
-            let alarm_change = if e.all_day == Some(true) {
-                Some(None)
-            } else {
-                e.due_at
-            };
-            if let Some(due) = alarm_change {
-                let zone = jiff::tz::TimeZone::system();
-                r::set_alarm_cloudkit(
-                    http,
-                    root,
-                    params,
-                    &p.record,
-                    due,
-                    zone.iana_name().unwrap_or("UTC"),
-                )
-                .await?;
-            }
-            Ok(())
-        }
-        "delete" => {
-            let d: Delete = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
-            match r::delete_cloudkit(http, root, params.clone(), &d.reminder).await {
-                Ok(()) | Err(Error::NotFound) => {}
-                Err(e) => return Err(e),
-            }
-            for child in &d.children {
-                if let Err(e) = r::delete_cloudkit(http, root, params.clone(), child).await {
-                    quiet!("a subtask did not go with its reminder: {e}");
-                }
-            }
-            Ok(())
-        }
-        other => Err(Error::Refused(format!(
-            "Skykeep does not know how to send “{other}”."
-        ))),
-    }
 }
 
 async fn drain_notes(app: &AppHandle) -> Outcome {

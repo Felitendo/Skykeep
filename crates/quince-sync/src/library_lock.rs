@@ -72,9 +72,7 @@ impl Reader {
 
 fn identity(dir: &Path) -> Option<(u64, u64)> {
     let file = dir.join("library.db");
-    std::fs::metadata(&file)
-        .ok()
-        .map(|m| crate::file_identity(&m))
+    std::fs::metadata(&file).ok().map(|m| file_identity(&m))
 }
 
 /// The library held, as `tokio::sync::MutexGuard` holds it; counted, while it is held or
@@ -230,6 +228,24 @@ impl LibraryLock {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+    }
+}
+
+/// Which file this is, so one moved into its place is told from it.
+pub fn file_identity(m: &std::fs::Metadata) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (m.dev(), m.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let born = m
+            .created()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+        (born, 0)
     }
 }
 
