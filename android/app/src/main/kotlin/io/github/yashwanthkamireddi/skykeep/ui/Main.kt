@@ -152,6 +152,31 @@ private fun Home(engine: uniffi.quince_mobile.Account, account: Account?, sync: 
   for ((authority, name) in listOf(ContactsContract.AUTHORITY to "Contacts", CalendarContract.AUTHORITY to "Calendar")) {
     Health(name, sync.last[authority], sync.busy)
   }
+  // Phone makers' battery savers pause apps that aren't opened often, and a sync with them. Said
+  // only when it has happened: nothing synced cleanly for two days, though Skykeep has synced
+  // before.
+  val lastGood = sync.last.values.mapNotNull { it?.okAt?.takeIf { t -> t > 0 } }.maxOrNull()
+  if (lastGood != null && System.currentTimeMillis() - lastGood > 48 * 3_600_000L) {
+    val brand = android.os.Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+          "Skykeep hasn't synced for two days. $brand phones can pause apps that aren't opened often. Allow Skykeep to run in the background so your contacts and calendars stay up to date.",
+          style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Button(onClick = {
+            runCatching {
+              context.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+          }) { Text("Battery Settings") }
+          TextButton(onClick = {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dontkillmyapp.com/${android.os.Build.MANUFACTURER.lowercase()}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+          }) { Text("How on $brand") }
+        }
+      }
+    }
+  }
   if (sync.held > 0 && !sync.busy) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
       Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
