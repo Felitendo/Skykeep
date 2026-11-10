@@ -739,18 +739,26 @@ async fn cancelled_it_keeps_what_arrived_and_resumes_where_it_was() {
         .await;
         let stop = Stop::default();
         let (heard, emit) = hearing();
-        // Cancel pressed while the slow one is on its way: its request is out, its bytes not back.
+        // Cancel pressed once the fast one has arrived and the slow one is on its way (its
+        // request out, its bytes not back), in whichever order the two happen. A fixed 300 ms
+        // after the slow one began was a race on a busy machine: Windows CI cancelled before
+        // the fast one had arrived, and it was rightly not kept.
         let emit: Emit = {
             let stop = stop.clone();
+            let (fast_done, slow_going) = (
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+            );
             Arc::new(move |e: DownloadEvent| {
-                let go = e.name == "slow.bin" && e.state == "downloading";
+                if e.name == "fast.txt" && e.state == "done" {
+                    fast_done.store(true, Ordering::SeqCst);
+                }
+                if e.name == "slow.bin" && e.state == "downloading" {
+                    slow_going.store(true, Ordering::SeqCst);
+                }
                 emit(e);
-                if go {
-                    let stop = stop.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(300)).await;
-                        stop.stop();
-                    });
+                if fast_done.load(Ordering::SeqCst) && slow_going.load(Ordering::SeqCst) {
+                    stop.stop();
                 }
             })
         };
