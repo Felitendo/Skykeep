@@ -1946,6 +1946,9 @@
 }
 .launch-holds { color: var(--text); font-size: var(--t-13); opacity: 0.86; }
 .launch-fresh { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--t-12); }
+/* The words in a span of their own: in the flex line itself an ellipsis never shows, and a
+   long one was cut mid-word. */
+.launch-fresh-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .launch-dot {
   flex: none; width: 7px; height: 7px; border-radius: 50%;
   background: var(--sys-green, #34c759);

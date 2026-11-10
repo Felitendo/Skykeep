@@ -1338,9 +1338,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
               { service: "reminders", label: "Reminders", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 60 },
               { service: "notes", label: "Notes", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 90 },
               { service: "contacts", label: "Contacts", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 300 },
-              // A suite's own services as a pass reported them (`window.__syncExtra`).
+              // A suite's own services as a pass reported them (`window.__syncExtra`); one named
+              // here replaces the default for that service.
               ...(window.__syncExtra ?? []),
-            ],
+            ].filter((r, i, all) => all.findLastIndex((x) => x.service === r.service) === i),
             asOf: Math.floor(Date.now() / 1000) - 300,
             tookMs: 40,
           };

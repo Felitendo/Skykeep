@@ -109,6 +109,8 @@ pooled "popover on screen" node .uiverify/calendar-popover-fit.mjs
 pooled "shortcuts fit"    node .uiverify/shortcuts-fit.mjs
 pooled "webkit: shortcuts fit" env ENGINE=webkit node .uiverify/shortcuts-fit.mjs
 pooled "notes add link"     node .uiverify/notes-add-link.mjs
+pooled "launcher status"    node .uiverify/launcher-status.mjs
+pooled "webkit: launcher status" env ENGINE=webkit node .uiverify/launcher-status.mjs
 pooled "webkit: notes add link" env ENGINE=webkit node .uiverify/notes-add-link.mjs
 pooled "updates"          node .uiverify/updates.mjs
 pooled "ui renders"       node .uiverify/shots.mjs

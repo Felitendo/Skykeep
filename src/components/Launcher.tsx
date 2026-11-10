@@ -69,14 +69,30 @@ function holds(key: string, s: Summary | null, driveFree: string | null): string
 }
 
 /** How fresh a tile's app is — the states the Sync list said, word for word. */
-function fresh(r: ServiceReport | undefined, syncing: boolean): { text: string; state: "clean" | "working" | "trouble" | "idle" } {
-  if (!r) return { text: syncing ? "Updating…" : "Not synced yet", state: syncing ? "working" : "idle" };
-  if (r.outcome === "failed") return { text: r.detail ?? "Didn’t update", state: "trouble" };
-  if (r.outcome === "paused") return { text: `${freshness(r.lastSyncedAt ?? null)}. Syncs when you approve`, state: "idle" };
-  if (r.outcome === "preparing") return { text: "Apple is still preparing it", state: "idle" };
-  if (syncing && !r.lastSyncedAt) return { text: "Downloading…", state: "working" };
-  if (!r.lastSyncedAt) return { text: "Not synced yet", state: "idle" };
-  return { text: freshness(r.lastSyncedAt), state: syncing ? "working" : "clean" };
+/**
+ * A failed pass in a tile's few words; the whole sentence is the tile's tooltip and part of what
+ * it says to a screen reader. The sentence as the line itself ("iCloud is busy right now.
+ * Nothing was changed — try again in a minute.") was cut off mid-word in every tile.
+ */
+function shortly(detail: string | null | undefined): string {
+  const d = (detail ?? "").toLowerCase();
+  if (d.includes("busy")) return "iCloud busy, retrying";
+  if (d.includes("connection") || d.includes("offline") || d.includes("reach") || d.includes("took too long")) return "Offline, retrying";
+  return "Didn’t update";
+}
+
+function fresh(
+  r: ServiceReport | undefined,
+  syncing: boolean,
+): { text: string; full: string; state: "clean" | "working" | "trouble" | "idle" } {
+  const said = (text: string, state: "clean" | "working" | "trouble" | "idle") => ({ text, full: text, state });
+  if (!r) return said(syncing ? "Updating…" : "Not synced yet", syncing ? "working" : "idle");
+  if (r.outcome === "failed") return { text: shortly(r.detail), full: r.detail ?? "Didn’t update", state: "trouble" };
+  if (r.outcome === "paused") return said(`${freshness(r.lastSyncedAt ?? null)}. Syncs when you approve`, "idle");
+  if (r.outcome === "preparing") return said("Apple is still preparing it", "idle");
+  if (syncing && !r.lastSyncedAt) return said("Downloading…", "working");
+  if (!r.lastSyncedAt) return said("Not synced yet", "idle");
+  return said(freshness(r.lastSyncedAt), syncing ? "working" : "clean");
 }
 
 export function Launcher({
@@ -161,14 +177,15 @@ export function Launcher({
                   move(offered.length - 1);
                 }
               }}
-              aria-label={`${a.name}. ${holds(a.key, summary, driveFree)}. ${f.text}`}
+              aria-label={`${a.name}. ${holds(a.key, summary, driveFree)}. ${f.full}`}
+              title={f.full !== f.text ? f.full : undefined}
             >
               <img className="launch-icon" src={a.icon} alt="" draggable={false} />
               <span className="launch-name">{a.name}</span>
               <span className="launch-holds">{holds(a.key, summary, driveFree)}</span>
               <span className="launch-fresh">
                 <span className="launch-dot" aria-hidden="true" />
-                {f.text}
+                <span className="launch-fresh-text">{f.text}</span>
               </span>
             </button>
           );
