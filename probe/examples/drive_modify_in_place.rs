@@ -14,8 +14,14 @@ async fn main() -> Result<()> {
     if !client.resume().await? {
         return Err(anyhow!("no session: sign the probe in first"));
     }
-    let docws = client.session().service_url("docws").ok_or_else(|| anyhow!("no docws"))?;
-    let drivews = client.session().service_url("drivews").ok_or_else(|| anyhow!("no drivews"))?;
+    let docws = client
+        .session()
+        .service_url("docws")
+        .ok_or_else(|| anyhow!("no docws"))?;
+    let drivews = client
+        .session()
+        .service_url("drivews")
+        .ok_or_else(|| anyhow!("no drivews"))?;
     let http = client.http().clone();
     let params = client.service_params();
     let quiet = || -> quince_icloud::drive::Progress { std::sync::Arc::new(|_, _| {}) };
@@ -51,10 +57,18 @@ async fn main() -> Result<()> {
     .await;
 
     // Clean up whatever happened: every copy of the test file, to Recently Deleted and out.
-    for i in quince_icloud::drive::fetch_folder(&http, &drivews, params.clone(), ROOT).await?.iter().filter(|i| i.name.starts_with("Skykeep in-place test")) {
+    for i in quince_icloud::drive::fetch_folder(&http, &drivews, params.clone(), ROOT)
+        .await?
+        .iter()
+        .filter(|i| i.name.starts_with("Skykeep in-place test"))
+    {
         quince_icloud::drive::delete(&http, &drivews, params.clone(), i).await?;
     }
-    for i in quince_icloud::drive::trash(&http, &drivews, params.clone()).await?.iter().filter(|i| i.name.starts_with("Skykeep in-place test")) {
+    for i in quince_icloud::drive::trash(&http, &drivews, params.clone())
+        .await?
+        .iter()
+        .filter(|i| i.name.starts_with("Skykeep in-place test"))
+    {
         quince_icloud::drive::delete_forever(&http, &drivews, params.clone(), i).await?;
     }
     std::fs::remove_dir_all(&work)?;
