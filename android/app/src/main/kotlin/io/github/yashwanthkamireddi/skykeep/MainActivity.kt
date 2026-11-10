@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -91,12 +92,15 @@ private fun SignedIn(account: Account) {
   // pass. Not `isSyncPending`, which counts the hourly syncs Android always holds as pending —
   // the button stayed disabled for good.
   var asked by remember { mutableStateOf(0L) }
+  // Contacts iCloud no longer lists, held on the phone by the circuit breaker until confirmed.
+  var held by remember { mutableStateOf(0) }
   fun refresh() {
     val a = androidAccount ?: return
     val waiting = asked > 0 && System.currentTimeMillis() - asked < 120_000 &&
       authorities.any { (Outcome.last(context, it)?.at ?: 0) < asked }
     busy = waiting || authorities.any { ContentResolver.isSyncActive(a, it) }
     status = authorities.mapNotNull { Outcome.last(context, it)?.said }.joinToString("\n").ifEmpty { null }
+    held = Outcome.held(context, ContactsContract.AUTHORITY)
   }
   DisposableEffect(androidAccount) {
     val handle = ContentResolver.addStatusChangeListener(
@@ -144,6 +148,12 @@ private fun SignedIn(account: Account) {
         else ask.launch(needed)
       },
     ) { Text("Show iCloud in Contacts and Calendar") }
+    if (held > 0 && !busy) {
+      OutlinedButton(onClick = {
+        Outcome.confirmMassRemoval(context, ContactsContract.AUTHORITY)
+        syncNow()
+      }) { Text("Confirm $held held contact changes") }
+    }
     if (busy) CircularProgressIndicator()
     status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
   }

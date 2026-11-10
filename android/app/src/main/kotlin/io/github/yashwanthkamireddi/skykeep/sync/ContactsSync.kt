@@ -15,16 +15,41 @@ import android.provider.ContactsContract.CommonDataKinds.StructuredPostal
 import android.provider.ContactsContract.CommonDataKinds.Website
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.RawContacts
+import org.json.JSONArray
+import org.json.JSONObject
+import uniffi.quince_mobile.ChangeKind
+import uniffi.quince_mobile.ChangeOutcome
+import uniffi.quince_mobile.ContactChange
+import uniffi.quince_mobile.Method
 import uniffi.quince_mobile.Person
 
 /**
- * iCloud's address book into Android's Contacts, one way: each card a raw contact under the
- * Skykeep account, found again by Apple's id (SOURCE_ID) and rewritten only when its etag
- * (SYNC1) changed; a card gone from iCloud is removed here. Writes go in batches, each card
- * whole in one batch, so a card is never left half-written.
+ * iCloud's address book and Android's Contacts, both ways, one card a raw contact under the
+ * Skykeep account, found again by Apple's id (SOURCE_ID).
+ *
+ * Each sync sends first, then reads. Sending: what Android marks changed on the phone (DIRTY),
+ * new (no SOURCE_ID yet) or deleted (DELETED) goes to iCloud through the engine, an edit as only
+ * what changed from the card as last synced — its base, kept in SYNC2 — so a change made on an
+ * iPhone meanwhile is kept. Reading: each card rewritten only when its etag (SYNC1) changed, and
+ * never one still waiting to be sent, so an edit made here is never written over before it
+ * reaches iCloud. A card gone from iCloud is removed here — unless iCloud suddenly lists far fewer
+ * than this phone has, which is held until the person confirms (the circuit breaker).
  */
 object ContactsSync {
-  data class Result(val added: Int, val updated: Int, val removed: Int, val unchanged: Int)
+  data class Result(
+    val added: Int, val updated: Int, val removed: Int, val unchanged: Int,
+    /** Cards iCloud no longer lists, kept here until confirmed (see [MASS_REMOVAL]). */
+    val held: Int,
+  )
+
+  /** `held`: changes the circuit breaker kept back, waiting for the person to confirm. */
+  data class Sent(val sent: Int, val failed: Int, val later: Int, val reason: String?, val held: Int)
+
+  /**
+   * More than this many cards gone in one sync — and more than a tenth of the book — is held: an
+   * account mix-up or a broken answer must never empty a phone's contacts.
+   */
+  const val MASS_REMOVAL = 25
 
   private fun Uri.asAdapter(a: Account) = buildUpon()
     .appendQueryParameter(ContactsContract.CALLER_IS_SYNCADAPTER, "true")
@@ -32,30 +57,246 @@ object ContactsSync {
     .appendQueryParameter(RawContacts.ACCOUNT_TYPE, a.type)
     .build()
 
-  private data class Local(val id: Long, val etag: String?)
+  private data class Local(val id: Long, val etag: String?, val pending: Boolean, val format: String?)
+
+  /**
+   * How a card's rows are written here (kept in SYNC3). A row in an older format is written again
+   * from iCloud on the next sync, whatever its etag: 2 = Apple's standard labels as Android's own
+   * types, a number with no label as Other (1 wrote labels as custom text, none as "phone").
+   */
+  private const val FORMAT = "2"
 
   /**
    * One sync at a time in the process. Adding the account makes Android start its own sync at
-   * once; run beside the app's, both read an empty book and every card was written twice.
+   * once; run beside another, both read an empty book and every card was written twice.
    */
-  fun sync(cr: ContentResolver, account: Account, people: List<Person>): Result = synchronized(this) {
-    syncLocked(cr, account, people)
+  fun sync(cr: ContentResolver, account: Account, people: List<Person>, allowMassRemoval: Boolean): Result =
+    synchronized(this) { download(cr, account, people, allowMassRemoval) }
+
+  /** The phone's changes sent through `save` (the engine), then marked done here. */
+  fun send(cr: ContentResolver, account: Account, confirmed: Boolean, save: (List<ContactChange>) -> List<ChangeOutcome>): Sent =
+    synchronized(this) { upload(cr, account, confirmed, save) }
+
+  // --- Sending ---------------------------------------------------------------------------------
+
+  private data class Change(val rawId: Long, val change: ContactChange)
+
+  private fun upload(
+    cr: ContentResolver, account: Account, confirmed: Boolean,
+    save: (List<ContactChange>) -> List<ChangeOutcome>,
+  ): Sent {
+    val changes = ArrayList<Change>()
+    val dropped = ArrayList<Long>()
+    // Marked changed but with no base — the card as last synced — so what changed can't be told
+    // (left so by the one-way sync, whose own writes marked every card): never sent. Read again
+    // whole from iCloud instead; a deletion of one is undone the same way.
+    val unknown = ArrayList<Long>()
+    cr.query(
+      RawContacts.CONTENT_URI.asAdapter(account),
+      arrayOf(RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.SYNC2, RawContacts.DELETED),
+      "${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.ACCOUNT_NAME}=? AND (${RawContacts.DIRTY}=1 OR ${RawContacts.DELETED}=1)",
+      arrayOf(account.type, account.name), null,
+    )?.use { c ->
+      while (c.moveToNext()) {
+        val rawId = c.getLong(0)
+        val source = c.getString(1)
+        val base = c.getString(2)?.let(::personFromJson)
+        val deleted = c.getInt(3) != 0
+        when {
+          // Made and deleted here before it was ever sent: nothing for iCloud.
+          deleted && source == null -> dropped += rawId
+          base == null && source != null -> unknown += rawId
+          deleted -> changes += Change(rawId, ContactChange(ChangeKind.DELETE, source!!, null, base))
+          source == null -> {
+            // New on this phone: its id chosen now and kept, so a send repeated after a lost
+            // answer finds the card made rather than making a second.
+            val guid = java.util.UUID.randomUUID().toString().uppercase()
+            cr.update(
+              RawContacts.CONTENT_URI.asAdapter(account),
+              android.content.ContentValues().apply { put(RawContacts.SOURCE_ID, guid) },
+              "${RawContacts._ID}=?", arrayOf(rawId.toString()),
+            )
+            changes += Change(rawId, ContactChange(ChangeKind.CREATE, guid, readPerson(cr, rawId, guid, null), null))
+          }
+          else -> changes += Change(rawId, ContactChange(ChangeKind.UPDATE, source, readPerson(cr, rawId, source, base), base))
+        }
+      }
+    }
+    for (id in dropped) removeRow(cr, account, id)
+    for (id in unknown) restore(cr, account, id)
+    if (changes.isEmpty()) return Sent(0, 0, 0, null, 0)
+    // The circuit breaker, sending: more than MASS_REMOVAL changes and more than a tenth of the
+    // book at once is held until the person confirms — a fault must never rewrite a whole book.
+    val book = count(cr, account)
+    if (!confirmed && changes.size > MASS_REMOVAL && changes.size * 10 > book) {
+      return Sent(0, 0, 0, null, changes.size)
+    }
+    val outcomes = save(changes.map { it.change })
+    var sent = 0; var failed = 0; var later = 0; var reason: String? = null
+    for ((i, c) in changes.withIndex()) {
+      when (val o = outcomes.getOrNull(i)) {
+        is ChangeOutcome.Saved -> {
+          sent++
+          if (c.change.kind == ChangeKind.DELETE) removeRow(cr, account, c.rawId) else settled(cr, account, c.rawId, null)
+        }
+        is ChangeOutcome.Recreated -> { sent++; settled(cr, account, c.rawId, o.guid) }
+        is ChangeOutcome.Failed -> {
+          reason = o.reason
+          // Sent again on a later sync, as it is; refused, it is left as it is here and said once.
+          if (o.later) later++ else { failed++; settled(cr, account, c.rawId, null) }
+        }
+        null -> later++
+      }
+    }
+    return Sent(sent, failed, later, reason, 0)
   }
 
-  private fun syncLocked(cr: ContentResolver, account: Account, people: List<Person>): Result {
+  private fun count(cr: ContentResolver, account: Account): Int =
+    cr.query(
+      RawContacts.CONTENT_URI.asAdapter(account), arrayOf(RawContacts._ID),
+      "${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.ACCOUNT_NAME}=?", arrayOf(account.type, account.name), null,
+    )?.use { it.count } ?: 0
+
+  /** Not sent, not waiting: undeleted, and rewritten from iCloud whole on the reading pass. */
+  private fun restore(cr: ContentResolver, account: Account, rawId: Long) {
+    cr.update(
+      RawContacts.CONTENT_URI.asAdapter(account),
+      android.content.ContentValues().apply {
+        put(RawContacts.DIRTY, 0)
+        put(RawContacts.DELETED, 0)
+        putNull(RawContacts.SYNC1)
+      },
+      "${RawContacts._ID}=?", arrayOf(rawId.toString()),
+    )
+  }
+
+  /** Sent: no longer waiting, and read again from iCloud whole on the reading pass. */
+  private fun settled(cr: ContentResolver, account: Account, rawId: Long, newGuid: String?) {
+    cr.update(
+      RawContacts.CONTENT_URI.asAdapter(account),
+      android.content.ContentValues().apply {
+        put(RawContacts.DIRTY, 0)
+        putNull(RawContacts.SYNC1)
+        newGuid?.let { put(RawContacts.SOURCE_ID, it) }
+      },
+      "${RawContacts._ID}=?", arrayOf(rawId.toString()),
+    )
+  }
+
+  private fun removeRow(cr: ContentResolver, account: Account, rawId: Long) {
+    cr.delete(RawContacts.CONTENT_URI.asAdapter(account), "${RawContacts._ID}=?", arrayOf(rawId.toString()))
+  }
+
+  /**
+   * A raw contact as it is on the phone now, in the engine's shape. Labels the phone shows plainly
+   * ("Mobile") go back as Apple wrote them ("_$!<Mobile>!$_") when the base had one of that kind,
+   * else as Apple's own names where they are one, so an edit to one number never turns the others'
+   * labels into custom text in iCloud.
+   */
+  private fun readPerson(cr: ContentResolver, rawId: Long, guid: String, base: Person?): Person {
+    var first: String? = null; var middle: String? = null; var last: String? = null
+    var company: String? = null; var notes: String? = null; var birthday: String? = null
+    val methods = ArrayList<Method>()
+    cr.query(
+      Data.CONTENT_URI,
+      arrayOf(Data.MIMETYPE, Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA5),
+      "${Data.RAW_CONTACT_ID}=?", arrayOf(rawId.toString()), null,
+    )?.use { c ->
+      while (c.moveToNext()) {
+        val mime = c.getString(0)
+        fun text(i: Int) = c.getString(i)?.takeIf { it.isNotBlank() }
+        when (mime) {
+          // GIVEN_NAME is DATA2, FAMILY_NAME DATA3, MIDDLE_NAME DATA5 (columns 2, 3, 4 here).
+          StructuredName.CONTENT_ITEM_TYPE -> { first = text(2); last = text(3); middle = text(4) }
+          Organization.CONTENT_ITEM_TYPE -> company = text(1)
+          Note.CONTENT_ITEM_TYPE -> notes = text(1)
+          Event.CONTENT_ITEM_TYPE -> if (c.getInt(2) == Event.TYPE_BIRTHDAY) birthday = text(1)
+          // Android's own type (Mobile, Home, Work…) or, for TYPE_CUSTOM, the label typed.
+          Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE, Website.CONTENT_ITEM_TYPE, StructuredPostal.CONTENT_ITEM_TYPE ->
+            text(1)?.let { value ->
+              val kind = KIND.getValue(mime)
+              val type = c.getInt(2)
+              val label = if (type == CUSTOM) text(3) else TYPES[mime]?.entries?.firstOrNull { it.value == type }?.key
+              methods += Method(kind, appleLabel(kind, label, value, base), value)
+            }
+        }
+      }
+    }
+    return Person(
+      guid = guid, etag = base?.etag, firstName = first, middleName = middle, lastName = last,
+      company = company, isCompany = base?.isCompany ?: false, birthday = birthday, notes = notes,
+      methods = methods,
+    )
+  }
+
+  /** Android's TYPE_CUSTOM, the same number for every kind. */
+  private const val CUSTOM = 0
+
+  private val KIND = mapOf(
+    Phone.CONTENT_ITEM_TYPE to "phone", Email.CONTENT_ITEM_TYPE to "email",
+    Website.CONTENT_ITEM_TYPE to "url", StructuredPostal.CONTENT_ITEM_TYPE to "address",
+  )
+
+  /**
+   * Apple's standard labels, by their key (upper case, no spaces, unwrapped), as Android's own
+   * types: shown in the phone's language ("Mobile", "Mobil"…) rather than as custom text.
+   * Apple writes them either way — "MOBILE" or "_$!<Mobile>!$_" — on one card.
+   */
+  private val TYPES: Map<String, Map<String, Int>> = mapOf(
+    Phone.CONTENT_ITEM_TYPE to mapOf(
+      "MOBILE" to Phone.TYPE_MOBILE, "HOME" to Phone.TYPE_HOME, "WORK" to Phone.TYPE_WORK,
+      "MAIN" to Phone.TYPE_MAIN, "HOMEFAX" to Phone.TYPE_FAX_HOME, "WORKFAX" to Phone.TYPE_FAX_WORK,
+      "OTHERFAX" to Phone.TYPE_OTHER_FAX, "PAGER" to Phone.TYPE_PAGER, "OTHER" to Phone.TYPE_OTHER,
+    ),
+    Email.CONTENT_ITEM_TYPE to mapOf("HOME" to Email.TYPE_HOME, "WORK" to Email.TYPE_WORK, "OTHER" to Email.TYPE_OTHER),
+    Website.CONTENT_ITEM_TYPE to mapOf(
+      "HOMEPAGE" to Website.TYPE_HOMEPAGE, "HOME" to Website.TYPE_HOME, "WORK" to Website.TYPE_WORK,
+      "OTHER" to Website.TYPE_OTHER,
+    ),
+    StructuredPostal.CONTENT_ITEM_TYPE to mapOf(
+      "HOME" to StructuredPostal.TYPE_HOME, "WORK" to StructuredPostal.TYPE_WORK, "OTHER" to StructuredPostal.TYPE_OTHER,
+    ),
+  )
+
+  /** A label's key: "_$!<Home FAX>!$_" and "HOMEFAX" are the same label. */
+  private fun key(label: String?) = label?.removePrefix("_\$!<")?.removeSuffix(">!\$_")?.replace(" ", "")?.uppercase()
+
+  /** A label as shown: the wrapping taken off. */
+  private fun plain(label: String?) = label?.removePrefix("_\$!<")?.removeSuffix(">!\$_")
+
+  /** How a label of Apple's shows on the phone, as a key: none shows as Other. */
+  private fun shown(label: String?) = key(label) ?: "OTHER"
+
+  /**
+   * The label to send for one read off the phone (a type's key, or custom text). The same number
+   * or address showing the same label as when synced goes back with exactly the label it had —
+   * none included (most numbers have none; sent back as "Other" they would all have changed).
+   * Otherwise the base's own spelling of that label, else the key, as Apple writes its own.
+   */
+  private fun appleLabel(kind: String, label: String?, value: String, base: Person?): String? {
+    val methods = base?.methods.orEmpty().filter { it.kind == kind }
+    methods.firstOrNull { it.value == value && shown(it.label) == key(label) }?.let { return it.label }
+    if (label == null) return null
+    methods.firstOrNull { it.label != null && key(it.label) == key(label) }?.let { return it.label }
+    return label
+  }
+
+  // --- Reading ---------------------------------------------------------------------------------
+
+  private fun download(cr: ContentResolver, account: Account, people: List<Person>, allowMassRemoval: Boolean): Result {
     val local = HashMap<String, Local>()
     // A card found twice (left by an earlier fault) keeps one copy; the others are removed.
     val extra = ArrayList<Long>()
     cr.query(
       RawContacts.CONTENT_URI.asAdapter(account),
-      arrayOf(RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.SYNC1),
+      arrayOf(RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.SYNC1, RawContacts.DIRTY, RawContacts.DELETED, RawContacts.SYNC3),
       "${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.ACCOUNT_NAME}=?", arrayOf(account.type, account.name), null,
     )?.use { c ->
       while (c.moveToNext()) {
-        val source = c.getString(1)
-        if (source == null) continue
-        if (source in local) { extra += c.getLong(0); continue }
-        local[source] = Local(c.getLong(0), c.getString(2))
+        val source = c.getString(1) ?: continue
+        val pending = c.getInt(3) != 0 || c.getInt(4) != 0
+        if (source in local) { if (!pending) extra += c.getLong(0); continue }
+        local[source] = Local(c.getLong(0), c.getString(2), pending, c.getString(5))
       }
     }
     var added = 0; var updated = 0; var unchanged = 0
@@ -64,7 +305,9 @@ object ContactsSync {
 
     for (p in people) {
       val have = local.remove(p.guid)
-      if (have != null && have.etag != null && have.etag == p.etag) { unchanged++; continue }
+      // Changed here and not yet in iCloud: left as it is, sent on the next sync.
+      if (have != null && have.pending) continue
+      if (have != null && have.etag != null && have.etag == p.etag && have.format == FORMAT) { unchanged++; continue }
       if (ops.size > 300) flush()
       val start = ops.size
       if (have == null) {
@@ -73,36 +316,45 @@ object ContactsSync {
           .withValue(RawContacts.ACCOUNT_TYPE, account.type)
           .withValue(RawContacts.SOURCE_ID, p.guid)
           .withValue(RawContacts.SYNC1, p.etag)
+          .withValue(RawContacts.SYNC2, personJson(p))
+          .withValue(RawContacts.SYNC3, FORMAT)
           .build()
-        rows(p).forEach { ops += it.withValueBackReference(Data.RAW_CONTACT_ID, start).build() }
+        rows(p, account).forEach { ops += it.withValueBackReference(Data.RAW_CONTACT_ID, start).build() }
         added++
       } else {
         ops += ContentProviderOperation.newUpdate(RawContacts.CONTENT_URI.asAdapter(account))
           .withSelection("${RawContacts._ID}=?", arrayOf(have.id.toString()))
           .withValue(RawContacts.SYNC1, p.etag)
+          .withValue(RawContacts.SYNC2, personJson(p))
+          .withValue(RawContacts.SYNC3, FORMAT)
           .build()
         ops += ContentProviderOperation.newDelete(Data.CONTENT_URI.asAdapter(account))
           .withSelection("${Data.RAW_CONTACT_ID}=?", arrayOf(have.id.toString()))
           .build()
-        rows(p).forEach { ops += it.withValue(Data.RAW_CONTACT_ID, have.id).build() }
+        rows(p, account).forEach { ops += it.withValue(Data.RAW_CONTACT_ID, have.id).build() }
         updated++
       }
     }
-    // Cards no longer in iCloud, and second copies.
-    for (id in local.values.map { it.id } + extra) {
+    // Cards no longer in iCloud (never one waiting to be sent), and second copies.
+    val gone = local.values.filter { !it.pending }.map { it.id }
+    val massive = gone.size > MASS_REMOVAL && gone.size * 10 > (people.size + gone.size)
+    val removing = if (massive && !allowMassRemoval) emptyList() else gone
+    for (id in removing + extra) {
       if (ops.size > 300) flush()
       ops += ContentProviderOperation.newDelete(RawContacts.CONTENT_URI.asAdapter(account))
         .withSelection("${RawContacts._ID}=?", arrayOf(id.toString()))
         .build()
     }
     flush()
-    return Result(added, updated, local.size + extra.size, unchanged)
+    return Result(added, updated, removing.size + extra.size, unchanged, gone.size - removing.size)
   }
 
   /** A card's data rows, each still to be pointed at its raw contact. */
-  private fun rows(p: Person): List<ContentProviderOperation.Builder> {
+  private fun rows(p: Person, account: Account): List<ContentProviderOperation.Builder> {
     val out = ArrayList<ContentProviderOperation.Builder>()
-    fun row(mime: String) = ContentProviderOperation.newInsert(Data.CONTENT_URI).withValue(Data.MIMETYPE, mime)
+    // As the sync adapter: written by Android's own Contacts address, every card the sync wrote
+    // was marked changed on the phone (DIRTY), and a two-way sync would have sent them all back.
+    fun row(mime: String) = ContentProviderOperation.newInsert(Data.CONTENT_URI.asAdapter(account)).withValue(Data.MIMETYPE, mime)
     out += row(StructuredName.CONTENT_ITEM_TYPE)
       .withValue(StructuredName.GIVEN_NAME, p.firstName)
       .withValue(StructuredName.MIDDLE_NAME, p.middleName)
@@ -114,20 +366,47 @@ object ContactsSync {
       out += row(Event.CONTENT_ITEM_TYPE).withValue(Event.TYPE, Event.TYPE_BIRTHDAY).withValue(Event.START_DATE, it)
     }
     for (m in p.methods) {
-      // Apple's own labels kept as written ("_$!<Mobile>!$_" style ones read plainly).
-      val label = m.label?.removePrefix("_\$!<")?.removeSuffix(">!\$_")
-      out += when (m.kind) {
-        "phone" -> row(Phone.CONTENT_ITEM_TYPE).withValue(Phone.NUMBER, m.value)
-          .withValue(Phone.TYPE, Phone.TYPE_CUSTOM).withValue(Phone.LABEL, label ?: "phone")
-        "email" -> row(Email.CONTENT_ITEM_TYPE).withValue(Email.ADDRESS, m.value)
-          .withValue(Email.TYPE, Email.TYPE_CUSTOM).withValue(Email.LABEL, label ?: "email")
-        "url" -> row(Website.CONTENT_ITEM_TYPE).withValue(Website.URL, m.value)
-          .withValue(Website.TYPE, Website.TYPE_CUSTOM).withValue(Website.LABEL, label ?: "url")
-        "address" -> row(StructuredPostal.CONTENT_ITEM_TYPE).withValue(StructuredPostal.FORMATTED_ADDRESS, m.value)
-          .withValue(StructuredPostal.TYPE, StructuredPostal.TYPE_CUSTOM).withValue(StructuredPostal.LABEL, label ?: "address")
-        else -> continue
+      val mime = KIND.entries.firstOrNull { it.value == m.kind }?.key ?: continue
+      // No label shows as Other (and goes back as none: appleLabel).
+      val type = TYPES[mime]?.get(shown(m.label))
+      val valueColumn = when (mime) {
+        Phone.CONTENT_ITEM_TYPE -> Phone.NUMBER
+        Email.CONTENT_ITEM_TYPE -> Email.ADDRESS
+        Website.CONTENT_ITEM_TYPE -> Website.URL
+        else -> StructuredPostal.FORMATTED_ADDRESS
+      }
+      // Apple's standard labels as Android's own types; anything else as its own text.
+      out += row(mime).withValue(valueColumn, m.value).apply {
+        if (type != null) withValue(Data.DATA2, type)
+        else withValue(Data.DATA2, CUSTOM).withValue(Data.DATA3, plain(m.label) ?: m.kind)
       }
     }
     return out
   }
+
+  // --- The base, as kept in SYNC2 -------------------------------------------------------------
+
+  fun personJson(p: Person): String = JSONObject().apply {
+    put("guid", p.guid); put("etag", p.etag); put("first", p.firstName); put("middle", p.middleName)
+    put("last", p.lastName); put("company", p.company); put("isCompany", p.isCompany)
+    put("birthday", p.birthday); put("notes", p.notes)
+    put("methods", JSONArray().apply {
+      for (m in p.methods) put(JSONObject().apply { put("kind", m.kind); put("label", m.label); put("value", m.value) })
+    })
+  }.toString()
+
+  fun personFromJson(s: String): Person? = runCatching {
+    val o = JSONObject(s)
+    fun str(k: String) = if (o.isNull(k)) null else o.optString(k)
+    val ms = o.optJSONArray("methods") ?: JSONArray()
+    Person(
+      guid = o.getString("guid"), etag = str("etag"), firstName = str("first"), middleName = str("middle"),
+      lastName = str("last"), company = str("company"), isCompany = o.optBoolean("isCompany"),
+      birthday = str("birthday"), notes = str("notes"),
+      methods = (0 until ms.length()).map { i ->
+        val m = ms.getJSONObject(i)
+        Method(m.getString("kind"), if (m.isNull("label")) null else m.optString("label"), m.getString("value"))
+      },
+    )
+  }.getOrNull()
 }

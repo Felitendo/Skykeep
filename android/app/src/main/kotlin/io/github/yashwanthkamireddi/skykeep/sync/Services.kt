@@ -57,17 +57,34 @@ private class Adapter(context: Context) : AbstractThreadedSyncAdapter(context, t
   }
 }
 
-/** Android asking for Contacts: iCloud's address book read through the engine and written in. */
+/**
+ * Android asking for Contacts: what changed on the phone sent to iCloud first, then iCloud's
+ * address book read and written in — so an edit made here is in iCloud before the book is read,
+ * and never written over. Android starts one when a contact is changed on the phone
+ * (supportsUploading), and hourly.
+ */
 private class ContactsAdapter(context: Context) : AbstractThreadedSyncAdapter(context, true) {
   override fun onPerformSync(a: Account, e: Bundle, authority: String, p: ContentProviderClient, r: SyncResult) {
+    val engine = io.github.yashwanthkamireddi.skykeep.Engine.account(context)
     try {
-      val people = io.github.yashwanthkamireddi.skykeep.Engine.account(context).contacts()
-      val done = ContactsSync.sync(context.contentResolver, a, people)
+      // One confirmation covers both ways: the changes held from sending and the removals held.
+      val confirmed = Outcome.massRemovalConfirmed(context, authority)
+      val sent = ContactsSync.send(context.contentResolver, a, confirmed) { engine.saveContacts(it) }
+      if (sent.later > 0) r.stats.numIoExceptions++
+      val people = engine.contacts()
+      val done = ContactsSync.sync(context.contentResolver, a, people, confirmed)
       r.stats.numInserts += done.added.toLong()
       r.stats.numUpdates += done.updated.toLong()
       r.stats.numDeletes += done.removed.toLong()
-      Outcome.record(context, authority, true,
-        "${people.size} contacts · ${done.added} added, ${done.updated} updated, ${done.removed} removed")
+      val said = buildList {
+        add("${people.size} contacts · ${done.added} added, ${done.updated} updated, ${done.removed} removed")
+        if (sent.sent > 0) add("${sent.sent} sent to iCloud")
+        if (sent.later > 0) add("${sent.later} to send again")
+        if (sent.failed > 0) add("${sent.failed} not saved: ${sent.reason}")
+        if (sent.held > 0) add("${sent.held} changes on this phone held until you confirm")
+        if (done.held > 0) add("${done.held} no longer in iCloud, kept on this phone until you confirm")
+      }.joinToString(" · ")
+      Outcome.record(context, authority, sent.failed == 0, said, held = done.held + sent.held)
     } catch (x: uniffi.quince_mobile.EngineException) {
       // Apple busy or unreachable, or the session gone: Android tries again later, backing off.
       r.stats.numIoExceptions++

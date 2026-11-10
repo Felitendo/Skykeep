@@ -22,6 +22,9 @@ bindgen = ["uniffi/cli"]
 [dependencies]
 quince-auth = { path = "../quince-auth" }
 quince-icloud = { path = "../quince-icloud" }
+quince-core = { path = "../quince-core" }
+serde_json.workspace = true
+uuid = { workspace = true }
 uniffi = "0.32"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread"] }

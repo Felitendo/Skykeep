@@ -4335,10 +4335,13 @@ name = "quince-mobile"
 version = "0.1.19"
 dependencies = [
  "quince-auth",
+ "quince-core",
  "quince-icloud",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "uniffi",
+ "uuid",
 ]
 
 [[package]]

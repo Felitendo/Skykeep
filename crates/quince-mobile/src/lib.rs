@@ -151,6 +151,40 @@ pub struct Person {
     pub methods: Vec<Method>,
 }
 
+/// What changed on the phone to one contact, to be sent to iCloud.
+#[derive(uniffi::Enum)]
+pub enum ChangeKind {
+    /// Made on the phone: created in iCloud under `guid`, chosen on the phone beforehand so a
+    /// send repeated after a lost answer finds it made rather than making a second.
+    Create,
+    /// Edited on the phone: only what changed from `base` written over iCloud's current card.
+    Update,
+    /// Deleted on the phone.
+    Delete,
+}
+
+/// One change, as the phone's Contacts holds it now and as it was last synced (`base`).
+#[derive(uniffi::Record)]
+pub struct ContactChange {
+    pub kind: ChangeKind,
+    pub guid: String,
+    pub person: Option<Person>,
+    pub base: Option<Person>,
+}
+
+/// How one change went.
+#[derive(uniffi::Enum)]
+pub enum ChangeOutcome {
+    /// In iCloud now (or already as asked: made, or gone).
+    Saved,
+    /// Edited here but deleted in iCloud meanwhile: kept, as a new card under `guid`, rather
+    /// than the edit lost.
+    Recreated { guid: String },
+    /// Not sent: `later` true when it can go as it is on a later sync (Apple busy or out of
+    /// reach, the card changed meanwhile); false when Apple refused it, with why.
+    Failed { reason: String, later: bool },
+}
+
 /// An iCloud calendar, as Android's Calendar will list it.
 #[derive(uniffi::Record)]
 pub struct Cal {
@@ -183,6 +217,34 @@ pub struct Ev {
 pub struct CalendarWindow {
     pub calendars: Vec<Cal>,
     pub events: Vec<Ev>,
+}
+
+/// A person as the engine's contact, under `guid`. The photo is never touched from here: the
+/// merge sees it unchanged and keeps Apple's.
+fn contact_of(p: &Person, guid: &str) -> quince_core::contacts::Contact {
+    quince_core::contacts::Contact {
+        guid: guid.to_string(),
+        first_name: p.first_name.clone(),
+        middle_name: p.middle_name.clone(),
+        last_name: p.last_name.clone(),
+        company: p.company.clone(),
+        is_company: p.is_company,
+        birthday: p.birthday.clone(),
+        notes: p.notes.clone(),
+        etag: p.etag.clone(),
+        methods: p
+            .methods
+            .iter()
+            .map(|m| quince_core::contacts::ContactMethod {
+                kind: m.kind.clone(),
+                label: m.label.clone(),
+                value: m.value.clone(),
+            })
+            .collect(),
+        photo_url: None,
+        photo_signature: None,
+        photo_crop: None,
+    }
 }
 
 /// What went wrong, for the screen: the engine's sentence. The whole of it — Apple's status,
@@ -347,6 +409,130 @@ impl Account {
                     .collect(),
             })
             .collect())
+    }
+
+    /// The phone's changes to contacts sent to iCloud, as the desktop sends its own (outbox.rs):
+    /// the book read once and again only when its tokens are spent; a creation under the id the
+    /// phone chose, made at most once; an edit as a three-way merge over Apple's current card,
+    /// so what changed on another device meanwhile stays; a deletion against the card as it is
+    /// now. One outcome per change, in order. Fails as a whole only when the book can't be read.
+    pub fn save_contacts(
+        &self,
+        changes: Vec<ContactChange>,
+    ) -> Result<Vec<ChangeOutcome>, EngineError> {
+        use quince_icloud::contacts as c;
+        let client = self.client.lock().map_err(failed)?;
+        let root = client
+            .session()
+            .service_url("contacts")
+            .ok_or_else(|| failed("Apple hasn't offered a contacts service for this account."))?;
+        let (http, params) = (client.http().clone(), client.service_params());
+        drop(client);
+        let ledger = c::Ledger::new();
+        let mut cards: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
+        let mut out = Vec::with_capacity(changes.len());
+        for change in changes {
+            if !ledger.has_tokens() {
+                let (read, tokens) = runtime()
+                    .block_on(c::cards_with_tokens(&http, &root, params.clone()))
+                    .map_err(failed)?;
+                ledger.hold(tokens);
+                cards = read
+                    .into_iter()
+                    .filter_map(|card| Some((card.get("contactId")?.as_str()?.to_string(), card)))
+                    .collect();
+            }
+            let current = cards.get(&change.guid).cloned();
+            let sent: quince_icloud::Result<ChangeOutcome> = runtime().block_on(async {
+                match change.kind {
+                    ChangeKind::Delete => match &current {
+                        None => Ok(ChangeOutcome::Saved),
+                        Some(card) => {
+                            c::merge::delete_card(&http, &root, params.clone(), &ledger, card)
+                                .await
+                                .map(|()| ChangeOutcome::Saved)
+                        }
+                    },
+                    ChangeKind::Create => {
+                        if current.is_some() {
+                            return Ok(ChangeOutcome::Saved);
+                        }
+                        let person = change.person.as_ref().ok_or_else(|| {
+                            quince_icloud::Error::Protocol(
+                                "a new contact with nothing in it".into(),
+                            )
+                        })?;
+                        c::create_named(
+                            &http,
+                            &root,
+                            params.clone(),
+                            &ledger,
+                            &change.guid,
+                            &contact_of(person, &change.guid),
+                        )
+                        .await
+                        .map(|()| ChangeOutcome::Saved)
+                    }
+                    ChangeKind::Update => {
+                        let person = change.person.as_ref().ok_or_else(|| {
+                            quince_icloud::Error::Protocol("an edit with nothing in it".into())
+                        })?;
+                        match &current {
+                            // Deleted in iCloud while edited here: kept as a new card.
+                            None => {
+                                let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+                                c::create_named(
+                                    &http,
+                                    &root,
+                                    params.clone(),
+                                    &ledger,
+                                    &guid,
+                                    &contact_of(person, &guid),
+                                )
+                                .await
+                                .map(|()| ChangeOutcome::Recreated { guid })
+                            }
+                            Some(card) => {
+                                let base =
+                                    change.base.as_ref().map(|b| contact_of(b, &change.guid));
+                                c::update_from(
+                                    &http,
+                                    &root,
+                                    params.clone(),
+                                    &ledger,
+                                    &contact_of(person, &change.guid),
+                                    Some(card),
+                                    base.as_ref(),
+                                )
+                                .await
+                                .map(|()| ChangeOutcome::Saved)
+                            }
+                        }
+                    }
+                }
+            });
+            // What this change wrote is old in the book read now: read again before the next.
+            ledger.spend();
+            out.push(match sent {
+                Ok(done) => done,
+                Err(e) => {
+                    log::error(&format!("{e:?}"));
+                    let later = matches!(
+                        e,
+                        quince_icloud::Error::Network(_)
+                            | quince_icloud::Error::Busy
+                            | quince_icloud::Error::Conflict
+                            | quince_icloud::Error::ReauthRequired
+                    );
+                    ChangeOutcome::Failed {
+                        reason: e.to_string(),
+                        later,
+                    }
+                }
+            });
+        }
+        Ok(out)
     }
 
     /// The calendars and the events between two days (`YYYY-MM-DD`, both included) in the
