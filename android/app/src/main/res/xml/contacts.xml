@@ -1,3 +1,51 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Lets the Contacts app show and edit this account's contacts as its own. -->
-<ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android" />
+<!--
+  What a Skykeep contact holds, for the Contacts app's editor: exactly the fields the sync sends
+  to iCloud (ContactsSync's KIND and TYPES), with the labels it maps to Apple's. Left empty, as
+  it first was, the Contacts app showed every Skykeep contact as "View-only" (10 Nov). A field
+  not listed here can't be added in the editor, so nothing is typed that would never reach
+  iCloud: no nicknames, relations or chat accounts, which the sync doesn't carry. The company
+  field's editor also has a job title box, which this can't take away; job titles aren't carried
+  yet (the engine's Contact has none), a known gap to close.
+-->
+<ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android">
+    <EditSchema>
+        <DataKind kind="name" maxOccurs="1"
+            supportsDisplayName="true" supportsMiddleName="true"
+            supportsPrefix="false" supportsSuffix="false"
+            supportsPhoneticFamilyName="false" supportsPhoneticMiddleName="false"
+            supportsPhoneticGivenName="false" />
+        <DataKind kind="photo" maxOccurs="1" />
+        <DataKind kind="phone">
+            <Type type="mobile" />
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="main" />
+            <Type type="fax_home" />
+            <Type type="fax_work" />
+            <Type type="other_fax" />
+            <Type type="pager" />
+            <Type type="other" />
+            <Type type="custom" />
+        </DataKind>
+        <DataKind kind="email">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="other" />
+            <Type type="custom" />
+        </DataKind>
+        <!-- One line, as iCloud keeps an address; its parts are not sent one by one. -->
+        <DataKind kind="postal" needsStructured="false">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="other" />
+            <Type type="custom" />
+        </DataKind>
+        <DataKind kind="website" />
+        <DataKind kind="organization" maxOccurs="1" />
+        <DataKind kind="note" maxOccurs="1" />
+        <DataKind kind="event" dateWithTime="false">
+            <Type type="birthday" maxOccurs="1" yearOptional="true" />
+        </DataKind>
+    </EditSchema>
+</ContactsAccountType>

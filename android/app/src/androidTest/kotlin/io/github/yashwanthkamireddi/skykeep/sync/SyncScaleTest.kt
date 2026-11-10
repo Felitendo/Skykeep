@@ -64,7 +64,17 @@ class SyncScaleTest {
       Method("phone", "MOBILE", "+1 555 ${n.toString().padStart(4, '0')}"),
       Method("email", null, "person$n@example.invalid"),
     ),
+    // Every 50th with a picture, so the picture rows are part of what is timed.
+    photo = if (n % 50 == 0) uniffi.quince_mobile.PhotoRef(url = "test:$n", crop = null, key = "k$n") else null,
   )
+
+  /** A picture as the engine hands one over: a small JPEG. */
+  private val picture: ByteArray by lazy {
+    val bitmap = android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888)
+    bitmap.eraseColor(android.graphics.Color.rgb(80, 120, 200))
+    java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+  }
+  private val photo: (uniffi.quince_mobile.PhotoRef) -> ByteArray? = { picture }
 
   private fun rows(): Int = cr.query(
     RawContacts.CONTENT_URI, arrayOf(RawContacts._ID),
@@ -83,29 +93,29 @@ class SyncScaleTest {
   fun two_thousand_contacts() {
     val book = (1..2000).map { person(it) }
     timed("2000 contacts, first sync") {
-      val r = ContactsSync.sync(cr, account, book, allowMassRemoval = false)
+      val r = ContactsSync.sync(cr, account, book, allowMassRemoval = false, photo = photo)
       assertEquals(2000, r.added)
     }
     assertEquals(2000, rows())
     timed("2000 contacts, nothing changed") {
-      val r = ContactsSync.sync(cr, account, book, allowMassRemoval = false)
+      val r = ContactsSync.sync(cr, account, book, allowMassRemoval = false, photo = photo)
       assertEquals(Triple(0, 0, 2000), Triple(r.added, r.updated, r.unchanged))
     }
     // Ten changed in iCloud: exactly those ten rewritten.
     val edited = book.mapIndexed { i, p -> if (i < 10) person(i + 1, etag = "e2") else p }
-    val r1 = ContactsSync.sync(cr, account, edited, allowMassRemoval = false)
+    val r1 = ContactsSync.sync(cr, account, edited, allowMassRemoval = false, photo = photo)
     assertEquals(Pair(10, 0), Pair(r1.updated, r1.added))
     // Thirty gone in iCloud: under a tenth of the book, removed.
     val fewer = edited.drop(30)
-    val r2 = ContactsSync.sync(cr, account, fewer, allowMassRemoval = false)
+    val r2 = ContactsSync.sync(cr, account, fewer, allowMassRemoval = false, photo = photo)
     assertEquals(Pair(30, 0), Pair(r2.removed, r2.held))
     assertEquals(1970, rows())
     // A thousand gone at once: held until confirmed, then removed.
     val half = fewer.drop(1000)
-    val held = ContactsSync.sync(cr, account, half, allowMassRemoval = false)
+    val held = ContactsSync.sync(cr, account, half, allowMassRemoval = false, photo = photo)
     assertEquals(Pair(0, 1000), Pair(held.removed, held.held))
     assertEquals(1970, rows())
-    val confirmed = ContactsSync.sync(cr, account, half, allowMassRemoval = true)
+    val confirmed = ContactsSync.sync(cr, account, half, allowMassRemoval = true, photo = photo)
     assertEquals(1000, confirmed.removed)
     assertEquals(970, rows())
     // Nothing the sync wrote is marked as changed on the phone (it would be sent back).

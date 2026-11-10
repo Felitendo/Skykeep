@@ -86,7 +86,15 @@ private class ContactsAdapter(context: Context) : AbstractThreadedSyncAdapter(co
       val sent = ContactsSync.send(context.contentResolver, a, confirmed) { engine.saveContacts(it) }
       if (sent.later > 0) r.stats.numIoExceptions++
       val people = engine.contacts()
-      val done = ContactsSync.sync(context.contentResolver, a, people, confirmed)
+      // A picture at Android's display size; one still too large for a batch (a big PNG kept
+      // for its transparency) is asked for again at half the size, never left out.
+      val done = ContactsSync.sync(context.contentResolver, a, people, confirmed) { ref ->
+        runCatching {
+          engine.contactPhoto(ref, ContactsSync.PHOTO_PX).let {
+            if (it.size <= ContactsSync.BATCH_BYTES) it else engine.contactPhoto(ref, ContactsSync.PHOTO_PX / 2u)
+          }
+        }.getOrNull()
+      }
       r.stats.numInserts += done.added.toLong()
       r.stats.numUpdates += done.updated.toLong()
       r.stats.numDeletes += done.removed.toLong()

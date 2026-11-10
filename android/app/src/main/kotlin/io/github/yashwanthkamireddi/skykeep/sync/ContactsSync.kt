@@ -10,6 +10,7 @@ import android.provider.ContactsContract.CommonDataKinds.Event
 import android.provider.ContactsContract.CommonDataKinds.Note
 import android.provider.ContactsContract.CommonDataKinds.Organization
 import android.provider.ContactsContract.CommonDataKinds.Phone
+import android.provider.ContactsContract.CommonDataKinds.Photo
 import android.provider.ContactsContract.CommonDataKinds.StructuredName
 import android.provider.ContactsContract.CommonDataKinds.StructuredPostal
 import android.provider.ContactsContract.CommonDataKinds.Website
@@ -22,6 +23,8 @@ import uniffi.quince_mobile.ChangeOutcome
 import uniffi.quince_mobile.ContactChange
 import uniffi.quince_mobile.Method
 import uniffi.quince_mobile.Person
+import uniffi.quince_mobile.PhotoEdit
+import uniffi.quince_mobile.PhotoRef
 
 /**
  * iCloud's address book and Android's Contacts, both ways, one card a raw contact under the
@@ -57,21 +60,30 @@ object ContactsSync {
     .appendQueryParameter(RawContacts.ACCOUNT_TYPE, a.type)
     .build()
 
-  private data class Local(val id: Long, val etag: String?, val pending: Boolean, val format: String?)
+  /** A card on the phone: its row, etag, whether it waits to be sent, format, and picture's key. */
+  private data class Local(val id: Long, val etag: String?, val pending: Boolean, val format: String?, val photoKey: String?)
 
   /**
    * How a card's rows are written here (kept in SYNC3). A row in an older format is written again
-   * from iCloud on the next sync, whatever its etag: 2 = Apple's standard labels as Android's own
-   * types, a number with no label as Other (1 wrote labels as custom text, none as "phone").
+   * from iCloud on the next sync, whatever its etag: 3 = with its picture; 2 = Apple's standard
+   * labels as Android's own types, a number with no label as Other (1 wrote labels as custom
+   * text, none as "phone").
    */
-  private const val FORMAT = "2"
+  private const val FORMAT = "3"
+
+  /** The most pictures' bytes in one batch: half of what one binder call can carry. */
+  const val BATCH_BYTES = 500_000
+
+  /** A picture's size on the phone: Android's own display size, from which it makes the rest. */
+  const val PHOTO_PX = 720u
 
   /**
    * One sync at a time in the process. Adding the account makes Android start its own sync at
    * once; run beside another, both read an empty book and every card was written twice.
    */
-  fun sync(cr: ContentResolver, account: Account, people: List<Person>, allowMassRemoval: Boolean): Result =
-    synchronized(this) { download(cr, account, people, allowMassRemoval) }
+  /** iCloud's book written here; `photo` fetches a card's picture (the engine), null if it can't. */
+  fun sync(cr: ContentResolver, account: Account, people: List<Person>, allowMassRemoval: Boolean, photo: (PhotoRef) -> ByteArray?): Result =
+    synchronized(this) { download(cr, account, people, allowMassRemoval, photo) }
 
   /** The phone's changes sent through `save` (the engine), then marked done here. */
   fun send(cr: ContentResolver, account: Account, confirmed: Boolean, save: (List<ContactChange>) -> List<ChangeOutcome>): Sent =
@@ -106,7 +118,7 @@ object ContactsSync {
           // Made and deleted here before it was ever sent: nothing for iCloud.
           deleted && source == null -> dropped += rawId
           base == null && source != null -> unknown += rawId
-          deleted -> changes += Change(rawId, ContactChange(ChangeKind.DELETE, source!!, null, base))
+          deleted -> changes += Change(rawId, ContactChange(ChangeKind.DELETE, source!!, null, base, null))
           source == null -> {
             // New on this phone: its id chosen now and kept, so a send repeated after a lost
             // answer finds the card made rather than making a second.
@@ -116,9 +128,11 @@ object ContactsSync {
               android.content.ContentValues().apply { put(RawContacts.SOURCE_ID, guid) },
               "${RawContacts._ID}=?", arrayOf(rawId.toString()),
             )
-            changes += Change(rawId, ContactChange(ChangeKind.CREATE, guid, readPerson(cr, rawId, guid, null), null))
+            changes += Change(rawId, ContactChange(ChangeKind.CREATE, guid, readPerson(cr, rawId, guid, null), null, photoEdit(cr, rawId, null)))
           }
-          else -> changes += Change(rawId, ContactChange(ChangeKind.UPDATE, source, readPerson(cr, rawId, source, base), base))
+          else -> changes += Change(
+            rawId, ContactChange(ChangeKind.UPDATE, source, readPerson(cr, rawId, source, base), base, photoEdit(cr, rawId, base)),
+          )
         }
       }
     }
@@ -206,6 +220,67 @@ object ContactsSync {
    * else as Apple's own names where they are one, so an edit to one number never turns the others'
    * labels into custom text in iCloud.
    */
+  /**
+   * The card's picture as changed on the phone, or null where it is as iCloud has it. The row the
+   * sync wrote carries iCloud's key (SYNC1) and the file Android made of it (SYNC2, see
+   * [markPictures]): a picture row without the key was put there by the person, and one whose
+   * file is no longer that file was edited by them. No picture where the base had one: taken away.
+   */
+  private fun photoEdit(cr: ContentResolver, rawId: Long, base: Person?): PhotoEdit? {
+    var row: Triple<String?, String?, Long?>? = null
+    var hasPicture = false
+    cr.query(
+      Data.CONTENT_URI, arrayOf(Data.SYNC1, Data.SYNC2, Photo.PHOTO_FILE_ID, Photo.PHOTO),
+      "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=?", arrayOf(rawId.toString(), Photo.CONTENT_ITEM_TYPE), null,
+    )?.use { c ->
+      if (c.moveToFirst()) {
+        row = Triple(c.getString(0), c.getString(1), if (c.isNull(2)) null else c.getLong(2))
+        hasPicture = !c.isNull(2) || !c.isNull(3)
+      }
+    }
+    if (!hasPicture) return if (base?.photo != null) PhotoEdit.Removed else null
+    val (key, file, now) = row!!
+    val ours = key != null && key == base?.photo?.key && file != null && file == now?.toString()
+    if (ours) return null
+    return picture(cr, rawId)?.let { PhotoEdit.Set(it) }
+  }
+
+  /**
+   * Each picture the sync wrote, marked with the file Android made of it (SYNC2), once Android has
+   * made it: a picture the person changes gets a new file, which is how the change is found.
+   * Android's own edit count (DATA_VERSION) can't tell it: its processing of the sync's own
+   * picture counts as edits (2 on the emulator, 10 Nov).
+   */
+  private fun markPictures(cr: ContentResolver, account: Account) {
+    val unmarked = ArrayList<Pair<Long, Long>>()
+    cr.query(
+      Data.CONTENT_URI.asAdapter(account), arrayOf(Data._ID, Photo.PHOTO_FILE_ID),
+      "${Data.MIMETYPE}=? AND ${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.ACCOUNT_NAME}=? AND ${Data.SYNC1} IS NOT NULL AND ${Data.SYNC2} IS NULL AND ${Photo.PHOTO_FILE_ID} IS NOT NULL",
+      arrayOf(Photo.CONTENT_ITEM_TYPE, account.type, account.name), null,
+    )?.use { c -> while (c.moveToNext()) unmarked += c.getLong(0) to c.getLong(1) }
+    if (unmarked.isEmpty()) return
+    val ops = unmarked.map { (id, file) ->
+      ContentProviderOperation.newUpdate(Data.CONTENT_URI.asAdapter(account))
+        .withSelection("${Data._ID}=?", arrayOf(id.toString()))
+        .withValue(Data.SYNC2, file.toString())
+        .build()
+    }
+    ops.chunked(300).forEach { cr.applyBatch(ContactsContract.AUTHORITY, ArrayList(it)) }
+  }
+
+  /** The card's picture at its full size (Android's display photo), else the small one. */
+  private fun picture(cr: ContentResolver, rawId: Long): ByteArray? {
+    val display = Uri.withAppendedPath(
+      android.content.ContentUris.withAppendedId(RawContacts.CONTENT_URI, rawId), RawContacts.DisplayPhoto.CONTENT_DIRECTORY,
+    )
+    runCatching { cr.openAssetFileDescriptor(display, "r")?.use { it.createInputStream().readBytes() } }.getOrNull()
+      ?.takeIf { it.isNotEmpty() }?.let { return it }
+    return cr.query(
+      Data.CONTENT_URI, arrayOf(Photo.PHOTO),
+      "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}=?", arrayOf(rawId.toString(), Photo.CONTENT_ITEM_TYPE), null,
+    )?.use { c -> if (c.moveToFirst()) c.getBlob(0) else null }
+  }
+
   private fun readPerson(cr: ContentResolver, rawId: Long, guid: String, base: Person?): Person {
     var first: String? = null; var middle: String? = null; var last: String? = null
     var company: String? = null; var notes: String? = null; var birthday: String? = null
@@ -238,7 +313,7 @@ object ContactsSync {
     return Person(
       guid = guid, etag = base?.etag, firstName = first, middleName = middle, lastName = last,
       company = company, isCompany = base?.isCompany ?: false, birthday = birthday, notes = notes,
-      methods = methods,
+      methods = methods, photo = base?.photo,
     )
   }
 
@@ -296,32 +371,48 @@ object ContactsSync {
 
   // --- Reading ---------------------------------------------------------------------------------
 
-  private fun download(cr: ContentResolver, account: Account, people: List<Person>, allowMassRemoval: Boolean): Result {
+  private fun download(
+    cr: ContentResolver, account: Account, people: List<Person>, allowMassRemoval: Boolean,
+    photo: (PhotoRef) -> ByteArray?,
+  ): Result {
     val local = HashMap<String, Local>()
     // A card found twice (left by an earlier fault) keeps one copy; the others are removed.
     val extra = ArrayList<Long>()
     cr.query(
       RawContacts.CONTENT_URI.asAdapter(account),
-      arrayOf(RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.SYNC1, RawContacts.DIRTY, RawContacts.DELETED, RawContacts.SYNC3),
+      arrayOf(RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.SYNC1, RawContacts.DIRTY, RawContacts.DELETED, RawContacts.SYNC3, RawContacts.SYNC2),
       "${RawContacts.ACCOUNT_TYPE}=? AND ${RawContacts.ACCOUNT_NAME}=?", arrayOf(account.type, account.name), null,
     )?.use { c ->
       while (c.moveToNext()) {
         val source = c.getString(1) ?: continue
         val pending = c.getInt(3) != 0 || c.getInt(4) != 0
         if (source in local) { if (!pending) extra += c.getLong(0); continue }
-        local[source] = Local(c.getLong(0), c.getString(2), pending, c.getString(5))
+        val photoKey = c.getString(6)?.let(::personFromJson)?.photo?.key
+        local[source] = Local(c.getLong(0), c.getString(2), pending, c.getString(5), photoKey)
       }
     }
     var added = 0; var updated = 0; var unchanged = 0
     val ops = ArrayList<ContentProviderOperation>()
-    fun flush() { if (ops.isNotEmpty()) { cr.applyBatch(ContactsContract.AUTHORITY, ops); ops.clear() } }
+    // Pictures' bytes in the batch: a batch crosses to Android's Contacts in one binder call,
+    // which takes about 1 MB, and 300 cards' pictures made one of 4.5 MB that crashed the sync
+    // (10 Nov). So a batch is cut by size as well as by count.
+    var bytes = 0
+    fun flush() { if (ops.isNotEmpty()) { cr.applyBatch(ContactsContract.AUTHORITY, ops); ops.clear() }; bytes = 0 }
 
     for (p in people) {
       val have = local.remove(p.guid)
       // Changed here and not yet in iCloud: left as it is, sent on the next sync.
       if (have != null && have.pending) continue
-      if (have != null && have.etag != null && have.etag == p.etag && have.format == FORMAT) { unchanged++; continue }
-      if (ops.size > 300) flush()
+      if (have != null && have.etag != null && have.etag == p.etag && have.format == FORMAT && have.photoKey == p.photo?.key) {
+        unchanged++; continue
+      }
+      // The picture: fetched only when it is not the one the phone has. A picture that can't be
+      // had now leaves the card without one, its key unrecorded, so the next sync tries again.
+      val keepPicture = have != null && have.format == FORMAT && have.photoKey != null && have.photoKey == p.photo?.key
+      val picture = if (keepPicture) null else p.photo?.let(photo)
+      val written = if (keepPicture || picture != null) p else p.copy(photo = null)
+      if (ops.size > 300 || bytes + (picture?.size ?: 0) > BATCH_BYTES) flush()
+      bytes += picture?.size ?: 0
       val start = ops.size
       if (have == null) {
         ops += ContentProviderOperation.newInsert(RawContacts.CONTENT_URI.asAdapter(account))
@@ -329,24 +420,29 @@ object ContactsSync {
           .withValue(RawContacts.ACCOUNT_TYPE, account.type)
           .withValue(RawContacts.SOURCE_ID, p.guid)
           .withValue(RawContacts.SYNC1, p.etag)
-          .withValue(RawContacts.SYNC2, personJson(p))
+          .withValue(RawContacts.SYNC2, personJson(written))
           .withValue(RawContacts.SYNC4, null)
           .withValue(RawContacts.SYNC3, FORMAT)
           .build()
-        rows(p, account).forEach { ops += it.withValueBackReference(Data.RAW_CONTACT_ID, start).build() }
+        rows(p, account, picture).forEach { ops += it.withValueBackReference(Data.RAW_CONTACT_ID, start).build() }
         added++
       } else {
         ops += ContentProviderOperation.newUpdate(RawContacts.CONTENT_URI.asAdapter(account))
           .withSelection("${RawContacts._ID}=?", arrayOf(have.id.toString()))
           .withValue(RawContacts.SYNC1, p.etag)
-          .withValue(RawContacts.SYNC2, personJson(p))
+          .withValue(RawContacts.SYNC2, personJson(written))
           .withValue(RawContacts.SYNC4, null)
           .withValue(RawContacts.SYNC3, FORMAT)
           .build()
+        // Every row rewritten from iCloud's card, but a picture that hasn't changed stays as it
+        // is: fetched again on every edit to a card, a book of faces would cost a download each.
         ops += ContentProviderOperation.newDelete(Data.CONTENT_URI.asAdapter(account))
-          .withSelection("${Data.RAW_CONTACT_ID}=?", arrayOf(have.id.toString()))
+          .withSelection(
+            if (keepPicture) "${Data.RAW_CONTACT_ID}=? AND ${Data.MIMETYPE}!=?" else "${Data.RAW_CONTACT_ID}=?",
+            if (keepPicture) arrayOf(have.id.toString(), Photo.CONTENT_ITEM_TYPE) else arrayOf(have.id.toString()),
+          )
           .build()
-        rows(p, account).forEach { ops += it.withValue(Data.RAW_CONTACT_ID, have.id).build() }
+        rows(p, account, picture).forEach { ops += it.withValue(Data.RAW_CONTACT_ID, have.id).build() }
         updated++
       }
     }
@@ -361,11 +457,12 @@ object ContactsSync {
         .build()
     }
     flush()
+    markPictures(cr, account)
     return Result(added, updated, removing.size + extra.size, unchanged, gone.size - removing.size)
   }
 
   /** A card's data rows, each still to be pointed at its raw contact. */
-  private fun rows(p: Person, account: Account): List<ContentProviderOperation.Builder> {
+  private fun rows(p: Person, account: Account, picture: ByteArray?): List<ContentProviderOperation.Builder> {
     val out = ArrayList<ContentProviderOperation.Builder>()
     // As the sync adapter: written by Android's own Contacts address, every card the sync wrote
     // was marked changed on the phone (DIRTY), and a two-way sync would have sent them all back.
@@ -375,6 +472,14 @@ object ContactsSync {
       .withValue(StructuredName.MIDDLE_NAME, p.middleName)
       .withValue(StructuredName.FAMILY_NAME, p.lastName)
       .apply { if (p.isCompany || (p.firstName == null && p.lastName == null)) withValue(StructuredName.DISPLAY_NAME, p.company) }
+    // The picture whole: Android keeps it as the card's large photo and makes the small one for
+    // lists itself. Its key (SYNC1 on the row) says which of iCloud's pictures it is; the file
+    // Android makes of it is marked after (markPictures), which is how a change here is found.
+    if (picture != null && p.photo != null) {
+      out += row(Photo.CONTENT_ITEM_TYPE).withValue(Photo.PHOTO, picture)
+        .withValue(Data.IS_PRIMARY, 1).withValue(Data.IS_SUPER_PRIMARY, 1)
+        .withValue(Data.SYNC1, p.photo!!.key)
+    }
     p.company?.let { out += row(Organization.CONTENT_ITEM_TYPE).withValue(Organization.COMPANY, it) }
     p.notes?.let { out += row(Note.CONTENT_ITEM_TYPE).withValue(Note.NOTE, it) }
     p.birthday?.let {
@@ -404,7 +509,7 @@ object ContactsSync {
   fun personJson(p: Person): String = JSONObject().apply {
     put("guid", p.guid); put("etag", p.etag); put("first", p.firstName); put("middle", p.middleName)
     put("last", p.lastName); put("company", p.company); put("isCompany", p.isCompany)
-    put("birthday", p.birthday); put("notes", p.notes)
+    put("birthday", p.birthday); put("notes", p.notes); put("photoKey", p.photo?.key)
     put("methods", JSONArray().apply {
       for (m in p.methods) put(JSONObject().apply { put("kind", m.kind); put("label", m.label); put("value", m.value) })
     })
@@ -418,6 +523,8 @@ object ContactsSync {
       guid = o.getString("guid"), etag = str("etag"), firstName = str("first"), middleName = str("middle"),
       lastName = str("last"), company = str("company"), isCompany = o.optBoolean("isCompany"),
       birthday = str("birthday"), notes = str("notes"),
+      // Only the key is kept: which picture the phone has (the url is asked for anew each time).
+      photo = str("photoKey")?.let { PhotoRef(url = "", crop = null, key = it) },
       methods = (0 until ms.length()).map { i ->
         val m = ms.getJSONObject(i)
         Method(m.getString("kind"), if (m.isNull("label")) null else m.optString("label"), m.getString("value"))
