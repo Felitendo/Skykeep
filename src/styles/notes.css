@@ -605,18 +605,15 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .note-adding-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-13); color: var(--text); }
 .note-adding-state { display: flex; align-items: center; gap: 8px; font-size: var(--t-11); color: var(--text-2); }
 
-/* Add Link (notes/LinkBox): under the selection, as the Aa panel is beside its button. */
+/* Add Link (notes/LinkBox): the Aa panel's glass, its fields the app's own (.search-field). */
 .link-box {
   position: fixed;
   z-index: 60;
   display: grid;
-  gap: 8px;
-  width: 300px;
-  padding: 12px;
+  gap: 6px;
+  width: 280px;
+  padding: 8px;
 }
-.link-box-row { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 8px; font-size: var(--t-13); }
-.link-box-row > span { color: var(--text-2); text-align: right; }
-.link-box-row input { min-width: 0; font-size: var(--t-13); }
-.link-box-wrong { margin: 0 0 0 64px; color: var(--danger); font-size: var(--t-12); }
-.link-box-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
-.link-box-remove { margin-right: auto; }
+.link-box-field { cursor: text; }
+.link-box-field .icon-button { margin-right: -6px; }
+.link-box-wrong { margin: 0 4px; color: var(--danger); font-size: var(--t-12); line-height: 1.35; }

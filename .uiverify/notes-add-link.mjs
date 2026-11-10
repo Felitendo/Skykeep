@@ -69,7 +69,7 @@ await page.keyboard.press("Control+k");
 ok((await box.getByLabel("Text").count()) === 1, "nothing selected: the text to show is asked for");
 await box.getByLabel("Link to").fill("help@example.com");
 await box.getByLabel("Text").fill("Write to us");
-await box.getByRole("button", { name: "Add Link" }).click();
+await page.keyboard.press("Enter");
 await page.waitForTimeout(150);
 ok((await fan.locator('a[href="mailto:help@example.com"]').innerText()) === "Write to us", "the words go in, linked to the email address");
 

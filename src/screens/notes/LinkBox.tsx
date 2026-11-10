@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Link, Type, Unlink } from "lucide-react";
 import { Portal } from "../../components/Portal";
 import { useActiveRef } from "../../lib/screen";
 import { linkAddress } from "./linking";
@@ -14,9 +15,10 @@ export type LinkAsk = {
 };
 
 /**
- * Add Link (Command-K on a Mac): the address, and with nothing selected the text to show.
- * Return adds it, Escape or a click away leaves the note as it was; on a link already there,
- * Remove Link takes it off and leaves the words.
+ * Add Link (Command-K on a Mac), drawn as Notes' own link popover and as this app's other
+ * glass surfaces are: one field for the address, a second for the words to show only when
+ * nothing is selected, no buttons. Return adds it, Escape or a click away leaves the note as it
+ * was; on a link already there, the unlink symbol in the field takes it off.
  */
 export function LinkBox({
   ask,
@@ -86,16 +88,17 @@ export function LinkBox({
           onDone(href, text);
         }}
       >
-        <label className="link-box-row">
-          <span>Link to</span>
+        <div className="search-field link-box-field">
+          <Link size={14} strokeWidth={2} aria-hidden="true" />
           <input
             autoFocus
+            aria-label="Link to"
             value={address}
             inputMode="url"
             spellCheck={false}
             autoCapitalize="off"
             autoComplete="off"
-            placeholder="example.com"
+            placeholder="Type or paste a link"
             aria-invalid={wrong}
             aria-describedby={wrong ? "link-box-wrong" : undefined}
             onChange={(e) => {
@@ -103,31 +106,25 @@ export function LinkBox({
               setWrong(false);
             }}
           />
-        </label>
+          {ask.href && (
+            <button type="button" className="icon-button small" aria-label="Remove Link" title="Remove Link" onClick={onRemove}>
+              <Unlink size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          )}
+        </div>
         {ask.needsText && (
-          <label className="link-box-row">
-            <span>Text</span>
-            <input value={text} placeholder="Shown as the address" onChange={(e) => setText(e.target.value)} />
-          </label>
+          <div className="search-field link-box-field">
+            <Type size={14} strokeWidth={2} aria-hidden="true" />
+            <input aria-label="Text" value={text} placeholder="Text to show (optional)" onChange={(e) => setText(e.target.value)} />
+          </div>
         )}
         {wrong && (
           <p id="link-box-wrong" className="link-box-wrong" role="alert">
-            Enter a web address, an email address, or a tel: or geo: link.
+            That isn’t a link Notes can open. Try a web or email address.
           </p>
         )}
-        <div className="link-box-actions">
-          {ask.href && (
-            <button type="button" className="quiet link-box-remove" onClick={onRemove}>
-              Remove Link
-            </button>
-          )}
-          <button type="button" onClick={() => onCancel(true)}>
-            Cancel
-          </button>
-          <button type="submit" className="primary" disabled={!address.trim()}>
-            {ask.href ? "Done" : "Add Link"}
-          </button>
-        </div>
+        {/* Return in either field adds it, as in Notes; Escape leaves. */}
+        <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
       </form>
     </Portal>
   );
