@@ -54,12 +54,18 @@ on:
       store:
         type: boolean
         default: false
+      # The Windows build already made in this run (windows-checks.yml): packed from its
+      # `skykeep-windows` artifact instead of building Windows a second time.
+      prebuilt:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: ${{ !inputs.prebuilt }}
     uses: ./.github/workflows/windows.yml
     with:
       test_first: false
@@ -67,6 +73,8 @@ jobs:
 
   msix:
     needs: build
+    # After this run's own build, or — prebuilt — after the one its caller made.
+    if: ${{ !cancelled() && (needs.build.result == 'success' || (inputs.prebuilt && needs.build.result == 'skipped')) }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:

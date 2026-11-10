@@ -1,0 +1,42 @@
+# Windows, checked on every push to main, so a commit is ready to release the moment it is green:
+#   windows — the whole Windows pipeline (windows.yml): its tests, the Explorer test, the .msi and
+#             the .exe, the .exe installed and started;
+#   msix    — the Store package packed from that same build and installed (msix.yml, prebuilt):
+#             one Windows build, both checks.
+# A release is tagged only on a commit whose CI and Windows checks both succeeded (by its SHA).
+# A newer push cancels an older push's run: only the latest commit is a release candidate.
+name: Windows checks
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "android/**"
+      - "docs/**"
+      - "**.md"
+      - "packaging/arch/**"
+      - "packaging/aur/**"
+      - "packaging/copr/**"
+      - "packaging/flatpak/**"
+      - ".uiverify/**"
+  # By hand, on any branch: the same two checks.
+  workflow_dispatch:
+
+concurrency:
+  group: windows-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      test_first: true
+
+  msix:
+    needs: windows
+    uses: ./.github/workflows/msix.yml
+    with:
+      prebuilt: true

@@ -1,0 +1,31 @@
+# How the Rust tests run (cargo nextest): every test in its own process, all cores at once.
+# Modelled on uv's and Zed's: a test past its time is reported, and one that hangs is stopped
+# and failed rather than holding a run for an hour.
+
+[profile.default]
+# Slow past 30 s; stopped (and failed) after four periods: 2 minutes.
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[test-groups]
+# The scale tests make tens of thousands of files or rows: one at a time, so they measure
+# themselves and not each other.
+scale = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "test(/hundred_thousand|forty_thousand|of_thousands_arrives/)"
+test-group = "scale"
+slow-timeout = { period = "120s", terminate-after = 3 }
+
+# CI: every failure reported, nothing stops early, slow tests named at the end.
+[profile.ci]
+fail-fast = false
+failure-output = "immediate-final"
+final-status-level = "slow"
+
+# Windows: the scale tests stay on Linux. Each makes up to a hundred thousand real files, and
+# Windows' scanning of every new file turned one of them into most of a 29-minute test step;
+# what they prove (bounded memory, paging) is the engine's, not the platform's. The Explorer test
+# (cloud_windows) has its own step, one test at a time: it registers real sync roots with Windows.
+[profile.ci-windows]
+inherits = "ci"
+default-filter = "not test(/hundred_thousand|forty_thousand|of_thousands_arrives/) and not binary(cloud_windows)"

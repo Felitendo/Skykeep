@@ -45,6 +45,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # Every workflow's expressions, inputs and job wiring checked before GitHub runs them.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: actionlint
+      - name: Workflows are well formed
+        run: actionlint
       - name: Nothing stray is tracked
         run: |
           stray=$(git ls-files | grep -vxE -f <(grep -vE '^(#|$)' .github/published-paths) || true)
@@ -117,7 +123,12 @@ jobs:
       # In a zone west of UTC with clock changes: in UTC a time read in the wrong zone reads
       # the same as the right one, so #23 (a floating reminder rang hours early) passed here.
       # The gate runs in its own machine's zone and Windows in UTC: three kinds of offset.
-      - run: cargo test --workspace --lib --bins --tests --locked --no-fail-fast
+      # nextest (.config/nextest.toml): each test in its own process across every core, a hung
+      # one stopped and failed, the slow ones named — as uv and Zed run theirs.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest run --workspace --locked --profile ci
         env:
           TZ: America/Chicago
       # The keyring code against a real, throwaway gnome-keyring on a private bus (check.sh's

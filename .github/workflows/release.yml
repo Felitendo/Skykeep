@@ -192,10 +192,38 @@ jobs:
             target/release/bundle/SHA256SUMS-linux*.txt
           if-no-files-found: error
 
+  # Whether this exact commit already passed the Windows checks (windows-checks.yml, by SHA):
+  # then the release builds Windows without running the same tests a second time (29 minutes of
+  # a release spent re-proving a proven commit). Anything else — no such run, or not a success —
+  # and the release tests on Windows itself, as before. Never a check skipped that did not pass.
+  windows-proven:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      proven: ${{ steps.ask.outputs.proven }}
+    steps:
+      - id: ask
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          found=$(gh api "repos/${{ github.repository }}/actions/workflows/windows-checks.yml/runs?head_sha=$SHA&status=success&per_page=1" \
+            -q '.workflow_runs[0].head_sha // ""' 2>/dev/null || true)
+          if [ "$found" = "$SHA" ]; then
+            echo "Windows checks passed on $SHA: building without testing again"
+            echo "proven=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no successful Windows checks on $SHA: the release tests on Windows itself"
+            echo "proven=false" >> "$GITHUB_OUTPUT"
+          fi
+
   windows:
+    needs: windows-proven
     uses: ./.github/workflows/windows.yml
     with:
-      test_first: true
+      test_first: ${{ needs.windows-proven.outputs.proven != 'true' }}
       updater: true
     secrets:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

@@ -42,6 +42,8 @@ step "app is standalone" bash -c '! grep -q devUrl src-tauri/tauri.conf.json'
 
 # Only what is meant to be public is tracked (.github/published-paths says what that is).
 step "nothing stray is published" bash -c '! git ls-files | grep -vxE -f <(grep -vE "^(#|$)" .github/published-paths)'
+# Every workflow's expressions and inputs are what GitHub will accept (actionlint).
+step "workflows lint" actionlint
 # The Flatpak builds offline: every package the lockfiles name must be in its sources.
 step "flatpak sources current" python3 packaging/flatpak/sources-current.py
 
@@ -78,7 +80,11 @@ rust_lane() {
   if command -v gnome-keyring-daemon >/dev/null && command -v dbus-run-session >/dev/null; then
     step "real keyring"   real_keyring
   fi
-  step "rust tests"       cargo test --workspace --quiet
+  # nextest, as CI runs it (.config/nextest.toml): every core, hung tests stopped, slow ones named.
+  step "rust tests"       cargo nextest run --workspace --profile ci --hide-progress-bar
+  # Windows-only code compiles here too, so a change to shared code cannot break the Windows
+  # build unseen (cfg(windows) files are never compiled for Linux).
+  step "windows compiles" cargo check --workspace --tests --target x86_64-pc-windows-gnu
   return "$fail"
 }
 rust_lane >"$out/rust.log" 2>&1 &
