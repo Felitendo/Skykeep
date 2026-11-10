@@ -21,6 +21,8 @@ function moveCheckedOn(): boolean {
 import { api, messageOf, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
 import { RowMenu, type MenuEntry } from "../../components/RowMenu";
 import { autolink, openLinkAt } from "./links";
+import { linkAt, setLink } from "./linking";
+import { LinkBox, type LinkAsk } from "./LinkBox";
 
 /** `content` with every attachment taken out, a table's cells kept as text in its place. */
 function withoutAttachments(content: Fragment): Fragment {
@@ -452,6 +454,8 @@ export type EditorStatus = {
   quote: boolean;
   /** The text colour where the cursor is (1 purple … 5 blue), as Notes' colour menu ticks it. */
   colour: number | null;
+  /** The cursor or selection is in a link. */
+  link: boolean;
 };
 
 export type EditorHandle = {
@@ -473,6 +477,8 @@ export type EditorHandle = {
   focus: () => void;
   /** Hand over any change not yet reported, now. */
   flushChange: () => void;
+  /** Add Link (Command-K): the box for the selection, or for the link the cursor is in. */
+  openLink: () => void;
   /** What the editor holds this moment: its text and how it is set. */
   current: () => { text: string; runs: Run[] } | null;
   /** Where the cursor is, in UTF-16 units of `current().text`; null with no editor. */
@@ -696,6 +702,37 @@ const tab: Command = (state, dispatch) => {
  * Tab (or Shift-Tab), moves on to the next control instead, as a code editor lets the keys out.
  * Any other key after Escape and Tab indents again.
  */
+/**
+ * A shortcut acts on the selection the person sees. The editor learns of a selection made
+ * with the keys (Shift-Home, Shift-arrows) from the browser's `selectionchange`, which comes a
+ * moment after the key; a shortcut pressed straight after — Command-K, Command-B — read the
+ * selection from before, and a link meant for the words selected went in beside them. So
+ * before a Ctrl or Command shortcut on a character, the browser's selection is taken in first.
+ * Never before a key that moves the caret itself (Ctrl-Home, Ctrl-arrows): the editor takes the
+ * selection change after one it made as its own, and the browser's move was then lost.
+ */
+const selectionFirst = new Plugin({
+  props: {
+    handleKeyDown(view, event) {
+      if (!(event.ctrlKey || event.metaKey) || event.isComposing || event.key.length !== 1) return false;
+      const sel = (view.root as Document).getSelection?.();
+      if (!sel?.anchorNode || !sel.focusNode) return false;
+      if (!view.dom.contains(sel.anchorNode) || !view.dom.contains(sel.focusNode)) return false;
+      try {
+        const anchor = view.posAtDOM(sel.anchorNode, sel.anchorOffset);
+        const head = view.posAtDOM(sel.focusNode, sel.focusOffset);
+        const now = view.state.selection;
+        if (now instanceof TextSelection && (now.anchor !== anchor || now.head !== head)) {
+          view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, anchor, head)));
+        }
+      } catch {
+        // A selection the editor cannot place (inside an attachment's own controls): left be.
+      }
+      return false;
+    },
+  },
+});
+
 const released = new WeakSet<EditorView>();
 const letTabOut = new Plugin({
   props: {
@@ -732,6 +769,7 @@ function statusOf(state: EditorState): EditorStatus {
     quote: Boolean(p.attrs.quote),
     colour: ((empty ? marks : state.doc.resolve(from).marksAcross(state.doc.resolve(to)) ?? marks).find((m) => m.type === schema.marks.emphasis)
       ?.attrs.color as number | undefined) ?? null,
+    link: linkAt(state) !== null,
   };
 }
 
@@ -766,6 +804,40 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
    * the note is left, so nothing typed can be missed.
    */
   const later = useRef<number | null>(null);
+  /** The Add Link box, while it is open; `linking` is read by the editor's blur. */
+  const [linkAsk, setLinkAsk] = useState<LinkAsk | null>(null);
+  const linking = useRef(false);
+  const openLinkRef = useRef(() => {});
+  openLinkRef.current = () => {
+    const v = view.current;
+    if (!v || !v.editable) return;
+    const { state } = v;
+    const around = linkAt(state);
+    const foot = v.coordsAtPos(state.selection.to);
+    linking.current = true;
+    setLinkAsk({
+      at: { x: foot.left, top: foot.top, bottom: foot.bottom },
+      href: around?.href ?? null,
+      needsText: state.selection.empty && !around,
+    });
+  };
+  /** The box closed: back into the note, or — clicked away elsewhere — the note left then. */
+  const closeLink = (back: boolean) => {
+    linking.current = false;
+    setLinkAsk(null);
+    const v = view.current;
+    if (!v) return;
+    if (back) {
+      v.focus();
+      return;
+    }
+    window.setTimeout(() => {
+      if (!v.hasFocus()) {
+        if (later.current !== null) report();
+        callbacks.current.onBlur?.();
+      }
+    }, 0);
+  };
   const report = () => {
     if (later.current !== null) {
       window.clearTimeout(later.current);
@@ -789,6 +861,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     const state = EditorState.create({
       doc: toDoc(text, runs),
       plugins: [
+        selectionFirst,
         letTabOut,
         autolink,
         numbered,
@@ -798,6 +871,10 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           "Mod-z": undo,
           "Mod-Shift-z": redo,
           "Mod-y": redo,
+          "Mod-k": () => {
+            openLinkRef.current();
+            return true;
+          },
           "Mod-b": toggleMark(schema.marks.bold),
           "Mod-i": toggleMark(schema.marks.italic),
           "Mod-u": toggleMark(schema.marks.underline),
@@ -918,7 +995,8 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         click: (_vw, event) => openLinkAt(event),
         blur: () => {
           if (later.current !== null) report();
-          callbacks.current.onBlur?.();
+          // Into the Add Link box: still editing, and the note is left only once it closes.
+          if (!linking.current) callbacks.current.onBlur?.();
           return false;
         },
         // A checklist item's circle ticks it, as a tap does on the phone.
@@ -1074,6 +1152,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       if (keep) keep(tr.mapping);
       tell(next);
     },
+    openLink: () => openLinkRef.current(),
     focus: () => view.current?.focus(),
     flushChange: () => {
       if (later.current !== null) report();
@@ -1099,6 +1178,22 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     <>
       <div ref={host} className="note-rich-host" />
       {cellMenu && <RowMenu at={cellMenu.at} entries={cellMenu.entries} onClose={() => setCellMenu(null)} />}
+      {linkAsk && (
+        <LinkBox
+          ask={linkAsk}
+          onDone={(href, words) => {
+            const v = view.current;
+            closeLink(true);
+            if (v) setLink(href, words)(v.state, v.dispatch);
+          }}
+          onRemove={() => {
+            const v = view.current;
+            closeLink(true);
+            if (v) setLink(null)(v.state, v.dispatch);
+          }}
+          onCancel={closeLink}
+        />
+      )}
     </>
   );
 });

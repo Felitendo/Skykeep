@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useActiveRef } from "../../lib/screen";
-import { Check } from "lucide-react";
+import { Check, Link } from "lucide-react";
 import { inMenu, Portal } from "../../components/Portal";
 import type { EditorStatus } from "./NoteEditor";
 import { STYLE } from "./rich";
@@ -68,6 +68,7 @@ export function FormatPanel({
   onColour,
   onIndent,
   onMove,
+  onLink,
 }: {
   at: { x: number; y: number };
   status: EditorStatus | null;
@@ -78,6 +79,8 @@ export function FormatPanel({
   onColour: (colour: number | null) => void;
   onIndent: (by: 1 | -1) => void;
   onMove: (by: 1 | -1) => void;
+  /** Add Link, or edit the link the cursor is in. */
+  onLink: () => void;
 }) {
   const box = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ left: at.x, top: at.y });
@@ -135,6 +138,19 @@ export function FormatPanel({
               {glyph}
             </button>
           ))}
+          <button
+            type="button"
+            className="fp-mark fp-link"
+            aria-label={status?.link ? "Edit Link" : "Add Link"}
+            aria-pressed={Boolean(status?.link)}
+            title={`${status?.link ? "Edit Link" : "Add Link"} (Ctrl+K)`}
+            onClick={() => {
+              onClose();
+              onLink();
+            }}
+          >
+            <Link size={15} strokeWidth={2} aria-hidden="true" />
+          </button>
         </div>
         <div className="fp-marks fp-lines" role="group" aria-label="Line">
           {[

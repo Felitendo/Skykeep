@@ -22,7 +22,7 @@ export function useActiveRef() {
 }
 
 /** Whether a modal sheet is up (a confirmation, Keyboard Shortcuts, an import): the keys that
- * go anywhere — Ctrl+K, Ctrl+, — wait until it is answered, rather than taking the focus out
+ * go anywhere — Ctrl+, and Ctrl+/ — wait until it is answered, rather than taking the focus out
  * of it or changing the screen under it. */
 export function modalOpen(): boolean {
   for (const el of document.querySelectorAll('[aria-modal="true"]')) {
