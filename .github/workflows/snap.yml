@@ -47,8 +47,23 @@ jobs:
           mv snap/local/Skykeep_*_amd64.deb snap/local/skykeep.deb
           version=${TAG#v}
           sed -i "s/^version: .*/version: '$version'/" snap/snapcraft.yaml
+      # snapcraft fetches the stage-packages from archive.ubuntu.com, which now and then stops
+      # answering a runner: v0.1.16's Stores run failed on one .deb (connection timed out), and
+      # its Snap never went out. A second try runs in the same build instance and goes on from
+      # where the first one stopped; only a second failure fails the job.
       - uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
+        id: first
+        continue-on-error: true
+      - uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
+        id: again
+        if: steps.first.outcome == 'failure'
+      - name: The snap built
         id: build
+        env:
+          SNAP_FILE: ${{ steps.first.outputs.snap || steps.again.outputs.snap }}
+        run: |
+          [ -f "$SNAP_FILE" ] || { echo "::error::no snap was built"; exit 1; }
+          echo "snap=$SNAP_FILE" >> "$GITHUB_OUTPUT"
       - name: It installs and starts
         run: |
           sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
