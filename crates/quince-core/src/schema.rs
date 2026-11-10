@@ -1024,6 +1024,12 @@ pub const MIGRATIONS: &[&str] = &[
     ) STRICT;
     CREATE INDEX dav_resources_by_calendar ON dav_resources (calendar);
     "#,
+    // 56 — a reminder with a time and no zone (floating) was stored at the wrong moment: its
+    // clock time read as UTC, hours off everywhere west or east of it (#23). Read again whole,
+    // so each is stored by the corrected reader.
+    r#"
+    UPDATE sync_state SET token = NULL WHERE service = 'reminders';
+    "#,
 ];
 
 /// Migrations that need more than SQL, run in the same transaction as the one numbered.

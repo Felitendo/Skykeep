@@ -926,6 +926,46 @@ impl Library {
         Ok(())
     }
 
+    /// Floating reminders — a time and no zone — made to ring on `zone`'s clock.
+    ///
+    /// Apple keeps a floating time as clock time written as UTC (#23); the reader stores it as
+    /// the moment that clock time is on this computer. When the computer's zone changes (a
+    /// trip, a setting), eight in the evening must still be eight in the evening, so each is
+    /// read again from Apple's own `DueDate` in its record. Only rows whose moment moved are
+    /// written. Run with every Reminders pass, before changes still on their way to Apple are
+    /// laid back over it, so a time just set here is never overwritten. Answers how many moved.
+    pub fn refloat_reminders(&mut self, zone: &jiff::tz::TimeZone) -> Result<usize> {
+        let tx = self.conn.savepoint()?;
+        let mut moved = 0;
+        {
+            let mut stmt = tx.prepare(
+                "SELECT guid, due_at, json_extract(raw, '$.fields.DueDate.value') FROM reminders
+                  WHERE due_at IS NOT NULL AND all_day = 0
+                    AND (timezone IS NULL OR timezone = '') AND json_valid(raw)",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut update = tx.prepare("UPDATE reminders SET due_at = ?2 WHERE guid = ?1")?;
+            for (guid, stored, kept_ms) in rows {
+                let Some(kept_ms) = kept_ms else { continue };
+                let due = crate::calendar::instant_of(kept_ms.div_euclid(1000), zone);
+                if due != stored {
+                    update.execute(params![guid, due])?;
+                    moved += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(moved)
+    }
+
     pub fn put_reminders(&mut self, reminders: &[Reminder]) -> Result<()> {
         let tx = self.conn.savepoint()?;
         {
@@ -1393,6 +1433,51 @@ mod smart_tests {
             section_guid: None,
             all_day: false,
         }
+    }
+
+    /// #23: a floating reminder rings at its clock time on this computer's clock, and moves
+    /// with that clock when its zone changes; one set in a zone, or all-day, never moves.
+    #[test]
+    fn a_floating_reminder_follows_the_clock_it_is_read_on() {
+        let mut lib = seeded();
+        // 20:00 kept as Apple keeps a floating time (as UTC), and a zoned 20:00 in Chicago.
+        let kept: i64 = 1_794_254_400;
+        let raw = |zone: Option<&str>, all_day: i64| {
+            let mut f = serde_json::json!({ "DueDate": { "type": "TIMESTAMP", "value": kept * 1000 },
+                                            "AllDay": { "value": all_day } });
+            if let Some(z) = zone {
+                f["TimeZone"] = serde_json::json!({ "value": z });
+            }
+            Some(serde_json::json!({ "fields": f }).to_string())
+        };
+        let chicago = jiff::tz::TimeZone::get("America/Chicago").unwrap();
+        let tokyo = jiff::tz::TimeZone::get("Asia/Tokyo").unwrap();
+        let at_chicago = crate::calendar::instant_of(kept, &chicago);
+        lib.put_reminders(&[
+            Reminder {
+                raw: raw(None, 0),
+                ..reminder("floating", Some(at_chicago), false, None)
+            },
+            Reminder {
+                raw: raw(Some("America/Chicago"), 0),
+                timezone: Some("America/Chicago".into()),
+                ..reminder("zoned", Some(kept), false, None)
+            },
+            Reminder {
+                raw: raw(None, 1),
+                all_day: true,
+                ..reminder("day", Some(kept), false, None)
+            },
+        ])
+        .unwrap();
+        let due = |lib: &Library, g: &str| lib.reminder(g).unwrap().unwrap().due_at;
+        // Read on Chicago's clock already: nothing moves.
+        assert_eq!(lib.refloat_reminders(&chicago).unwrap(), 0);
+        // The computer now in Tokyo: eight in the evening there.
+        assert_eq!(lib.refloat_reminders(&tokyo).unwrap(), 1);
+        assert_eq!(due(&lib, "floating"), Some(kept - 9 * 3600));
+        assert_eq!(due(&lib, "zoned"), Some(kept));
+        assert_eq!(due(&lib, "day"), Some(kept));
     }
 
     /// An all-day reminder is in Today by its date, whatever the zone: today's is, tomorrow's

@@ -403,6 +403,27 @@ pub mod more;
 const CONTAINER: &str = "com.apple.reminders";
 const ZONE: &str = "Reminders";
 
+/// When a reminder is due, as a moment (seconds).
+///
+/// A dated reminder names the zone its time was set in, and its `DueDate` is that moment. One
+/// with no zone is floating — eight in the evening wherever the person is — and Apple keeps its
+/// clock time as though it were UTC, as it keeps an all-day date at UTC midnight. Read as a
+/// moment, eight in the evening in Chicago showed and rang at two in the afternoon (#23). It is
+/// read on this computer's clock, as a floating alarm's trigger is (`moment_of`), and read again
+/// when that clock's zone changes ([`quince_core::Library::refloat_reminders`]). All-day dates
+/// stay as Apple keeps them: the screens read those as days.
+fn due_seconds(record: &Value) -> Option<i64> {
+    let due = field::timestamp_seconds(record, "DueDate")?;
+    let zoned = field::string(record, "TimeZone").is_some_and(|z| !z.is_empty());
+    if zoned || field::flag(record, "AllDay") {
+        return Some(due);
+    }
+    Some(quince_core::calendar::instant_of(
+        due,
+        &jiff::tz::TimeZone::system(),
+    ))
+}
+
 /// Turn one CloudKit `Reminder` record into a reminder.
 ///
 /// Returns `None` for records that are deleted or carry no identity, so tombstones — which
@@ -422,7 +443,7 @@ fn reminder_from_record(record: &Value) -> Option<Reminder> {
         .pointer("/fields/RecurrenceRuleIDs/value")
         .and_then(Value::as_array)
         .is_some_and(|ids| !ids.is_empty());
-    let due_at = field::timestamp_seconds(record, "DueDate");
+    let due_at = due_seconds(record);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
@@ -1114,6 +1135,8 @@ fn apply_cloudkit_whole(
     }
     // After the prune above, so a reminder gone takes its details with it in this same pass.
     library.put_reminder_details(&details)?;
+    // Floating times stored on an earlier pass, on a clock whose zone has since changed.
+    library.refloat_reminders(&jiff::tz::TimeZone::system())?;
     library.mark_synced("reminders", token.as_deref())?;
     Ok((lists.len(), reminders.len(), token))
 }
@@ -2129,7 +2152,7 @@ fn tick_settled(current: &Value, repeats: bool, done: bool, base: &TickBase, us:
     }
     // A repeating reminder's last tick, sent before with its answer lost (or the day ticked on
     // another device), has moved it on from the date it was ticked at: not sent twice.
-    if repeats && done && field::timestamp_seconds(current, "DueDate") != base.from_due {
+    if repeats && done && due_seconds(current) != base.from_due {
         return true;
     }
     match (completed_token(current), base.completed_writes) {
@@ -2167,7 +2190,7 @@ pub async fn advance_cloudkit_once(
 fn advanced_already(current: &Value, from_due: Option<i64>) -> bool {
     field::flag(current, "Deleted")
         || field::flag(current, "Completed")
-        || field::timestamp_seconds(current, "DueDate") != from_due
+        || due_seconds(current) != from_due
 }
 
 /// Tick a CloudKit reminder off, or put it back.
@@ -2221,7 +2244,7 @@ pub async fn set_completed_cloudkit(
             .and_then(|b| quince_core::reminders::days_of_week_from(&b))
             .unwrap_or_default();
         let mut at_apple = reminder.clone();
-        at_apple.due_at = field::timestamp_seconds(&current, "DueDate").or(reminder.due_at);
+        at_apple.due_at = due_seconds(&current).or(reminder.due_at);
         if at_apple.tick_ends_series_on(end, &days, now_millis() / 1000) {
             return complete_once(
                 &client,
@@ -2311,6 +2334,7 @@ mod tick_tests {
                 "Completed": { "value": i64::from(completed) },
                 "Deleted": { "value": 0 },
                 "DueDate": { "value": due_ms },
+                "TimeZone": { "value": "America/New_York" },
                 // Stamped by a rename sent from here just ahead of the tick: far "after" it.
                 "LastModifiedDate": { "value": 4_102_444_800_000_i64 },
                 "ResolutionTokenMap": { "value": map.to_string() },
@@ -2687,6 +2711,7 @@ mod recurrence_tests {
             "fields": {
                 "Completed": { "type": "NUMBER_INT64", "value": i64::from(completed) },
                 "DueDate": { "type": "TIMESTAMP", "value": due_ms },
+                "TimeZone": { "value": "America/New_York" },
                 "List": { "type": "REFERENCE", "value": { "recordName": "List/a" } },
                 "RecurrenceRuleIDs": if recurring {
                     json!({ "type": "STRING_LIST", "value": ["rule-1"] })
@@ -2735,6 +2760,35 @@ mod recurrence_tests {
             (due - (now() + 7200)).abs() <= 2,
             "due date must survive the round trip"
         );
+    }
+
+    /// #23: a time with no zone is clock time, kept by Apple as though UTC. Eight in the
+    /// evening is eight in the evening in Chicago, not two in the afternoon.
+    #[test]
+    fn a_floating_time_is_that_clock_time_here() {
+        let chicago = jiff::tz::TimeZone::get("America/Chicago").unwrap();
+        // 9 Nov 2026 20:00 as Apple keeps it floating, and 20:00 in Chicago (CST, UTC-6).
+        let kept = 1_794_254_400;
+        assert_eq!(
+            quince_core::calendar::instant_of(kept, &chicago),
+            kept + 6 * 3600
+        );
+        let with = |fields: Value| json!({ "recordName": "Reminder/F", "fields": fields });
+        let ms = json!({ "type": "TIMESTAMP", "value": kept * 1000 });
+        // Floating: read on this computer's clock, whatever zone it is in.
+        let floating = with(json!({ "DueDate": ms, "AllDay": { "value": 0 } }));
+        let here = Some(quince_core::calendar::instant_of(
+            kept,
+            &jiff::tz::TimeZone::system(),
+        ));
+        assert_eq!(due_seconds(&floating), here);
+        // A named zone: already the moment. All-day: the day as Apple keeps it.
+        let zoned = with(json!({ "DueDate": ms, "TimeZone": { "value": "America/Chicago" } }));
+        assert_eq!(due_seconds(&zoned), Some(kept));
+        let day = with(json!({ "DueDate": ms, "AllDay": { "value": 1 } }));
+        assert_eq!(due_seconds(&day), Some(kept));
+        // A tick taken from the stored (corrected) time is not mistaken for one already made.
+        assert!(!advanced_already(&floating, here));
     }
 }
 
@@ -3798,6 +3852,7 @@ mod recurring_tick_tests {
                 "fields": {
                     "RecurrenceRuleIDs": { "type": "STRING_LIST", "value": ["RULE-1"] },
                     "DueDate": { "type": "TIMESTAMP", "value": due_ms },
+                    "TimeZone": { "value": "America/New_York" },
                     "LastModifiedDate": { "type": "TIMESTAMP", "value": 1_000_000 },
                 }
             }] })),
