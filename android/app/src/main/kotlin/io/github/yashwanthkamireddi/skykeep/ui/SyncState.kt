@@ -18,7 +18,7 @@ import io.github.yashwanthkamireddi.skykeep.sync.ACCOUNT_TYPE
 import io.github.yashwanthkamireddi.skykeep.sync.Outcome
 
 /** Contacts and Calendar, the two things the phone's own apps show from iCloud. */
-val AUTHORITIES = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.REMINDERS_AUTHORITY)
+val AUTHORITIES = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.REMINDERS_AUTHORITY, io.github.yashwanthkamireddi.skykeep.sync.NOTES_AUTHORITY)
 
 /** The Skykeep account on this phone, once the first sync has made it. */
 fun phoneAccount(context: Context): Account? =

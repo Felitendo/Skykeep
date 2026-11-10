@@ -60,6 +60,17 @@
             <meta-data android:name="android.content.SyncAdapter"
                 android:resource="@xml/sync_reminders" />
         </service>
+        <!-- Notes, synced with the account the same way (NotesSync.kt). -->
+        <provider android:name=".sync.NotesProvider"
+            android:authorities="io.github.yashwanthkamireddi.skykeep.notes"
+            android:exported="false" android:syncable="true" />
+        <service android:name=".sync.NotesSyncService" android:exported="true">
+            <intent-filter>
+                <action android:name="android.content.SyncAdapter" />
+            </intent-filter>
+            <meta-data android:name="android.content.SyncAdapter"
+                android:resource="@xml/sync_notes" />
+        </service>
         <receiver android:name=".sync.ReminderAlertReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

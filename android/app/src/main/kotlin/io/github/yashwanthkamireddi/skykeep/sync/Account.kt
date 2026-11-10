@@ -17,8 +17,8 @@ const val SYNC_EVERY_SECONDS = 60L * 60
 fun syncEvery(context: Context): Long =
   context.getSharedPreferences("settings", Context.MODE_PRIVATE).getLong("syncEvery", SYNC_EVERY_SECONDS)
 
-/** What the account syncs: Contacts, Calendar, and Reminders (the engine's own library). */
-val SYNCED = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY, REMINDERS_AUTHORITY)
+/** What the account syncs: Contacts, Calendar, and Reminders and Notes (the engine's own library). */
+val SYNCED = listOf(ContactsContract.AUTHORITY, CalendarContract.AUTHORITY, REMINDERS_AUTHORITY, NOTES_AUTHORITY)
 
 /** A new interval: kept, and given to Android for everything the account syncs. */
 fun setSyncEvery(context: Context, account: Account?, seconds: Long) {

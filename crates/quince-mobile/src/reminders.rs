@@ -131,7 +131,7 @@ fn end_of_today() -> i64 {
 impl Account {
     /// The signed-in account's library: its own folder, so two accounts' reminders never mix.
     /// Opened once, and again only for another account.
-    fn library(&self) -> Result<(Arc<LibraryLock>, String), EngineError> {
+    pub(crate) fn library(&self) -> Result<(Arc<LibraryLock>, String), EngineError> {
         let account = {
             let c = self.client.lock().map_err(failed)?;
             quince_sync::queue::asked_as(&c.service_params())
