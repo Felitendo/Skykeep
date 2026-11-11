@@ -1,5 +1,5 @@
 // German: a desktop set to German (Germany, Austria or Switzerland) gets the interface in German
-// with nothing asked: the launcher and Settings, sign-in and the code screen. Every German line
+// with nothing asked: the launcher and Settings, sign-in, the code screen and Notes. Every German line
 // fits where the English one did, sizes take the system's decimal comma, and choosing English
 // in Settings turns the window English at once, Automatic German again.
 //
@@ -12,18 +12,22 @@ const b = await engine.launch();
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${engineName} ${m}`); if (!p) failures++; };
 
-/** Text a box cuts off: wider than the box that hides what doesn't fit. */
-const clipped = (page) =>
-  page.evaluate(() =>
+/**
+ * Text a box cuts off: wider than the box that hides what doesn't fit. `skip` is what is cut on
+ * purpose, whatever the language: a note's title in its row, a folder's own name.
+ */
+const clipped = (page, skip = "") =>
+  page.evaluate((skip) =>
     [...document.querySelectorAll("body *")]
       .filter((el) => {
         if (!el.getClientRects().length || !el.textContent.trim()) return false;
+        if (skip && el.closest(skip)) return false;
         const cs = getComputedStyle(el);
         const hides = cs.overflowX === "hidden" || cs.overflowX === "clip" || cs.textOverflow === "ellipsis";
         return hides && el.scrollWidth > el.clientWidth + 1;
       })
       .map((el) => el.textContent.trim().slice(0, 60)),
-  );
+  skip);
 
 async function open(locale, screen, options = {}) {
   const ctx = await b.newContext({ viewport: options.viewport ?? { width: 1180, height: 820 }, locale });
@@ -113,6 +117,89 @@ for (const locale of ["de-AT", "de-CH"]) {
   ok((await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))) === "Ziffer 1", "and the first box, which has focus, too");
   const cut = await clipped(page);
   ok(cut.length === 0, `no code-screen line is cut off${cut.length ? `  [${cut.join(" | ")}]` : ""}`);
+  await ctx.close();
+}
+
+// Notes: its folders, list, note bar, Aa panel and a locked note, at a wide window and a narrow
+// one, with nothing in it cut off.
+for (const [w, h] of [[1180, 820], [820, 640]]) {
+  const ctx = await b.newContext({ viewport: { width: w, height: h }, locale: "de-DE" });
+  await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, notesFixture: true });
+  await ctx.addInitScript(() => { window.__lockedNote = true; });
+  const page = await ctx.newPage();
+  page.on("pageerror", (e) => ok(false, `page error: ${e.message}`));
+  await page.goto(`${BASE}/?app=notes`, { waitUntil: "networkidle" });
+  await page.locator(".notes").waitFor();
+  await page.waitForTimeout(500);
+  const notes = page.locator(".notes");
+  if (w === 1180) {
+    ok(await page.getByRole("button", { name: /Alle iCloud-Notizen/ }).first().isVisible(), `${w}: the folder column is German`);
+    ok(await page.getByRole("button", { name: "Neuer Ordner" }).isVisible(), `${w}: and so is its New Folder`);
+  }
+  ok(/\d Notizen/.test(await page.locator(".pane-count").first().innerText()), `${w}: the list counts its notes in German`);
+  ok(await page.locator(".notes-section", { hasText: "Fixiert" }).isVisible(), `${w}: a pinned note sits under Fixiert`);
+  ok((await page.locator(".note-row", { hasText: "Bank" }).innerText()).includes("Gesperrt"), `${w}: a locked note says Gesperrt in its row`);
+  ok((await page.getByRole("searchbox", { name: "Notizen durchsuchen" }).getAttribute("placeholder")) === "Suchen", `${w}: the search field is German`);
+
+  await page.getByRole("button", { name: "Darstellungsoptionen" }).click();
+  ok(await page.getByRole("menuitemcheckbox", { name: "Bearbeitungsdatum" }).or(page.getByRole("menuitemradio", { name: "Bearbeitungsdatum" })).or(page.getByRole("menuitem", { name: "Bearbeitungsdatum" })).first().isVisible(), `${w}: View Options is German`);
+  await page.keyboard.press("Escape");
+
+  await page.locator(".note-row", { hasText: "Curtains" }).click();
+  await page.waitForTimeout(400);
+  for (const name of ["Format", "Checkliste erstellen", "Als Markdown exportieren", "Notiz fixieren", "Löschen"])
+    ok(await page.getByRole("button", { name, exact: true }).first().isVisible(), `${w}: the note bar's ${name} is German`);
+  // A note's title, a folder's name, the account's status line: theirs, cut to fit in any language.
+  const theirs = ".note-row, .notes-folder-name, .toast-host, .note-editor, .compact-back, .picker-value, .account-status";
+  let cut = await clipped(page, theirs);
+  ok(cut.length === 0, `${w}: nothing in Notes is cut off${cut.length ? `  [${cut.join(" | ")}]` : ""}`);
+
+  await page.getByRole("button", { name: "Format", exact: true }).first().click();
+  const panel = page.getByRole("dialog", { name: "Format" });
+  await panel.waitFor();
+  for (const name of ["Fett", "Kursiv", "Unterstrichen", "Durchgestrichen", "Einzug vergrößern", "Blockzitat"])
+    ok(await panel.getByRole("button", { name, exact: true }).isVisible(), `${w}: the Aa panel's ${name} is German`);
+  for (const name of ["Titel", "Überschrift", "Unterüberschrift", "Textkörper", "Nummerierte Liste"])
+    ok(await panel.getByRole("menuitemradio", { name, exact: true }).isVisible(), `${w}: and its ${name} style`);
+  const spill = await panel.evaluate((p) => {
+    const box = p.getBoundingClientRect();
+    return [...p.querySelectorAll("button, span")].filter((el) => el.getClientRects().length && (el.getBoundingClientRect().right > box.right + 1 || el.scrollWidth > el.clientWidth + 1)).map((el) => el.textContent.trim());
+  });
+  cut = await clipped(page, theirs);
+  ok(spill.length === 0 && cut.length === 0, `${w}: every German word fits the Aa panel${spill.length || cut.length ? `  [${[...spill, ...cut].join(" | ")}]` : ""}`);
+  await page.keyboard.press("Escape");
+
+  await page.locator(".note-row", { hasText: "Bank" }).click();
+  await page.waitForTimeout(400);
+  ok(await page.getByRole("heading", { name: "Diese Notiz ist gesperrt" }).isVisible(), `${w}: a locked note says so in German`);
+  ok(await page.getByRole("button", { name: "Entsperren" }).isVisible() && await page.getByRole("button", { name: "Merkhilfe zeigen" }).isVisible(), `${w}: and offers Entsperren and its Merkhilfe`);
+
+  if (w === 1180) {
+    // Searching for nothing there is says so; deleting asks first, in German.
+    await page.getByRole("searchbox", { name: "Notizen durchsuchen" }).fill("zzqx");
+    await page.waitForTimeout(400);
+    ok(await page.getByText("Keine Treffer für „zzqx“.").isVisible(), "a search with no match says so in German");
+    await page.getByRole("button", { name: "Suche löschen" }).click();
+    await page.locator(".note-row", { hasText: "Curtains" }).click();
+    await page.waitForTimeout(300);
+    // From the keyboard it asks first, as Notes does; the button deletes at once.
+    await page.keyboard.press("Control+Delete");
+    const sheet = page.locator(".confirm").last();
+    await sheet.waitFor({ timeout: 3000 }).catch(() => {});
+    const asked = await sheet.innerText().catch(() => "");
+    ok(asked.includes("„Curtains“ löschen?") && asked.includes("Zuletzt gelöscht"), `deleting asks first, in German  [${asked.replace(/\n/g, " / ")}]`);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    const before = await page.evaluate(() => (window.__noteDeletes ?? []).length);
+    await page.getByRole("button", { name: "Löschen", exact: true }).first().click();
+    await page.waitForTimeout(400);
+    ok((await page.evaluate(() => (window.__noteDeletes ?? []).length)) > before, "and the note bar's Löschen deletes");
+    // A folder's menu.
+    const folder = page.locator(".notes-folder-row", { hasText: "Notes" }).first();
+    await folder.click({ button: "right" });
+    ok(await page.getByRole("menuitem", { name: "Ordner umbenennen" }).isVisible(), "a folder's menu is German");
+    await page.keyboard.press("Escape");
+  }
   await ctx.close();
 }
 
