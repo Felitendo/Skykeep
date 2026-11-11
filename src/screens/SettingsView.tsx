@@ -3,7 +3,7 @@ import { onWindows } from "../lib/platform";
 import { ConfirmSheet } from "../components/Confirm";
 import { toast, toastSaved, useErrorToast } from "../components/Toast";
 import { Progress } from "../components/Spinner";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { pickOpen } from "../lib/pick";
@@ -36,6 +36,9 @@ import { AccountAvatar, NOT_KEPT, useNotKept } from "../components/Account";
 import { Picker } from "../components/Picker";
 import { localeFirstDay, setWeekStart, weekStartChoice, type WeekStartChoice } from "./calendar/model";
 import { icloudSize } from "../lib/icloudSize";
+
+// Its licence texts are some 400 kB: loaded when the sheet is first opened, not with Settings.
+const LicencesSheet = lazy(() => import("../components/LicencesSheet").then((m) => ({ default: m.LicencesSheet })));
 
 /** The Drive folder's line when it is up: up to date, uploading, or why something is waiting. */
 function folderState(f: DriveFolder): string {
@@ -467,6 +470,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
   const [photosBusy, setPhotosBusy] = useState(false);
   const [login, setLogin] = useState<LoginItem | null>(null);
   const [loginBusy, setLoginBusy] = useState(false);
+  const [licences, setLicences] = useState(false);
   const { report, syncing, refresh } = useSync();
   const notKept = useNotKept();
 
@@ -799,6 +803,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
       </div>
       <footer className="dash-foot">
         <span>Skykeep {version ?? ""}</span>
+        <span>Copyright (C) 2026 Yashwanth Kamireddi. Free software under the GPL-3.0, with no warranty. Not affiliated with Apple.</span>
             <button
               className="quiet"
               aria-label="Save Diagnostic Report"
@@ -811,7 +816,15 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             >
               Save Diagnostic Report
             </button>
+            <button className="quiet" onClick={() => setLicences(true)}>
+              Open-Source Licences
+            </button>
       </footer>
+        {licences && (
+          <Suspense fallback={null}>
+            <LicencesSheet onClose={() => setLicences(false)} />
+          </Suspense>
+        )}
         {signingOut && (
           <SignOutSheet
             unsent={signingOut}
@@ -936,8 +949,8 @@ function NetworkNote() {
   return (
     <p className="settings-note">
       {reach.updates.length > 0
-        ? "Skykeep connects to Apple for your iCloud, to calendars you subscribe to, and to GitHub for its own updates. No Skykeep account, no analytics."
-        : "Skykeep connects to Apple for your iCloud, and to calendars you subscribe to. No Skykeep account, no analytics."}
+        ? "Skykeep connects to Apple for your iCloud, to calendars you subscribe to and calendar accounts you add, and to GitHub for its own updates. No Skykeep account, no analytics."
+        : "Skykeep connects to Apple for your iCloud, and to calendars you subscribe to and calendar accounts you add. No Skykeep account, no analytics."}
     </p>
   );
 }

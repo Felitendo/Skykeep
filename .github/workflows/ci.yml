@@ -1,12 +1,14 @@
-# Every push and pull request to main, on Linux only (the repository is private, and Actions
-# minutes on it are counted):
+# Every push and pull request to main, on Linux:
+#   published — what the repository tracks, the workflows' wiring, the Flatpak's sources, and
+#          no secret in any commit;
 #   rust — cargo fmt, clippy with warnings as errors, and the real tests (libraries, the app
 #          and test files; the probe examples are live tools, not tests);
+#   android — the engine for the phone, the app built and its unit tests run (job below);
 #   web  — npm ci, the type check, the production build, the model tests, and a smoke run of
 #          the key interface suites in Chromium against `vite preview`.
-# The two run side by side. A newer push to the same branch or pull request cancels the older
-# run. Windows is proven by windows.yml, by hand or by a release. A branch can be run by hand
-# (Actions → CI → Run workflow) before it goes to main.
+# The jobs run side by side. A pull request's newer push cancels its older run. Windows is
+# proven by windows-checks.yml on every push to main, and by windows.yml by hand or for a
+# release. A branch can be run by hand (Actions → CI → Run workflow) before it goes to main.
 name: CI
 
 on:
@@ -82,6 +84,19 @@ jobs:
             | grep " gitleaks_${GITLEAKS}_linux_x64.tar.gz$" | sed 's/ .*/  gl.tgz/' | sha256sum -c -
           tar -xzf gl.tgz gitleaks
           ./gitleaks git --no-banner --redact .
+
+  # Every Rust dependency against deny.toml (cargo-deny): RustSec advisories (vulnerabilities,
+  # unsound or unmaintained crates, yanked versions), licences, duplicate versions, and that
+  # every crate comes from crates.io. Reads Cargo.lock and the advisory database; builds nothing.
+  supply-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check advisories bans licenses sources
 
   # On x86_64 and on 64-bit ARM: Apple Silicon Macs run Linux (Asahi, Omarchy) on aarch64.
   rust:
@@ -159,6 +174,54 @@ jobs:
           sudo mkdir -p /mnt/skykeep-full
           sudo mount -t tmpfs -o size=1m,uid=$(id -u) tmpfs /mnt/skykeep-full
           SKYKEEP_FULL_DISK=/mnt/skykeep-full cargo test --locked -p quince-app real_full_disk -- --ignored
+
+  # The Android app, which nothing else here builds: the engine for both ABIs (cargo-ndk) and its
+  # Kotlin bindings made from that same code, the app and its device-test APK compiled, the JVM
+  # unit tests run, and every engine library checked for 16 KB pages (Android 15+ devices with
+  # 16 KB pages refuse a library aligned for 4 KB). The device tests themselves need an
+  # emulator signed in to iCloud: they run locally (`am instrument`, never Gradle's connected
+  # tasks, which uninstall the app).
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      # Added when the bindings came from a host build of quince-mobile, which linked the desktop
+      # media libraries quince-media uses on Linux. They now come from crates/uniffi-bindgen, a
+      # crate of its own that builds nothing of the engine for this machine, so this step may no
+      # longer be needed; drop it once a run without it is green.
+      - name: Host libraries for the bindings build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libheif-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      # The repository's own Rust (rust-toolchain.toml), with the two phone targets added to it.
+      - run: rustup target add aarch64-linux-android x86_64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target-android"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo install cargo-ndk --version 4.1.2 --locked
+      # The engine's crate licences are written into the app at build time (about.toml).
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-about@0.9.3
+      - name: The app, its device tests and its unit tests
+        working-directory: android
+        # The runner's newest NDK (its own variable, not the workflow's env context).
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest testDebugUnitTest
+      - name: Engine libraries aligned for 16 KB pages
+        run: |
+          for so in android/app/src/main/jniLibs/*/*.so; do
+            bad=$(readelf -lW "$so" | awk '$1 == "LOAD" && $NF != "0x4000" && $NF != "0x10000" { print $NF }')
+            if [ -n "$bad" ]; then echo "::error::$so has LOAD segments aligned to $bad, not 16 KB"; exit 1; fi
+            echo "$so: 16 KB"
+          done
 
   web:
     runs-on: ubuntu-24.04

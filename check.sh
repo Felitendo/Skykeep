@@ -46,6 +46,17 @@ step "nothing stray is published" bash -c '! git ls-files | grep -vxE -f <(grep 
 step "workflows lint" actionlint -shellcheck=
 # The Flatpak builds offline: every package the lockfiles name must be in its sources.
 step "flatpak sources current" python3 packaging/flatpak/sources-current.py
+# The open-source licences the app shows (src/licences.json) are the ones the lockfiles give now.
+# Writing them needs cargo-about; without it this says so and passes, and the release checks.
+licences_current() {
+  if ! cargo about --version >/dev/null 2>&1; then
+    echo "cargo-about is not installed, so the licence list was not checked (cargo install --locked cargo-about@0.9.3)"
+    return 0
+  fi
+  npm run --silent licences && git diff --exit-code --stat src/licences.json \
+    || { echo "src/licences.json is out of date: run npm run licences and commit"; return 1; }
+}
+step "licence list current" licences_current
 
 
 # Every suite CI runs is one this gate runs too, so a suite renamed or removed here can't
@@ -119,12 +130,18 @@ pooled "launcher status"    node .uiverify/launcher-status.mjs
 pooled "webkit: launcher status" env ENGINE=webkit node .uiverify/launcher-status.mjs
 pooled "webkit: notes add link" env ENGINE=webkit node .uiverify/notes-add-link.mjs
 pooled "updates"          node .uiverify/updates.mjs
+pooled "licences"         node .uiverify/licences.mjs
+pooled "webkit: licences" env ENGINE=webkit node .uiverify/licences.mjs
 pooled "ui renders"       node .uiverify/shots.mjs
 pooled "nav behaviour"    node .uiverify/assert.mjs
 pooled "accessibility"    node .uiverify/a11y.mjs
 pooled "keyboard only"    node .uiverify/keyboard.mjs
 pooled "somewhere else"   node .uiverify/elsewhere.mjs
 pooled "writing a note"   node .uiverify/notes-compose.mjs
+pooled "notes saved on quit" node .uiverify/notes-flush.mjs
+pooled "webkit: notes saved on quit" env ENGINE=webkit node .uiverify/notes-flush.mjs
+pooled "photos screen quiet" node .uiverify/photos-screen-quiet.mjs
+pooled "webkit: photos screen quiet" env ENGINE=webkit node .uiverify/photos-screen-quiet.mjs
 pooled "deleting a note"  node .uiverify/notes-trash.mjs
 pooled "pinning a note"   node .uiverify/notes-pin.mjs
 pooled "a long note"      node .uiverify/notes-long.mjs
@@ -177,6 +194,10 @@ pooled "notes no text"     node .uiverify/notes-no-text.mjs
 pooled "empty today"     node .uiverify/reminders-empty.mjs
 pooled "calendar keys"   node .uiverify/calendar-keys.mjs
 pooled "reminders instant" node .uiverify/reminders-instant.mjs
+pooled "app window quiet" node .uiverify/app-window-quiet.mjs
+pooled "webkit: app window quiet" env ENGINE=webkit node .uiverify/app-window-quiet.mjs
+pooled "reminders current" node .uiverify/reminders-current.mjs
+pooled "webkit: reminders current" env ENGINE=webkit node .uiverify/reminders-current.mjs
 pooled "calendar instant"  node .uiverify/calendar-instant.mjs
 pooled "notes instant"     node .uiverify/notes-instant.mjs
 pooled "drive sort"        node .uiverify/drive-sort.mjs
@@ -195,6 +216,7 @@ pooled "drive keys"        node .uiverify/drive-keys.mjs
 pooled "drive drag"        node .uiverify/drive-drag.mjs
 pooled "drive recents"     node .uiverify/drive-recents.mjs
 pooled "drive gone folder" node .uiverify/drive-gone.mjs
+pooled "drive move back"   node .uiverify/drive-move-back.mjs
 pooled "settings"          node .uiverify/settings.mjs
 pooled "calendar day steps" node .uiverify/calendar-daystep.mjs
 pooled "pending writes"    node .uiverify/pending-writes.mjs
@@ -250,6 +272,9 @@ pooled "menus"             node .uiverify/menus.mjs
 pooled "webkit: menus"     env ENGINE=webkit node .uiverify/menus.mjs
 pooled "contacts vcard"    node .uiverify/contacts-vcard.mjs
 pooled "contacts select"   node .uiverify/contacts-select.mjs
+pooled "contacts search"   node .uiverify/contacts-search.mjs
+pooled "webkit: contacts search" env ENGINE=webkit node .uiverify/contacts-search.mjs
+pooled "contacts instant"  node .uiverify/contacts-instant.mjs
 pooled "calendar alerts"   node .uiverify/calendar-alerts.mjs
 pooled "calendar repeat"   node .uiverify/calendar-repeat.mjs
 pooled "reminder add/done"  node .uiverify/reminders-add-done.mjs

@@ -119,11 +119,23 @@ object SignOut {
 
   /**
    * The account removed from the phone: Android takes its contacts and calendars with it. What
-   * the person chose to keep was copied first ([keepCopy]). The sync outcomes go too.
+   * the person chose to keep was copied first ([keepCopy]). The sync outcomes, photo backup's
+   * settings, the reminder alerts and the cached pictures and copies go too.
    */
   fun removeAccount(context: Context, account: Account): Boolean {
+    // Its background work stops first: no sync, backup or send runs for an account leaving.
+    Work.tagOf(context, account)?.let { Work.cancelAll(context, it) }
     val gone = AccountManager.get(context).removeAccountExplicitly(account)
-    context.getSharedPreferences("sync-outcome", Context.MODE_PRIVATE).edit().clear().apply()
+    // What belonged to the account's session goes with it, Keep a Copy or not: photo backup's
+    // choice and place (the next account never uploads this phone's photos unless it turns
+    // backup on itself), and the reminders said or still due.
+    for (prefs in listOf("sync-outcome", "photo-backup")) {
+      context.getSharedPreferences(prefs, Context.MODE_PRIVATE).edit().clear().commit()
+    }
+    ReminderAlerts.stop(context)
+    // Cached pictures (Hidden ones included), Drive copies and shared copies are the session's
+    // too: re-fetched by whoever signs in next, never left readable from this one.
+    for (dir in listOf("photos", "drive", "share", "send", "drive-new", "drive-thumbs", "drive-parts")) java.io.File(context.cacheDir, dir).deleteRecursively()
     return gone
   }
 
@@ -142,4 +154,19 @@ object SignOut {
     .appendQueryParameter(Calendars.ACCOUNT_NAME, a.name)
     .appendQueryParameter(Calendars.ACCOUNT_TYPE, a.type)
     .build()
+
+  /**
+   * Remove from Phone: what Skykeep itself keeps for the account deleted with it, beside the
+   * engine's library (Account.forgetAccount): the pictures and files fetched (photos, Drive
+   * copies, shares), the last syncs' counts and the backup's place. The phone's own contacts
+   * and calendars go with the account (removeAccount).
+   */
+  fun forgetHere(context: Context) {
+    for (dir in listOf("photos", "drive", "share", "send", "backup", "drive-upload", "drive-thumbs", "drive-parts")) {
+      java.io.File(context.cacheDir, dir).deleteRecursively()
+    }
+    for (prefs in listOf("sync-outcome", "photo-backup")) {
+      context.getSharedPreferences(prefs, Context.MODE_PRIVATE).edit().clear().commit()
+    }
+  }
 }

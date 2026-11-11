@@ -13,16 +13,12 @@ use quince_vfs::{Fut, Remote, Store};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 /// Whether the folder is wanted, kept in the library.
 const ON_KEY: &str = "drive_folder_on";
 /// Where it is mounted, when moved from the default.
 const PATH_KEY: &str = "drive_folder_path";
-/// How long a file's download link is used before asking Apple for a fresh one.
-const LINK_LIFE: Duration = Duration::from_secs(20 * 60);
-
 /// The folders while they are up; dropping one lets its folder go.
 #[cfg(target_os = "linux")]
 static SESSIONS: Mutex<Vec<(Which, PathBuf, fuser::BackgroundSession)>> = Mutex::new(Vec::new());
@@ -36,7 +32,9 @@ static KEEPER: Mutex<Option<quince_vfs::fuse::Keeper>> = Mutex::new(None);
 
 struct AppRemote {
     app: AppHandle,
-    links: Arc<Mutex<HashMap<String, (String, Instant)>>>,
+    /// The download links in use, shared with the phone's Files app reader
+    /// (`quince_icloud::drive_parts`).
+    links: Arc<quince_icloud::drive_parts::Links>,
 }
 
 /// The session's address for one Apple service, with the auth lock let go first.
@@ -57,7 +55,7 @@ async fn context(
 pub fn drive_remote(app: &AppHandle) -> Arc<dyn Remote> {
     Arc::new(AppRemote {
         app: app.clone(),
-        links: Arc::new(Mutex::new(HashMap::new())),
+        links: Arc::new(quince_icloud::drive_parts::Links::new()),
     })
 }
 
@@ -225,99 +223,20 @@ impl Remote for AppRemote {
     fn read_part(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<quince_vfs::Part> {
         let (app, links, item) = (self.app.clone(), Arc::clone(&self.links), item.clone());
         Box::pin(async move {
-            let key = format!("{}~{}", item.drivewsid, item.etag.as_deref().unwrap_or(""));
-            let known = links
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&key)
-                .filter(|(_, at)| at.elapsed() < LINK_LIFE)
-                .map(|(u, _)| u.clone());
-            // A link Apple no longer honours is asked for again, once.
-            for fresh in [known.is_none(), true] {
-                let url = match (&known, fresh) {
-                    (Some(u), false) => u.clone(),
-                    _ => {
-                        let (http, docws, params) = context(&app, "docws").await?;
-                        let u = quince_icloud::drive::download_url_of_version(
-                            &http, &docws, params, &item,
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
-                        links
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .insert(key.clone(), (u.clone(), Instant::now()));
-                        u
-                    }
-                };
-                let http = app.state::<Auth>().client.lock().await.http().clone();
-                let r = http
-                    .get(&url)
-                    .header("Range", format!("bytes={offset}-{}", offset + len - 1))
-                    .send()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let status = r.status().as_u16();
-                if matches!(status, 401 | 403 | 404 | 410) && !fresh {
-                    continue;
-                }
-                let whole = status == 200;
-                if status != 206 && !whole && status != 416 {
-                    return Err(format!("Apple answered {status}"));
-                }
-                // The length as served: a range answer's total (`bytes 0-0/52311`), a 416's
-                // (`bytes */52311`: asked past the end of a file shorter than listed).
-                let total = r
-                    .headers()
-                    .get(reqwest::header::CONTENT_RANGE)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(served_total);
-                if status == 416 {
-                    return match total {
-                        Some(total) => Ok(quince_vfs::Part {
-                            bytes: Vec::new(),
-                            total: Some(total),
-                        }),
-                        None => Err(format!("Apple answered {status}")),
-                    };
-                }
-                let bytes = r.bytes().await.map_err(|e| e.to_string())?;
-                // A server that ignores the range sends the whole file: the part is cut from it,
-                // and its length is the file's.
-                return Ok(if whole {
-                    let from = usize::try_from(offset)
-                        .unwrap_or(usize::MAX)
-                        .min(bytes.len());
-                    let to = usize::try_from(offset + len)
-                        .unwrap_or(usize::MAX)
-                        .min(bytes.len());
-                    quince_vfs::Part {
-                        bytes: bytes[from..to].to_vec(),
-                        total: Some(bytes.len() as u64),
-                    }
-                } else {
-                    quince_vfs::Part {
-                        bytes: bytes.to_vec(),
-                        total,
-                    }
-                });
+            if len == 0 {
+                return Ok(quince_vfs::Part::default());
             }
-            Err("Apple would not send the file".into())
+            let (http, docws, params) = context(&app, "docws").await?;
+            let served = links
+                .read(&http, &docws, params, &item, offset, len)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(quince_vfs::Part {
+                bytes: served.bytes,
+                total: served.total,
+            })
         })
     }
-}
-
-/// The whole length a `Content-Range` gives: `bytes 0-9/52311` or `bytes */52311`. `None` for
-/// one that says it is not known (`/*`) or cannot be read.
-fn served_total(range: &str) -> Option<u64> {
-    range
-        .trim()
-        .strip_prefix("bytes")?
-        .rsplit_once('/')?
-        .1
-        .trim()
-        .parse()
-        .ok()
 }
 
 struct AppStore {
@@ -530,7 +449,7 @@ fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), Stri
             let cache = Arc::new(cache);
             let remote = Arc::new(AppRemote {
                 app: app.clone(),
-                links: Arc::new(Mutex::new(HashMap::new())),
+                links: Arc::new(quince_icloud::drive_parts::Links::new()),
             });
             // What is written here waits beside the library (owner-only) until Apple has it.
             quince_vfs::fuse::DriveFs::new(remote, Arc::new(AppStore::new(app.clone())), cache, rt)
@@ -630,7 +549,7 @@ fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), Stri
             quince_vfs::cloud::Provider::new(
                 Arc::new(AppRemote {
                     app: app.clone(),
-                    links: Arc::new(Mutex::new(HashMap::new())),
+                    links: Arc::new(quince_icloud::drive_parts::Links::new()),
                 }),
                 Arc::new(AppStore::new(app.clone())),
                 rt,
@@ -1048,15 +967,6 @@ pub fn drive_keep(drivewsid: String, on: bool) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod stale_tests {
     use super::*;
-
-    /// The length a file is served at, from a range answer or a 416 past its end.
-    #[test]
-    fn a_served_length_is_read_from_content_range() {
-        assert_eq!(served_total("bytes 0-0/52311"), Some(52_311));
-        assert_eq!(served_total("bytes */52311"), Some(52_311));
-        assert_eq!(served_total("bytes 0-9/*"), None);
-        assert_eq!(served_total("items 0-9/10"), None);
-    }
 
     /// A dead mount is let go of before a new one is made over it; a folder that answers, or
     /// is not there, is left as it is.

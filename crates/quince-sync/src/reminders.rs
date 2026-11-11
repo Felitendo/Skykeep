@@ -406,30 +406,16 @@ pub fn apply(
     fetched: quince_icloud::reminders::RemindersFetch,
     full: bool,
 ) -> Result<(usize, usize), Error> {
-    let (lists, count, _) = quince_icloud::reminders::apply_cloudkit(library, fetched)?;
-    replay(library)?;
-    if full {
-        library.mark_full_sync(REMINDERS)?;
-    }
-    Ok((lists, count))
-}
-
-/// A pass from Apple, from where the last one left off (or the start), stored and laid over.
-///
-/// # Errors
-/// When Apple can't be reached or refuses, or the library can't be written.
-pub async fn refresh(
-    library: &LibraryLock,
-    http: &reqwest::Client,
-    root: &str,
-    params: Vec<(String, String)>,
-) -> Result<(usize, usize), Error> {
-    let since = library.lock().await.sync_token(REMINDERS)?;
-    let full = since.is_none();
-    let fetched =
-        quince_icloud::reminders::fetch_cloudkit(http, root, params, since.as_deref()).await?;
-    let mut held = library.lock().await;
-    apply(&mut held, fetched, full)
+    // One transaction, Apple's pass and the edits laid back over it, as the desktop stores it:
+    // killed between the two (Android stops apps), unsent edits showed reverted until the next.
+    library.atomically(|library| {
+        let (lists, count, _) = quince_icloud::reminders::apply_cloudkit(library, fetched)?;
+        replay(library)?;
+        if full {
+            library.mark_full_sync(REMINDERS)?;
+        }
+        Ok((lists, count))
+    })
 }
 
 // --- Sending: the queue's half.

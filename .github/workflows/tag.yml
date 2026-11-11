@@ -31,7 +31,7 @@ concurrency:
 jobs:
   tag:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20  # the licence list reads every crate's licence files (a few minutes)
     permissions:
       contents: write
       actions: write
@@ -54,9 +54,11 @@ jobs:
           version=$(git show "$SHA:src-tauri/tauri.conf.json" | jq -r .version)
           tag="v$version"
           for w in ci.yml windows-checks.yml; do
-            run=$(gh api "repos/$REPO/actions/workflows/$w/runs?head_sha=$SHA&status=success&per_page=1" \
-              -q '.workflow_runs[0] | select(.head_sha == env.SHA) | .html_url')
-            if [ -z "$run" ]; then echo "::error::$w has not succeeded on $SHA (still running, failed, or never ran)"; exit 1; fi
+            # A push to main's own run only: a pull request's (a fork's included) or a run by
+            # hand on another branch can carry the same SHA, and never stands in for it.
+            run=$(gh api "repos/$REPO/actions/workflows/$w/runs?head_sha=$SHA&status=success&event=push&branch=main&per_page=1" \
+              -q '.workflow_runs[0] | select(.head_sha == env.SHA and .event == "push" and .head_branch == "main") | .html_url')
+            if [ -z "$run" ]; then echo "::error::$w has not succeeded on a push of $SHA to main (still running, failed, or never ran)"; exit 1; fi
             echo "$w succeeded on $SHA: $run"
           done
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
@@ -65,6 +67,29 @@ jobs:
           fi
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      # The open-source licences the app shows (src/licences.json, written by `npm run licences`
+      # and committed) must be the ones this commit's lockfiles give. Checked here, not on pull
+      # requests, so a dependency update's pull request stays green until the list is rewritten.
+      - name: The commit being released
+        env:
+          SHA: ${{ steps.ready.outputs.sha }}
+        run: git checkout --detach "$SHA"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-about@0.9.3
+      - name: Licence list current
+        run: |
+          # No install scripts: this job can push tags, so no package's own code runs in it.
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run licences
+          if ! git diff --exit-code --stat src/licences.json; then
+            echo "::error::src/licences.json is out of date: run npm run licences and commit"
+            exit 1
+          fi
       - name: Tag, then start the release
         if: ${{ !inputs.dry_run }}
         env:

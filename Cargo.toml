@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["probe", "crates/quince-mobile", "crates/quince-auth", "crates/quince-core", "crates/quince-icloud", "crates/quince-media", "crates/quince-vfs", "crates/quince-thumbs", "crates/quince-sync", "src-tauri"]
+members = ["probe", "crates/quince-mobile", "crates/quince-auth", "crates/quince-core", "crates/quince-icloud", "crates/quince-media", "crates/quince-vfs", "crates/quince-thumbs", "crates/quince-sync", "crates/uniffi-bindgen", "src-tauri"]
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.89"
 license = "GPL-3.0-only"
 
 [workspace.dependencies]

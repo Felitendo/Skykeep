@@ -506,6 +506,17 @@ impl Library {
         Ok(())
     }
 
+    /// A list deleted (Apple has taken the delete): the list gone from the library with every
+    /// reminder in it, done ones included, so no count or smart list shows them meanwhile.
+    pub fn forget_reminder_list(&mut self, list_guid: &str) -> Result<()> {
+        let guids: Vec<String> = self
+            .reminders_in(list_guid, true)?
+            .into_iter()
+            .map(|r| r.guid)
+            .collect();
+        self.forget_reminders(&guids, &[list_guid.to_string()])
+    }
+
     /// Remove reminders and lists the server reports as gone.
     pub fn forget_reminders(
         &mut self,
@@ -634,7 +645,7 @@ impl Library {
     }
 
     pub fn reminders_due_between(&self, from: i64, to: i64) -> Result<Vec<Reminder>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
                     r.etag, r.timezone, r.section_guid, r.all_day
@@ -645,9 +656,9 @@ impl Library {
              -- Open ones first, so a busy year's finished history can never use up the cap and
              -- leave reminders still to do off the Year view; each placed by its date anyway.
              ORDER BY r.completed_at IS NOT NULL, r.due_at
-             LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![from, to, MOST_AT_ONCE], |row| {
+             LIMIT {MOST_AT_ONCE}"
+        ))?;
+        let rows = stmt.query_map(params![from, to], |row| {
             Ok(Reminder {
                 guid: row.get(0)?,
                 list_guid: row.get(1)?,
@@ -1248,6 +1259,25 @@ mod tests {
         let mut lib = Library::in_memory().unwrap();
         lib.put_reminder_lists(&[list("l1")]).unwrap();
         lib
+    }
+
+    /// A deleted list leaves nothing behind: its reminders, done or not, go with it, and
+    /// another list's stay.
+    #[test]
+    fn a_forgotten_list_takes_its_reminders_and_only_them() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[list("a"), list("b")]).unwrap();
+        let mut a1 = reminder("a1", None, None);
+        a1.list_guid = "a".into();
+        let mut a2 = reminder("a2", None, Some(1));
+        a2.list_guid = "a".into();
+        let mut b1 = reminder("b1", None, None);
+        b1.list_guid = "b".into();
+        lib.put_reminders(&[a1, a2, b1]).unwrap();
+        lib.forget_reminder_list("a").unwrap();
+        assert!(lib.reminders_in("a", true).unwrap().is_empty());
+        assert_eq!(lib.reminders_in("b", true).unwrap().len(), 1);
+        assert!(lib.reminder_lists().unwrap().iter().all(|x| x.guid != "a"));
     }
 
     #[test]

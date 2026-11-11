@@ -38,6 +38,7 @@ import { askForSidebar } from "../../components/SidePane";
 import {
   addDays,
   addDaysIn,
+  endAfter,
   allZones,
   clock,
   dateOf,
@@ -64,6 +65,7 @@ import {
 } from "./model";
 import { dateText, timeText } from "../../lib/when";
 import { reveal, useReveal } from "../../lib/reveal";
+import { composing } from "../../lib/keys";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -325,7 +327,7 @@ const TickContext = createContext<{
 /** A reminder's list colour, as Calendar on the Mac draws scheduled reminders in it. */
 const useListColour = () => {
   const ctx = useContext(TickContext);
-  return (r: Reminder) => ({ "--cal": ctx?.colour(r) ?? "var(--sys-blue)" }) as React.CSSProperties;
+  return (r: Reminder) => ({ "--cal": ctx?.colour(r) ?? "var(--sk-blue)" }) as React.CSSProperties;
 };
 /**
  * What makes a scheduled reminder open its card, as Calendar's do: a click, or Return or Space
@@ -441,7 +443,7 @@ const weekdayShort = (d: Date) => dateText(d, { weekday: "short" });
 
 /** The colour a calendar is drawn in, or Apple's blue when it has none. */
 const tint = (c: Calendar | undefined) =>
-  c?.colour && /^#[0-9a-f]{6}$/i.test(c.colour) ? c.colour : "var(--sys-blue)";
+  c?.colour && /^#[0-9a-f]{6}$/i.test(c.colour) ? c.colour : "var(--sk-blue)";
 
 /** Where a popover opens: to the right of `x`, or to the left of `left` (or `x`) when the
  *  window has no room on the right. */
@@ -517,7 +519,7 @@ export function CalendarView() {
   const [card, setCard] = useState<{ reminder: Reminder; at: Anchor } | null>(null);
   const tickValue = useMemo(() => ({
     ticked,
-    colour: (r: Reminder) => listColours.get(r.listGuid) || "var(--sys-blue)",
+    colour: (r: Reminder) => listColours.get(r.listGuid) || "var(--sk-blue)",
     tick: (r: Reminder) => {
       setTicked((was) => new Set(was).add(r.guid));
       const untick = () => setTicked((was) => { const next = new Set(was); next.delete(r.guid); return next; });
@@ -721,6 +723,11 @@ export function CalendarView() {
     setDue((was) => same(was, Array.isArray(reminders) ? reminders.filter((r) => !r.completedAt).map(onItsDay) : []));
     setLoaded(true);
   }, [range, over]);
+  // The read for the range on screen now: called after a write's await, `read` itself was the
+  // one from when the write began, and a month stepped into meanwhile was drawn over with the
+  // old month's events, numbered newest (desktop audit H3).
+  const readNow = useRef(read);
+  readNow.current = read;
 
   useEffect(() => {
     let cancelled = false;
@@ -811,18 +818,18 @@ export function CalendarView() {
       try {
         await run();
         release();
-        await read();
+        await readNow.current();
         return true;
       } catch (e) {
         release();
         setError(messageOf(e));
-        read().catch(() => {});
+        readNow.current().catch(() => {});
         return false;
       } finally {
         release();
       }
     },
-    [read, hold]
+    [hold]
   );
 
   /** Calendars made, renamed, recoloured and removed — shown at once, put back if Apple refuses. */
@@ -1126,14 +1133,14 @@ export function CalendarView() {
   };
   const refreshSub = (id: string) => {
     calendarFeedsApi.refresh(id).then(
-      (s) => { toast(`\u201c${s.title}\u201d is up to date`); void read(); },
+      (s) => { toast(`\u201c${s.title}\u201d is up to date`); void readNow.current(); },
       (e) => setError(messageOf(e)),
     );
   };
   const refreshAccount = (a: DavAccount) => {
     davApi.refresh(a.id).then(
-      () => { toast(`\u201c${a.title}\u201d is up to date`); void read(); },
-      (e) => { setError(messageOf(e)); void read(); },
+      () => { toast(`\u201c${a.title}\u201d is up to date`); void readNow.current(); },
+      (e) => { setError(messageOf(e)); void readNow.current(); },
     );
   };
   const removeAccount = (a: DavAccount) => {
@@ -1692,6 +1699,7 @@ export function CalendarView() {
                     goTo(new FormData(e.currentTarget).get("day") as string);
                   }}
                   onKeyDown={(e) => {
+                    if (composing(e)) return;
                     if (e.key === "Escape") {
                       e.stopPropagation();
                       setGoingTo(false);
@@ -1725,6 +1733,7 @@ export function CalendarView() {
               value={query}
               onChange={setQuery}
               onKeyDown={(e) => {
+                if (composing(e)) return;
                 if (e.key === "Escape") setQuery("");
                 // Its default kept from the event's own field, which takes the focus as it
                 // opens: Return there is Save, and it saved and closed the event at once.
@@ -3402,6 +3411,7 @@ function ZoneField({ zone, at, editable, onChange }: { zone: string; at: number;
         onChange={(e) => { setQuery(e.target.value); setLit(0); }}
         onBlur={() => setQuery(null)}
         onKeyDown={(e) => {
+          if (composing(e)) return;
           if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setQuery(null); }
           else if (e.key === "ArrowDown") { e.preventDefault(); setLit((i) => Math.min(found.length - 1, i + 1)); }
           else if (e.key === "ArrowUp") { e.preventDefault(); setLit((i) => Math.max(0, i - 1)); }
@@ -3742,7 +3752,7 @@ function EventPopover({
             label="Ends"
             zone={zoneOf(draft)}
             onChange={(end) =>
-              set({ endsAt: draft.allDay ? seconds(addDays(midnight(dateOf(end)), 1)) : Math.max(end, draft.startsAt + 300) })
+              set({ endsAt: draft.allDay ? seconds(addDays(midnight(dateOf(end)), 1)) : endAfter(zoneOf(draft), draft.startsAt, end) })
             }
           />
         </div>
@@ -3990,6 +4000,7 @@ function CalendarName({ initial, label, onDone, onCancel }: {
         onDone(e.currentTarget.value);
       }}
       onKeyDown={(e) => {
+        if (composing(e)) return;
         if (e.key === "Enter") e.currentTarget.blur();
         if (e.key === "Escape") {
           settled.current = true;
@@ -4039,6 +4050,7 @@ function QuickEvent({ calendar, onAdd, onClose }: {
         onAdd(text, false, at());
       }}
       onKeyDown={(e) => {
+        if (composing(e)) return;
         if (e.key === "Escape") {
           e.stopPropagation();
           onClose();
@@ -4056,6 +4068,7 @@ function QuickEvent({ calendar, onAdd, onClose }: {
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
+          if (composing(e)) return;
           if (e.key === "Enter" && (e.shiftKey || e.ctrlKey || e.metaKey)) {
             e.preventDefault();
             onAdd(text, true, at());
@@ -4151,6 +4164,7 @@ function NextcloudForm({ initial, leaving, onDone, onCancel }: {
       aria-label="Set Up Nextcloud Server"
       onSubmit={(e) => { e.preventDefault(); begin(); }}
       onKeyDown={(e) => {
+        if (composing(e)) return;
         if (e.key === "Escape") {
           e.stopPropagation();
           cancel();
@@ -4229,6 +4243,7 @@ function CalDavForm({ onNextcloud, onDone, onCancel }: {
         );
       }}
       onKeyDown={(e) => {
+        if (composing(e)) return;
         if (e.key === "Escape") {
           e.stopPropagation();
           onCancel();
@@ -4285,6 +4300,7 @@ function SubscribeForm({ onDone, onCancel }: {
         );
       }}
       onKeyDown={(e) => {
+        if (composing(e)) return;
         if (e.key === "Escape") {
           e.stopPropagation();
           onCancel();

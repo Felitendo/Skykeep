@@ -44,10 +44,16 @@ fn lock_hidden() {
     HIDDEN_OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Whether Hidden is unlocked now: what the library's reads are told, so a hidden photo in
+/// Recently Deleted (and its count, and its picture made ahead) stays behind the same lock.
+fn hidden_open() -> bool {
+    HIDDEN_OPEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Hidden's photos are asked for: only once it is unlocked.
 fn hidden_allowed(source: &quince_core::photos::Source) -> UiResult<()> {
     let hidden = matches!(source, quince_core::photos::Source::View(View::Hidden));
-    if hidden && !HIDDEN_OPEN.load(std::sync::atomic::Ordering::SeqCst) {
+    if hidden && !hidden_open() {
         return Err("The Hidden album is locked.".into());
     }
     Ok(())
@@ -524,24 +530,6 @@ async fn any_photo(
 /// Where a photo's library is in Apple's databases, for a write to it: none for the personal
 /// library, else its Shared Library's zone (in the shared database, under its owner, for one
 /// this account joined).
-fn library_place(
-    library: &quince_core::Library,
-    id: &str,
-) -> Result<Option<quince_icloud::shared_collections::Place>, String> {
-    Ok(library
-        .shared_library_of(id)
-        .map_err(|e| e.to_string())?
-        .map(|s| quince_icloud::shared_collections::Place {
-            database: if s.database == "shared" {
-                quince_icloud::cloudkit::Database::Shared
-            } else {
-                quince_icloud::cloudkit::Database::Private
-            },
-            zone: s.zone,
-            owner: s.owner,
-        }))
-}
-
 /// Whether a photo's original is HEIC (or another HEIF).
 async fn is_heic(app: &AppHandle, id: &str) -> bool {
     any_photo(app, id)
@@ -1020,7 +1008,7 @@ pub fn prepare(app: AppHandle) {
             let from = after.clone();
             let Ok((page, next)) = data
                 .0
-                .read(|l| l.grid_shapes(shown.view, from.as_ref(), GRID_PAGE))
+                .read(|l| l.grid_shapes_shown(shown.view, from.as_ref(), GRID_PAGE, hidden_open()))
                 .await
             else {
                 return;
@@ -1397,8 +1385,9 @@ pub fn content_type(bytes: &[u8], size: Size) -> &'static str {
 #[tauri::command]
 pub async fn photos_list(view: View, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
     hidden_allowed(&quince_core::photos::Source::View(view))?;
+    let open = hidden_open();
     data.0
-        .read(|library| library.photos(view))
+        .read(|library| library.photos_shown(view, open))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1413,8 +1402,9 @@ pub async fn photos_index(
     data: State<'_, Data>,
 ) -> UiResult<quince_core::photos::PhotoIndex> {
     hidden_allowed(&source)?;
+    let open = hidden_open();
     data.0
-        .read(|library| library.photo_index(&source, order))
+        .read(|library| library.photo_index_shown(&source, order, open))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1441,8 +1431,9 @@ pub async fn photos_page(
     data: State<'_, Data>,
 ) -> UiResult<Vec<Photo>> {
     hidden_allowed(&source)?;
+    let open = hidden_open();
     data.0
-        .read(|library| library.photo_page(&source, order, after.as_ref(), limit))
+        .read(|library| library.photo_page_shown(&source, order, after.as_ref(), limit, open))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1758,296 +1749,45 @@ async fn album_of(data: &State<'_, Data>, id: &str) -> UiResult<quince_core::pho
         .ok_or_else(|| "That album is no longer there.".into())
 }
 
-/// Favorite, Hide, Delete (to Recently Deleted), Recover, or — from Recently Deleted only —
-/// delete for good, as icloud.com does it: the asset's one field updated against its change tag. The library takes Apple's
-/// answer at once, so every view shows it without waiting for the next pass.
+/// Favorite, Hide, Delete (to Recently Deleted), Recover, or (from Recently Deleted only)
+/// delete for good, on one photo: [`photos_set_flag`] of it alone. Answers the photo as it now
+/// is, or (deleted for good, gone from view) as it was.
 #[tauri::command]
 pub async fn photo_set_flag(
     id: String,
     flag: quince_icloud::photos::Flag,
     on: bool,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Photo> {
-    let _one = crate::PHOTOS_PASS.lock().await;
-    let photo = data
+    let was = data
         .0
         .lock()
         .await
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
-    // Deleting for good is only ever from Recently Deleted, and only ever on: there is no
-    // taking it back, so nothing else may reach it.
-    if flag == quince_icloud::photos::Flag::Expunged && (!on || !photo.deleted) {
-        return Err("Only a photo in Recently Deleted can be deleted for good.".into());
-    }
-    let place = library_place(&*data.0.lock().await, &id)?;
-    let (http, root, params) = crate::cloudkit_context(&auth).await?;
-    let answer = quince_icloud::photos::set_flag(
-        &http,
-        &root,
-        params,
-        place.as_ref(),
-        &id,
-        photo.change_tag.as_deref(),
-        flag,
-        on,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    let mut updated = photo;
-    match flag {
-        quince_icloud::photos::Flag::Favorite => updated.favorite = on,
-        quince_icloud::photos::Flag::Hidden => updated.hidden = on,
-        quince_icloud::photos::Flag::Deleted => {
-            updated.deleted = on;
-            updated.deleted_at = on.then(|| jiff::Timestamp::now().as_second());
-            // Apple's own date for when it goes for good, or its thirty days until it says.
-            updated.expunge_at = on.then(|| {
-                answer
-                    .pointer("/fields/dateExpunged/value")
-                    .and_then(serde_json::Value::as_i64)
-                    .map_or(jiff::Timestamp::now().as_second() + 30 * 86_400, |ms| {
-                        ms / 1000
-                    })
-            });
-        }
-        quince_icloud::photos::Flag::Expunged => {
-            data.0
-                .lock()
-                .await
-                .forget_photos(std::slice::from_ref(&id))
-                .map_err(|e| e.to_string())?;
-            return Ok(updated);
-        }
-    }
-    updated.change_tag = answer
-        .get("recordChangeTag")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-        .or(updated.change_tag);
-    data.0
-        .lock()
-        .await
-        .put_photos(std::slice::from_ref(&updated))
-        .map_err(|e| e.to_string())?;
-    Ok(updated)
+    let now = photos_set_flag(vec![id], flag, on, data).await?;
+    Ok(now.into_iter().next().unwrap_or(was))
 }
 
-/// One flag on many photos — a selection deleted, recovered, hidden, favorited, or deleted
-/// for good from Recently Deleted — as Photos does it: the library changes first, so every view
-/// (and a sync pass reading it) shows it at once, then Apple is told in batches; whatever Apple
-/// refuses is put back as it was. Answers the photos as they now are, and an error naming how
-/// many could not be changed, if any.
+/// One flag on many photos (a selection deleted, recovered, hidden, favorited, or deleted for
+/// good from Recently Deleted) as Photos does it: recorded and shown at once in every view, and
+/// sent to Apple behind by the outbox worker, in batches, each library's photos to its own
+/// zone; whatever Apple refuses is put back and kept to be sent again or let go
+/// (quince_sync::photos, the phone's own code). Answers the photos as they now are.
 #[tauri::command]
 pub async fn photos_set_flag(
     ids: Vec<String>,
     flag: quince_icloud::photos::Flag,
     on: bool,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Photo>> {
-    use quince_icloud::photos::Flag;
-    let now = jiff::Timestamp::now().as_second();
-    let set = |p: &mut Photo| match flag {
-        Flag::Favorite => p.favorite = on,
-        Flag::Hidden => p.hidden = on,
-        Flag::Deleted => {
-            p.deleted = on;
-            p.deleted_at = on.then_some(now);
-            p.expunge_at = on.then_some(now + 30 * 86_400);
-        }
-        Flag::Expunged => {}
-    };
-    // At once, in the library.
-    let before: Vec<Photo> = {
+    let now = {
         let mut library = data.0.lock().await;
-        let mut found = Vec::with_capacity(ids.len());
-        for id in &ids {
-            if let Some(p) = library.photo(id).map_err(|e| e.to_string())? {
-                found.push(p);
-            }
-        }
-        // Deleting for good is only ever from Recently Deleted, and only ever on.
-        if flag == Flag::Expunged && (!on || found.iter().any(|p| !p.deleted)) {
-            return Err("Only photos in Recently Deleted can be deleted for good.".into());
-        }
-        if flag == Flag::Expunged {
-            let gone: Vec<String> = found.iter().map(|p| p.id.clone()).collect();
-            library.forget_photos(&gone).map_err(|e| e.to_string())?;
-        } else {
-            let changed: Vec<Photo> = found
-                .iter()
-                .cloned()
-                .map(|mut p| {
-                    set(&mut p);
-                    p
-                })
-                .collect();
-            library.put_photos(&changed).map_err(|e| e.to_string())?;
-        }
-        found
+        quince_sync::photos::record_flags(&mut library, &ids, flag, on)?
     };
-    if before.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Then to Apple, with no sync pass between the two.
-    let _one = crate::PHOTOS_PASS.lock().await;
-    let sent = async {
-        // A selection can hold photos of both libraries: each library's are sent to its own
-        // zone, and the answers put back in the order the photos were given.
-        let places = {
-            let library = data.0.lock().await;
-            before
-                .iter()
-                .map(|p| library_place(&library, &p.id))
-                .collect::<Result<Vec<_>, String>>()?
-        };
-        let (http, root, params) = crate::cloudkit_context(&auth).await?;
-        let mut answers: Vec<Option<Result<serde_json::Value, String>>> =
-            (0..before.len()).map(|_| None).collect();
-        let mut zones: Vec<Option<&quince_icloud::shared_collections::Place>> = Vec::new();
-        for place in &places {
-            if !zones
-                .iter()
-                .any(|z| z.map(|z| &z.zone) == place.as_ref().map(|p| &p.zone))
-            {
-                zones.push(place.as_ref());
-            }
-        }
-        for zone in zones {
-            let wanted: Vec<usize> = (0..before.len())
-                .filter(|&i| places[i].as_ref().map(|p| &p.zone) == zone.map(|z| &z.zone))
-                .collect();
-            let assets: Vec<(String, Option<String>)> = wanted
-                .iter()
-                .map(|&i| (before[i].id.clone(), before[i].change_tag.clone()))
-                .collect();
-            // One library's batch failing leaves the other's answers as Apple gave them: only
-            // this library's photos are said not to have gone.
-            match quince_icloud::photos::set_flags(
-                &http,
-                &root,
-                params.clone(),
-                zone,
-                &assets,
-                flag,
-                on,
-            )
-            .await
-            {
-                Ok(got) => {
-                    for (&i, answer) in wanted.iter().zip(got) {
-                        answers[i] = Some(answer);
-                    }
-                }
-                Err(e)
-                    if places
-                        .iter()
-                        .all(|p| p.as_ref().map(|p| &p.zone) == zone.map(|z| &z.zone)) =>
-                {
-                    return Err(e.to_string());
-                }
-                Err(e) => {
-                    for &i in &wanted {
-                        answers[i] = Some(Err(e.to_string()));
-                    }
-                }
-            }
-        }
-        Ok::<_, String>(
-            answers
-                .into_iter()
-                .map(|a| a.unwrap_or_else(|| Err("Not sent.".into())))
-                .collect::<Vec<_>>(),
-        )
-    }
-    .await;
-    let answers = match sent {
-        Ok(a) => a,
-        Err(e) => {
-            // Nothing reached Apple: the flags as they were, on each photo as it is now.
-            let mut library = data.0.lock().await;
-            let back = flags_back(&library, &before, None);
-            library.put_photos(&back).map_err(|e| e.to_string())?;
-            return Err(e);
-        }
-    };
-    let mut now_are = Vec::with_capacity(before.len());
-    let mut refused = Vec::new();
-    let mut why = None;
-    for (old, answer) in before.iter().zip(answers) {
-        match answer {
-            Ok(record) => {
-                if flag == Flag::Expunged {
-                    continue;
-                }
-                let mut p = old.clone();
-                set(&mut p);
-                if flag == Flag::Deleted && on {
-                    // Apple's own date for when it goes for good.
-                    if let Some(ms) = record
-                        .pointer("/fields/dateExpunged/value")
-                        .and_then(serde_json::Value::as_i64)
-                    {
-                        p.expunge_at = Some(ms / 1000);
-                    }
-                }
-                p.change_tag = record
-                    .get("recordChangeTag")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-                    .or(p.change_tag);
-                now_are.push(p);
-            }
-            Err(e) => {
-                why.get_or_insert(e);
-                refused.push(old.clone());
-            }
-        }
-    }
-    {
-        // Only the flags and Apple's new version are laid on each photo as the library holds
-        // it now: written whole from the copy read before the wait, a title or caption that a
-        // sync pass brought in meanwhile was put back as it had been.
-        let mut library = data.0.lock().await;
-        let done = flags_back(&library, &now_are, Some(()));
-        let back = flags_back(&library, &refused, None);
-        library.put_photos(&done).map_err(|e| e.to_string())?;
-        library.put_photos(&back).map_err(|e| e.to_string())?;
-    }
-    if let Some(why) = why {
-        let n = refused.len();
-        return Err(format!(
-            "{n} of {} {} could not be changed: {why}",
-            before.len(),
-            if before.len() == 1 { "photo" } else { "photos" }
-        ));
-    }
-    Ok(now_are)
-}
-
-/// `from`'s flags — favourite, hidden, in Recently Deleted and its dates — laid on each photo as
-/// the library holds it now; with `tag`, its change tag too. A photo no longer there is `from`
-/// as it was.
-fn flags_back(library: &quince_core::Library, from: &[Photo], tag: Option<()>) -> Vec<Photo> {
-    from.iter()
-        .map(|f| match library.photo(&f.id).ok().flatten() {
-            Some(mut now) => {
-                now.favorite = f.favorite;
-                now.hidden = f.hidden;
-                now.deleted = f.deleted;
-                now.deleted_at = f.deleted_at;
-                now.expunge_at = f.expunge_at;
-                if tag.is_some() {
-                    now.change_tag.clone_from(&f.change_tag);
-                }
-                now
-            }
-            None => f.clone(),
-        })
-        .collect()
+    crate::outbox::kick();
+    Ok(now)
 }
 
 /// A photo's title and caption, as typed in its Info: Apple's answer taken at once. Empty clears one.
@@ -2071,7 +1811,7 @@ pub async fn photo_set_text(
     // Only what was changed here goes: the other field may have been changed on another device.
     let title_changed = photo.title.as_deref().unwrap_or("") != title;
     let caption_changed = photo.caption.as_deref().unwrap_or("") != caption;
-    let place = library_place(&*data.0.lock().await, &id)?;
+    let place = quince_sync::photos::library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_title_and_caption(
         &http,
@@ -2125,7 +1865,7 @@ pub async fn photo_set_rating(
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
-    let place = library_place(&*data.0.lock().await, &id)?;
+    let place = quince_sync::photos::library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_rating(
         &http,
@@ -2266,7 +2006,7 @@ pub async fn photo_set_keywords(
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
-    let place = library_place(&*data.0.lock().await, &id)?;
+    let place = quince_sync::photos::library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let (answer, kept) = quince_icloud::photos::set_keywords(
         &http,
@@ -2315,7 +2055,7 @@ pub async fn photo_set_date(
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
-    let place = library_place(&*data.0.lock().await, &id)?;
+    let place = quince_sync::photos::library_place(&*data.0.lock().await, &id)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_date(
         &http,
@@ -2383,8 +2123,9 @@ pub async fn photo_open_map(id: String, app: AppHandle, data: State<'_, Data>) -
 pub async fn photos_counts(app: AppHandle, data: State<'_, Data>) -> UiResult<Vec<(View, i64)>> {
     work(app.clone());
     keep_ahead(app);
+    let open = hidden_open();
     data.0
-        .read(|library| library.photo_counts())
+        .read(|library| library.photo_counts_shown(open))
         .await
         .map_err(|e| e.to_string())
 }
@@ -2599,7 +2340,7 @@ pub async fn photo_download(
     // personal library's.
     let place = {
         let library = data.0.lock().await;
-        match library_place(&library, &id)? {
+        match quince_sync::photos::library_place(&library, &id)? {
             Some(p) => Some(p),
             None => library
                 .shared_photo(&id)
@@ -3710,7 +3451,8 @@ mod tests {
     }
 
     /// Pictures are made ahead for every photo a grid can show — Hidden and Recently Deleted
-    /// too, not the library alone — each once, the view being looked at first.
+    /// too, not the library alone — each once, the view being looked at first; Hidden's (and a
+    /// hidden photo's in Recently Deleted) only while Hidden is unlocked.
     #[test]
     fn hidden_and_deleted_are_made_ahead_too_the_view_shown_first() {
         let photo = |id: &str, t: i64, hidden: bool, deleted: bool| -> Photo {
@@ -3726,14 +3468,17 @@ mod tests {
             photo("H1", 20, true, false),
             photo("H2", 10, true, false),
             photo("D1", 5, false, true),
+            photo("D2", 4, true, true),
         ])
         .unwrap();
         // Read a page at a time — one photo at a time here — as `prepare` reads them.
-        let ids = |first| -> Vec<String> {
+        let shapes = |first, open| -> Vec<String> {
             let mut out = Vec::new();
             let mut after = None;
             loop {
-                let (page, next) = lib.grid_shapes(first, after.as_ref(), 1).unwrap();
+                let (page, next) = lib
+                    .grid_shapes_shown(first, after.as_ref(), 1, open)
+                    .unwrap();
                 out.extend(page.into_iter().map(|p| p.id));
                 match next {
                     Some(n) => after = Some(n),
@@ -3741,11 +3486,21 @@ mod tests {
                 }
             }
         };
-        assert_eq!(ids(None), ["L1", "H1", "H2", "D1"]);
-        assert_eq!(ids(Some(View::Hidden)), ["H1", "H2", "L1", "D1"]);
-        assert_eq!(ids(Some(View::Library)), ["L1", "H1", "H2", "D1"]);
+        let ids = |first| shapes(first, true);
+        assert_eq!(ids(None), ["L1", "H1", "H2", "D1", "D2"]);
+        assert_eq!(ids(Some(View::Hidden)), ["H1", "H2", "L1", "D1", "D2"]);
+        assert_eq!(ids(Some(View::Library)), ["L1", "H1", "H2", "D1", "D2"]);
         // A view inside the library (Favorites) adds nothing the library does not have.
-        assert_eq!(ids(Some(View::Favorites)), ["L1", "H1", "H2", "D1"]);
+        assert_eq!(ids(Some(View::Favorites)), ["L1", "H1", "H2", "D1", "D2"]);
+        // Locked: nothing hidden is made into a picture on disk, whichever view is shown.
+        for first in [None, Some(View::Hidden), Some(View::RecentlyDeleted)] {
+            let locked = shapes(first, false);
+            assert!(
+                locked.iter().all(|id| id == "L1" || id == "D1"),
+                "{locked:?}"
+            );
+            assert_eq!(locked.len(), 2);
+        }
     }
 
     /// The steps made ahead are the ones the window asks for (fitSrc, tileSrc, viewSrc).

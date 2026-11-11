@@ -22,6 +22,7 @@ macro_rules! quiet {
 }
 
 pub mod diag;
+pub mod keep;
 pub mod pcs;
 pub mod releases;
 mod sealed;
@@ -30,6 +31,7 @@ pub mod srp;
 pub mod state;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
+pub use keep::Kept;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client as HttpClient, Response, StatusCode};
 use reqwest_cookie_store::CookieStoreMutex;
@@ -328,6 +330,9 @@ fn two_factor_places(v: &Value) -> Vec<&Value> {
         Some(v),
         v.get("phoneNumberVerification"),
         v.get("direct"),
+        // The security-key answer's second layout (`fsaVerification.fsaChallenge`, seen by
+        // FindMy.py; docs/security-keys.md): read as well as the top-level one.
+        v.get("fsaVerification"),
         two_sv,
         two_sv.and_then(|t| t.get("phoneNumberVerification")),
         two_sv.and_then(|t| t.pointer("/bridgeInitiateData/phoneNumberVerification")),
@@ -403,6 +408,17 @@ fn offers_security_key(v: &Value) -> bool {
             let x = &c[*k];
             !x.is_null() && x.as_str() != Some("") && x.as_array().is_none_or(|a| !a.is_empty())
         })
+}
+
+/// Where an app goes when it opens with what it kept ([`Client::reopen`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reopen {
+    /// Signed in (or offline with a session kept): the library.
+    Library,
+    /// Apple wants a code before it trusts this device again.
+    Code,
+    /// Nothing kept, or Apple refused what was: sign in.
+    SignIn,
 }
 
 /// What `sign_in` decided.
@@ -562,6 +578,8 @@ pub struct Client {
     phones: Vec<TrustedPhone>,
     /// What this run knows of Advanced Data Protection approvals (see [`pcs`]).
     pcs: pcs::Pcs,
+    /// What the passes' session checks remember between them (see [`keep`]).
+    keeping: keep::Keeping,
 }
 
 /// What became of the cookies kept on disk when the client started.
@@ -759,6 +777,7 @@ impl Client {
             cookies,
             phones: Vec::new(),
             pcs: pcs::Pcs::default(),
+            keeping: keep::Keeping::default(),
         })
     }
 
@@ -907,11 +926,27 @@ impl Client {
         )?)
     }
 
+    /// Somebody else signing in (Apple ended the last session, or it was never signed out):
+    /// the last account's trust token, cookies and client id go first, as at sign-out, so
+    /// nothing of it is sent with this sign-in and Apple never sees the two accounts tied
+    /// together. The same account typed again (any case, any spacing) keeps them, and with them
+    /// skips the code.
+    fn forget_other_account(&mut self, apple_id: &str) -> Result<()> {
+        let other = self.session.apple_id.as_deref().is_some_and(|before| {
+            session::account_fingerprint(before) != session::account_fingerprint(apple_id)
+        });
+        if other {
+            self.sign_out()?;
+        }
+        Ok(())
+    }
+
     /// Forget this account entirely.
     pub fn sign_out(&mut self) -> Result<()> {
         self.session = Session::default();
-        // The next account starts at iCloud.com, and the regional domains close again.
-        self.switch_servers(None)?;
+        // The next account starts at iCloud.com, and the regional domains close again. Its
+        // trouble is told after the store is cleared, never instead of clearing it.
+        let switched = self.switch_servers(None);
         self.data_access_forget();
         if let Ok(mut jar) = self.jar.lock() {
             jar.clear();
@@ -921,7 +956,7 @@ impl Client {
             .persisted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Persisted::default();
-        self.store.clear()
+        self.store.clear().and(switched)
     }
 
     // ---- headers --------------------------------------------------------------------
@@ -967,12 +1002,45 @@ impl Client {
 
     // ---- the restart test -----------------------------------------------------------
 
+    /// Where an app opening with what it kept should go: the library, Apple's code screen, or
+    /// sign-in. Offline (or Apple busy, or asking to wait) with a session kept is the library,
+    /// as a local-first app opens: the next refresh signs back in once Apple answers. Only
+    /// Apple refusing the session, or nothing kept, is sign-in. The desktop and the phone both
+    /// open through this.
+    pub async fn reopen(&mut self) -> Result<Reopen> {
+        let resumed = match self.resume().await {
+            Ok(resumed) => resumed,
+            Err(
+                Error::Network(_)
+                | Error::Unavailable(_)
+                | Error::RateLimited
+                | Error::CoolingDown { .. },
+            ) if self.has_stored_session() => true,
+            Err(e) => return Err(e),
+        };
+        Ok(if resumed {
+            Reopen::Library
+        } else if self.awaiting_code() {
+            Reopen::Code
+        } else {
+            Reopen::SignIn
+        })
+    }
+
     /// Try to resume a stored session without a password.
     ///
     /// Returns `Ok(true)` when the stored session still works — the behaviour the whole
     /// product promises. `Ok(false)` means Apple rejected it and a full sign-in is needed;
     /// that is an expected outcome (roughly every 60 days), not a failure.
     pub async fn resume(&mut self) -> Result<bool> {
+        // A sign-out the keyring was locked for is never undone by resuming: its entries are
+        // erased now if it answers, and until they are, `try_load` (below, and at startup)
+        // reads nothing stored. A session signed in since lives in memory and stays.
+        if self.store.sign_out_pending() {
+            if let Err(e) = self.store.finish_sign_out() {
+                quiet!("quince: keyring: sign-out still waiting on it: {e:?}");
+            }
+        }
         // A keyring that would not answer at startup is asked again; still locked, that is
         // what is said — never "signed out", which led to a sign-in replacing what it holds.
         if self.keyring_error.is_some() {
@@ -1129,6 +1197,7 @@ impl Client {
         password: &str,
         code: Code,
     ) -> Result<SignInOutcome> {
+        self.forget_other_account(apple_id)?;
         // What this account already owes, from beside the cookies rather than from the
         // keyring — so a machine with no keyring still remembers, which is where forgetting
         // would matter most. Per account, so signing in as somebody else inherits nothing.
@@ -1375,7 +1444,11 @@ impl Client {
             .iter()
             .any(|k| p.get(*k).is_some())
         });
-        if !says_where {
+        // A security-key account names no devices and no numbers: its answer is the key
+        // challenge. Said as such, so the screen can tell the person, rather than refused as an
+        // answer that says nothing.
+        let security_key = places.iter().any(|p| offers_security_key(p));
+        if !says_where && !security_key {
             return Err(Error::Protocol(
                 "Apple didn't say where it can send a code".into(),
             ));
@@ -1401,7 +1474,7 @@ impl Client {
             trusted_device_count: counted.unwrap_or(u64::from(has_devices)),
             phones,
             too_many_codes_sent: too_many,
-            security_key: places.iter().any(|p| offers_security_key(p)),
+            security_key,
         })
     }
 
@@ -2865,5 +2938,88 @@ mod sealed_jar_tests {
         c.sign_out().unwrap();
         assert!(!cookies_file(dir.path()).exists());
         assert!(!dir.path().join("cookie-key").exists());
+    }
+
+    /// Signed out with the keyring refusing, the cookies still go, and neither reopening nor
+    /// resuming brings back the session the keyring kept.
+    #[tokio::test]
+    async fn a_locked_keyring_at_sign_out_never_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = holding_a_cookie(dir.path());
+        c.session.session_token = Some("token".into());
+        c.persist().unwrap();
+        // The key's entry cannot be deleted, as with a locked keyring.
+        let key = dir.path().join("cookie-key");
+        std::fs::remove_file(&key).unwrap();
+        std::fs::create_dir(&key).unwrap();
+        std::fs::write(key.join("x"), b"x").unwrap();
+        c.sign_out().unwrap();
+        assert!(!cookies_file(dir.path()).exists());
+        // What the keyring kept, as if never erased.
+        std::fs::write(
+            dir.path().join("session.json"),
+            r#"{"session_token":"token"}"#,
+        )
+        .unwrap();
+        let mut reopened = client(dir.path());
+        assert!(!reopened.has_stored_session());
+        assert!(!reopened.resume().await.unwrap());
+    }
+
+    /// Another Apple ID signing in starts clean: the last account's trust token, client id and
+    /// cookies are gone before anything is sent. The same Apple ID typed differently keeps them.
+    #[test]
+    fn another_apple_id_inherits_nothing_of_the_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = holding_a_cookie(dir.path());
+        c.session.apple_id = Some("first@example.com".into());
+        c.session.trust_token = Some("trust".into());
+        c.persist().unwrap();
+        let id = c.session.client_id();
+
+        c.forget_other_account("  FIRST@example.com ").unwrap();
+        assert_eq!(
+            c.session.trust_token.as_deref(),
+            Some("trust"),
+            "the same account keeps its trust"
+        );
+        assert_eq!(c.session.client_id(), id);
+        assert!(cookies_file(dir.path()).exists());
+
+        c.forget_other_account("second@example.com").unwrap();
+        assert!(
+            c.session.trust_token.is_none(),
+            "another account starts without the last one's trust"
+        );
+        assert_ne!(c.session.client_id(), id, "nor its client id");
+        assert!(!cookies_file(dir.path()).exists(), "nor its cookies");
+        assert!(!client(dir.path()).has_stored_session());
+    }
+}
+
+#[cfg(test)]
+mod security_key_tests {
+    use super::{offers_security_key, two_factor_places};
+
+    /// Both layouts Apple uses for a security-key account are found: the challenge at the top
+    /// and under `fsaVerification`. Neither names a device or a number.
+    #[test]
+    fn a_security_key_is_found_in_either_layout() {
+        let challenge =
+            serde_json::json!({ "challenge": "c", "keyHandles": ["k"], "rpId": "apple.com" });
+        let top = serde_json::json!({ "fsaChallenge": challenge });
+        let inner = serde_json::json!({ "fsaVerification": { "fsaChallenge": challenge } });
+        for answer in [&top, &inner] {
+            assert!(
+                two_factor_places(answer)
+                    .iter()
+                    .any(|p| offers_security_key(p)),
+                "{answer}"
+            );
+        }
+        let codes = serde_json::json!({ "trustedDeviceCount": 1 });
+        assert!(!two_factor_places(&codes)
+            .iter()
+            .any(|p| offers_security_key(p)));
     }
 }

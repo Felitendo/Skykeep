@@ -68,6 +68,14 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 }
 
 /// The engine's version, the same as the desktop app's.
+/// Where the app goes when it opens.
+#[derive(uniffi::Enum)]
+pub enum Reopened {
+    Library,
+    Code,
+    SignIn,
+}
+
 #[uniffi::export]
 pub fn engine_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -127,7 +135,7 @@ pub struct CodeOptions {
 }
 
 /// A way to reach someone: `phone`, `email`, `url` or `address`, with Apple's label.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 pub struct Method {
     pub kind: String,
     pub label: Option<String>,
@@ -135,7 +143,7 @@ pub struct Method {
 }
 
 /// A person in the iCloud address book, as Android's Contacts will hold them.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 pub struct Person {
     /// Apple's id for the card: the raw contact's source id, so a sync finds it again.
     pub guid: String,
@@ -162,6 +170,9 @@ pub struct Person {
     /// The card's picture as Apple holds it, if it has one; fetched with
     /// [`Account::contact_photo`] only when its `key` is not the one the phone has.
     pub photo: Option<PhotoRef>,
+    /// The card's postal addresses, part by part. `None` in a base kept before addresses were:
+    /// what changed in them can't be told, so they are left as Apple has them.
+    pub addresses: Option<Vec<contacts::Address>>,
 }
 
 /// An iCloud contacts list: a label in Android's Contacts.
@@ -177,37 +188,8 @@ pub struct CList {
 pub struct Book {
     pub people: Vec<Person>,
     pub lists: Vec<CList>,
-}
-
-/// A change to a list made on the phone. Members are changed as added and removed, laid over
-/// the list as iCloud has it when sent, so members added on another device meanwhile stay.
-#[derive(uniffi::Enum)]
-pub enum ListChange {
-    Create {
-        name: String,
-        members: Vec<String>,
-    },
-    Rename {
-        guid: String,
-        name: String,
-    },
-    Delete {
-        guid: String,
-    },
-    Members {
-        guid: String,
-        add: Vec<String>,
-        remove: Vec<String>,
-    },
-}
-
-/// How one list change went: in iCloud now (`guid`, the list's), gone from iCloud already
-/// (deleted on another device), or not sent (`later`: try again on the next sync).
-#[derive(uniffi::Enum)]
-pub enum ListOutcome {
-    Saved { guid: String },
-    Gone,
-    Failed { reason: String, later: bool },
+    /// The card the person has said is their own, if they have: the account's picture.
+    pub me: Option<String>,
 }
 
 /// Where a card's picture is and which picture it is.
@@ -230,52 +212,16 @@ pub enum PhotoEdit {
     Removed,
 }
 
-/// What changed on the phone to one contact, to be sent to iCloud.
-#[derive(uniffi::Enum)]
+/// What changed on the phone to one contact or event, to be sent to iCloud.
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChangeKind {
     /// Made on the phone: created in iCloud under `guid`, chosen on the phone beforehand so a
     /// send repeated after a lost answer finds it made rather than making a second.
     Create,
-    /// Edited on the phone: only what changed from `base` written over iCloud's current card.
+    /// Edited on the phone: only what changed from `base` written over iCloud's current copy.
     Update,
     /// Deleted on the phone.
     Delete,
-}
-
-/// One change, as the phone's Contacts holds it now and as it was last synced (`base`).
-#[derive(uniffi::Record)]
-pub struct ContactChange {
-    pub kind: ChangeKind,
-    pub guid: String,
-    pub person: Option<Person>,
-    pub base: Option<Person>,
-    /// The card's picture changed on the phone; `None`: left as Apple has it.
-    pub photo: Option<PhotoEdit>,
-}
-
-/// How one change went.
-#[derive(uniffi::Enum)]
-pub enum ChangeOutcome {
-    /// In iCloud now (or already as asked: made, or gone).
-    Saved,
-    /// Edited here but deleted in iCloud meanwhile: kept, as a new card under `guid`, rather
-    /// than the edit lost.
-    Recreated { guid: String },
-    /// Not sent: `later` true when it can go as it is on a later sync (Apple busy or out of
-    /// reach, the card changed meanwhile); false when Apple refused it, with why.
-    Failed { reason: String, later: bool },
-}
-
-/// One change made on the phone to an event (or to one occurrence of a repeating event, whose id
-/// is `<series>__<start>`), to be sent to iCloud.
-#[derive(uniffi::Record)]
-pub struct EventChange {
-    pub kind: ChangeKind,
-    pub guid: String,
-    pub event: Option<Ev>,
-    pub base: Option<Ev>,
-    /// A new event's repeat, when the phone gave it one iCloud can keep.
-    pub repeat: Option<Repeat>,
 }
 
 /// How a new event repeats, in iCloud's terms (the engine's `EventRepeat`): `daily`, `weekly`,
@@ -364,7 +310,7 @@ pub struct Cal {
 }
 
 /// One event, or one occurrence of a repeating event (its own id), in a calendar.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 pub struct Ev {
     pub guid: String,
     pub calendar_guid: String,
@@ -376,6 +322,9 @@ pub struct Ev {
     pub all_day: bool,
     pub timezone: Option<String>,
     pub notes: Option<String>,
+    /// The event's link. Android's Calendar has no place for it; kept in the row's base so an
+    /// edit made on the phone leaves it as Apple has it.
+    pub url: Option<String>,
     pub etag: Option<String>,
 }
 
@@ -397,10 +346,33 @@ fn event_of(e: &Ev, guid: &str, etag: Option<String>) -> quince_core::calendar::
         ends_at: e.ends_at,
         all_day: e.all_day,
         timezone: e.timezone.clone(),
-        url: None,
+        url: e.url.clone(),
         notes: e.notes.clone(),
         etag: etag.or_else(|| e.etag.clone()),
     }
+}
+
+/// The kinds of detail the phone's contacts hold and edit. Every other kind Apple keeps on a
+/// card (related names, dates, social profiles, instant messaging) the phone never reads.
+const PHONE_KINDS: [&str; 4] = ["phone", "email", "url", "address"];
+
+/// An edit as the engine sends it: the phone's own kinds as edited, every other kind as the
+/// base had it. Without this, a card edited on the phone lost at Apple every related name,
+/// date, profile and messaging handle, since they were absent from the edit and present in
+/// the base, which reads as removed.
+fn keep_unmodelled(edit: &Person, base: Option<&Person>) -> Person {
+    let mut out = edit.clone();
+    out.methods
+        .retain(|m| PHONE_KINDS.contains(&m.kind.as_str()));
+    if let Some(base) = base {
+        out.methods.extend(
+            base.methods
+                .iter()
+                .filter(|m| !PHONE_KINDS.contains(&m.kind.as_str()))
+                .cloned(),
+        );
+    }
+    out
 }
 
 /// A person as the engine's contact, under `guid`. The photo is never touched from here: the
@@ -413,12 +385,18 @@ fn contact_of(p: &Person, guid: &str) -> quince_core::contacts::Contact {
         last_name: p.last_name.clone(),
         company: p.company.clone(),
         is_company: p.is_company,
-        birthday: p.birthday.clone(),
+        // A day and month without a year is Apple's 1604 (occasions::birthday_from_phone).
+        birthday: p
+            .birthday
+            .as_deref()
+            .map(quince_icloud::occasions::birthday_from_phone),
         notes: p.notes.clone(),
         etag: p.etag.clone(),
+        // Addresses go part by part (contacts.rs), never as a line of text in the card.
         methods: p
             .methods
             .iter()
+            .filter(|m| m.kind != "address")
             .map(|m| quince_core::contacts::ContactMethod {
                 kind: m.kind.clone(),
                 label: m.label.clone(),
@@ -480,43 +458,64 @@ fn with_photo(
     Ok(card)
 }
 
-/// The base an edit is laid against. With the picture changed on the phone it holds the picture
-/// Apple has now, so the merge sees exactly that change, made against what is really there (a
-/// picture changed on an iPhone meanwhile is replaced only because one was chosen here).
-fn base_with_photo(
-    base: Option<quince_core::contacts::Contact>,
-    edit: Option<&PhotoEdit>,
-    card: &serde_json::Value,
-) -> Option<quince_core::contacts::Contact> {
-    let mut base = base?;
-    if edit.is_some() {
-        base.photo_url = card
-            .pointer("/photo/url")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        base.photo_crop = None;
-    }
-    Some(base)
-}
-
+/// An error as the app is given it: the reason shown in notifications and logged by the app is
+/// redacted as the engine's own log line is, so Apple's query (the account number, the session's
+/// ids) never reaches a notification or the phone's log through it.
 fn failed(e: impl std::fmt::Display + std::fmt::Debug) -> EngineError {
-    log::error(&format!("{e:?}"));
+    log::error(&log::redact(&format!("{e:?}")));
     EngineError::Failed {
-        reason: e.to_string(),
+        reason: log::redact(&e.to_string()),
     }
 }
 
-/// The phone's own log, through Android's `liblog`; nothing elsewhere.
+mod calendar;
+mod contacts;
 mod drive;
 mod notes;
+mod outbox;
+mod pass;
 mod photos;
 mod reminders;
+pub use calendar::{CalendarSent, PhoneEvent};
+pub use contacts::{AccountProfile, Address, BookRead, PhoneCard, PhoneList, SendState, Settled};
 pub use drive::DItem;
 pub use notes::{NDoc, NFolder, NItem, NSpan, NSync};
-pub use photos::{PAlbum, PBackup, PIndex, PItem, PSize, PSync, PView};
+pub use outbox::NotSent;
+pub use pass::{DataAccessNow, DataState, SessionState};
+pub use photos::{
+    PAlbum, PBackup, PIndex, PItem, PLibrary, PLibraryChoice, PSharedAlbum, PSize, PSync, PView,
+};
 pub use reminders::{RCounts, REdit, RItem, RList, RSync, RView};
 
+/// The phone's own log, through Android's `liblog`; nothing elsewhere.
 mod log {
+    /// A line for the phone's log with every web address cut at its `?`: Apple's addresses carry
+    /// the account's number and the session's ids in their query, and the log ends up in bug
+    /// reports and on any computer connected over USB. The address itself (which call failed)
+    /// stays, as the desktop's diagnostics keep it.
+    pub fn redact(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find("http") {
+            let (before, url) = rest.split_at(at);
+            out.push_str(before);
+            let end = url
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ','))
+                .unwrap_or(url.len());
+            let (address, after) = url.split_at(end);
+            match address.find('?') {
+                Some(q) => {
+                    out.push_str(&address[..q]);
+                    out.push_str("?…");
+                }
+                None => out.push_str(address),
+            }
+            rest = after;
+        }
+        out.push_str(rest);
+        out
+    }
+
     #[cfg(target_os = "android")]
     pub fn error(text: &str) {
         use std::ffi::{c_char, c_int, CString};
@@ -559,6 +558,39 @@ pub struct Account {
             std::sync::Arc<quince_sync::library_lock::LibraryLock>,
         )>,
     >,
+    /// iCloud Drive files read in parts for the Files app (drive.rs): where the parts are kept
+    /// and how much disk they may take, as the app set it.
+    drive_parts: std::sync::Mutex<Option<(std::path::PathBuf, u64)>>,
+    /// The parts kept, and whose they are: opened per account, as the library is.
+    drive_cache: std::sync::Mutex<Option<(String, std::sync::Arc<quince_vfs::Cache>)>>,
+    /// Drive's download links in use, each asked of Apple once while it lasts.
+    drive_links: std::sync::Arc<quince_icloud::drive_parts::Links>,
+    /// Files written by other apps through the Files app and not yet at Apple (drive.rs):
+    /// the desktop folder's own journal, opened per account.
+    drive_writes: std::sync::Mutex<Option<(String, std::sync::Arc<quince_vfs::writes::Writes>)>>,
+}
+
+/// The HTTP client, a service's address and the session's query: one call to Apple's needs.
+pub(crate) type Service = (reqwest::Client, String, Vec<(String, String)>);
+
+impl Account {
+    /// The session, even after a call that held it panicked: the panic failed that one call
+    /// (UniFFI turns it into an exception), and every later one would otherwise fail too,
+    /// `has_session` answering "signed out" until the app was killed.
+    pub(crate) fn client(&self) -> std::sync::MutexGuard<'_, quince_auth::Client> {
+        self.client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// What a call to Apple needs, taken from the session and the lock let go of at once: a
+    /// read that takes a minute never holds sign-in, a sync of another service, or the app's
+    /// screens waiting behind it. `None` when Apple hasn't offered `service`.
+    pub(crate) fn service(&self, service: &str) -> Option<Service> {
+        let c = self.client();
+        let root = c.session().service_url(service)?;
+        Some((c.http().clone(), root, c.service_params()))
+    }
 }
 
 #[uniffi::export]
@@ -571,17 +603,38 @@ impl Account {
             client: std::sync::Mutex::new(client),
             dir: std::path::PathBuf::from(state_dir),
             library: std::sync::Mutex::new(None),
+            drive_parts: std::sync::Mutex::new(None),
+            drive_cache: std::sync::Mutex::new(None),
+            drive_links: std::sync::Arc::new(quince_icloud::drive_parts::Links::new()),
+            drive_writes: std::sync::Mutex::new(None),
         }))
     }
 
     /// Signs in again with the session kept from last time; false when there is none to use.
+    /// Whether a session is kept on the phone: answered from the phone alone, so the app can
+    /// open the library at once and let [`Account::reopen`] check with Apple behind it.
+    pub fn has_session(&self) -> bool {
+        self.client().has_stored_session()
+    }
+
+    /// Where the app goes, as the desktop decides it: offline with a session kept is the
+    /// library; only Apple refusing the session, or nothing kept, is sign-in.
+    pub fn reopen(&self) -> Result<Reopened, EngineError> {
+        let mut c = self.client();
+        Ok(match runtime().block_on(c.reopen()).map_err(failed)? {
+            quince_auth::Reopen::Library => Reopened::Library,
+            quince_auth::Reopen::Code => Reopened::Code,
+            quince_auth::Reopen::SignIn => Reopened::SignIn,
+        })
+    }
+
     pub fn resume(&self) -> Result<bool, EngineError> {
-        let mut c = self.client.lock().map_err(failed)?;
+        let mut c = self.client();
         runtime().block_on(c.resume()).map_err(failed)
     }
 
     pub fn sign_in(&self, apple_id: String, password: String) -> Result<SignIn, EngineError> {
-        let mut c = self.client.lock().map_err(failed)?;
+        let mut c = self.client();
         match runtime()
             .block_on(c.sign_in(&apple_id, &password))
             .map_err(failed)?
@@ -592,7 +645,7 @@ impl Account {
     }
 
     pub fn code_options(&self) -> Result<CodeOptions, EngineError> {
-        let mut c = self.client.lock().map_err(failed)?;
+        let mut c = self.client();
         let o = runtime().block_on(c.two_factor_options()).map_err(failed)?;
         Ok(CodeOptions {
             trusted_devices: o.trusted_device_count,
@@ -611,24 +664,24 @@ impl Account {
 
     /// The code shown on a trusted device.
     pub fn submit_code(&self, code: String) -> Result<(), EngineError> {
-        let mut c = self.client.lock().map_err(failed)?;
+        let mut c = self.client();
         runtime()
             .block_on(c.submit_two_factor(&code))
             .map_err(failed)
     }
 
     pub fn resend_to_devices(&self) -> Result<(), EngineError> {
-        let mut c = self.client.lock().map_err(failed)?;
+        let mut c = self.client();
         runtime().block_on(c.resend_to_devices()).map_err(failed)
     }
 
     pub fn send_sms(&self, phone_id: u64) -> Result<(), EngineError> {
-        let mut c = self.client.lock().map_err(failed)?;
+        let mut c = self.client();
         runtime().block_on(c.send_sms(phone_id)).map_err(failed)
     }
 
     pub fn submit_sms_code(&self, phone_id: u64, code: String) -> Result<(), EngineError> {
-        let mut c = self.client.lock().map_err(failed)?;
+        let mut c = self.client();
         runtime()
             .block_on(c.submit_sms_code(phone_id, &code))
             .map_err(failed)
@@ -636,92 +689,16 @@ impl Account {
 
     /// The Apple Account signed in, as Android's account list names it.
     pub fn apple_id(&self) -> Option<String> {
-        let c = self.client.lock().ok()?;
+        let c = self.client();
         c.session().apple_id.clone()
     }
 
-    /// The whole iCloud address book, read as desktop reads it (Apple's `/co/startup`).
-    pub fn contacts(&self) -> Result<Vec<Person>, EngineError> {
-        Ok(self.address_book()?.people)
-    }
-
-    /// The whole iCloud address book: the people, and the lists (Android's labels) they are in.
-    pub fn address_book(&self) -> Result<Book, EngineError> {
-        let c = self.client.lock().map_err(failed)?;
-        let root = c
-            .session()
-            .service_url("contacts")
-            .ok_or_else(|| failed("Apple hasn't offered a contacts service for this account."))?;
-        let (book, _) = runtime()
-            .block_on(quince_icloud::contacts::fetch_book_with_tokens(
-                c.http(),
-                &root,
-                c.service_params(),
-            ))
-            .map_err(failed)?;
-        let mut details: std::collections::HashMap<String, quince_core::contacts::ContactDetails> =
-            book.details.into_iter().collect();
-        let mut groups: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        for list in &book.lists {
-            for member in &list.members {
-                groups
-                    .entry(member.clone())
-                    .or_default()
-                    .push(list.guid.clone());
-            }
-        }
-        let lists = book
-            .lists
-            .iter()
-            .map(|l| CList {
-                guid: l.guid.clone(),
-                name: l.name.clone(),
-                etag: l.etag.clone(),
-            })
-            .collect();
-        let people = book
-            .contacts
-            .into_iter()
-            .map(|p| {
-                let d = details.remove(&p.guid).unwrap_or_default();
-                let in_lists = groups.remove(&p.guid).unwrap_or_default();
-                Person {
-                    guid: p.guid,
-                    etag: p.etag,
-                    first_name: p.first_name,
-                    middle_name: p.middle_name,
-                    last_name: p.last_name,
-                    company: p.company,
-                    is_company: p.is_company,
-                    birthday: p.birthday,
-                    notes: p.notes,
-                    methods: p
-                        .methods
-                        .into_iter()
-                        .map(|m| Method {
-                            kind: m.kind,
-                            label: m.label,
-                            value: m.value,
-                        })
-                        .collect(),
-                    photo: p.photo_url.map(|url| PhotoRef {
-                        key: p.photo_signature.unwrap_or_else(|| url.clone()),
-                        url,
-                        crop: p.photo_crop,
-                    }),
-                    prefix: d.prefix,
-                    suffix: d.suffix,
-                    nickname: d.nickname,
-                    phonetic_first_name: d.phonetic_first_name,
-                    phonetic_last_name: d.phonetic_last_name,
-                    job_title: d.job_title,
-                    department: d.department,
-                    groups: in_lists,
-                }
-            })
-            .collect();
-        Ok(Book { people, lists })
+    /// The signed-in account's own tag (from Apple's account number, never the Apple ID typed):
+    /// the same for every spelling of the Apple ID, different for every other account. Android's
+    /// account for this Apple Account carries it, so a sync never runs for another account's.
+    pub fn account_tag(&self) -> Option<String> {
+        let c = self.client();
+        quince_sync::queue::asked_as(&c.service_params())
     }
 
     /// A card's picture for the phone's Contacts: cut to the square its owner chose and `size`
@@ -729,7 +706,7 @@ impl Account {
     /// own smaller copy for lists from this one.
     pub fn contact_photo(&self, photo: PhotoRef, size: u32) -> Result<Vec<u8>, EngineError> {
         let (http, params) = {
-            let c = self.client.lock().map_err(failed)?;
+            let c = self.client();
             (c.http().clone(), c.service_params())
         };
         let bytes = runtime()
@@ -739,240 +716,6 @@ impl Account {
             .map_err(failed)?;
         let crop = photo.crop.as_deref().and_then(quince_media::Crop::parse);
         quince_media::avatar(&bytes, crop, size).map_err(failed)
-    }
-
-    /// The phone's changes to lists sent to iCloud, each laid over the list as iCloud has it
-    /// now: one read of the address book, then each change in order. One outcome per change.
-    pub fn save_lists(&self, changes: Vec<ListChange>) -> Result<Vec<ListOutcome>, EngineError> {
-        use quince_icloud::contacts as c;
-        let (http, root, params) = {
-            let cl = self.client.lock().map_err(failed)?;
-            let root = cl.session().service_url("contacts").ok_or_else(|| {
-                failed("Apple hasn't offered a contacts service for this account.")
-            })?;
-            (cl.http().clone(), root, cl.service_params())
-        };
-        let ledger = c::Ledger::new();
-        let mut lists = runtime()
-            .block_on(c::fetch_book_with_tokens(&http, &root, params.clone()))
-            .map_err(failed)?
-            .0
-            .lists;
-        let mut out = Vec::with_capacity(changes.len());
-        for change in changes {
-            let at = |guid: &str| lists.iter().position(|l| l.guid == guid);
-            let sent: quince_icloud::Result<ListOutcome> = runtime().block_on(async {
-                match change {
-                    ListChange::Create { name, members } => {
-                        let guid =
-                            c::create_list(&http, &root, params.clone(), &ledger, &name, &members)
-                                .await?;
-                        Ok(ListOutcome::Saved { guid })
-                    }
-                    ListChange::Rename { guid, name } => match at(&guid) {
-                        None => Ok(ListOutcome::Gone),
-                        Some(i) => {
-                            let mut list = lists[i].clone();
-                            list.name = name;
-                            c::update_list(&http, &root, params.clone(), &ledger, &list).await?;
-                            Ok(ListOutcome::Saved { guid })
-                        }
-                    },
-                    ListChange::Delete { guid } => {
-                        if at(&guid).is_some() {
-                            c::delete_list(&http, &root, params.clone(), &ledger, &guid).await?;
-                        }
-                        Ok(ListOutcome::Saved { guid })
-                    }
-                    ListChange::Members { guid, add, remove } => match at(&guid) {
-                        None => Ok(ListOutcome::Gone),
-                        Some(i) => {
-                            let mut list = lists[i].clone();
-                            list.members.retain(|m| !remove.contains(m));
-                            for m in add {
-                                if !list.members.contains(&m) {
-                                    list.members.push(m);
-                                }
-                            }
-                            c::update_list(&http, &root, params.clone(), &ledger, &list).await?;
-                            Ok(ListOutcome::Saved { guid })
-                        }
-                    },
-                }
-            });
-            // What this change wrote is old in the lists read before it: read again.
-            ledger.spend();
-            if matches!(sent, Ok(ListOutcome::Saved { .. })) {
-                if let Ok((fresh, _)) =
-                    runtime().block_on(c::fetch_book_with_tokens(&http, &root, params.clone()))
-                {
-                    lists = fresh.lists;
-                }
-            }
-            out.push(match sent {
-                Ok(done) => done,
-                Err(e) => {
-                    log::error(&format!("{e:?}"));
-                    let later = matches!(
-                        e,
-                        quince_icloud::Error::Network(_)
-                            | quince_icloud::Error::Busy
-                            | quince_icloud::Error::Conflict
-                            | quince_icloud::Error::ReauthRequired
-                    );
-                    ListOutcome::Failed {
-                        reason: e.to_string(),
-                        later,
-                    }
-                }
-            });
-        }
-        Ok(out)
-    }
-
-    /// The phone's changes to contacts sent to iCloud, as the desktop sends its own (outbox.rs):
-    /// the book read once and again only when its tokens are spent; a creation under the id the
-    /// phone chose, made at most once; an edit as a three-way merge over Apple's current card,
-    /// so what changed on another device meanwhile stays; a deletion against the card as it is
-    /// now. One outcome per change, in order. Fails as a whole only when the book can't be read.
-    pub fn save_contacts(
-        &self,
-        changes: Vec<ContactChange>,
-    ) -> Result<Vec<ChangeOutcome>, EngineError> {
-        use quince_icloud::contacts as c;
-        let client = self.client.lock().map_err(failed)?;
-        let root = client
-            .session()
-            .service_url("contacts")
-            .ok_or_else(|| failed("Apple hasn't offered a contacts service for this account."))?;
-        let (http, params) = (client.http().clone(), client.service_params());
-        drop(client);
-        let ledger = c::Ledger::new();
-        let mut cards: std::collections::HashMap<String, serde_json::Value> =
-            std::collections::HashMap::new();
-        let mut out = Vec::with_capacity(changes.len());
-        for change in changes {
-            if !ledger.has_tokens() {
-                let (read, tokens) = runtime()
-                    .block_on(c::cards_with_tokens(&http, &root, params.clone()))
-                    .map_err(failed)?;
-                ledger.hold(tokens);
-                cards = read
-                    .into_iter()
-                    .filter_map(|card| Some((card.get("contactId")?.as_str()?.to_string(), card)))
-                    .collect();
-            }
-            let current = cards.get(&change.guid).cloned();
-            let sent: quince_icloud::Result<ChangeOutcome> = runtime().block_on(async {
-                match change.kind {
-                    ChangeKind::Delete => match &current {
-                        None => Ok(ChangeOutcome::Saved),
-                        Some(card) => {
-                            c::merge::delete_card(&http, &root, params.clone(), &ledger, card)
-                                .await
-                                .map(|()| ChangeOutcome::Saved)
-                        }
-                    },
-                    ChangeKind::Create => {
-                        if current.is_some() {
-                            return Ok(ChangeOutcome::Saved);
-                        }
-                        let person = change.person.as_ref().ok_or_else(|| {
-                            quince_icloud::Error::Protocol(
-                                "a new contact with nothing in it".into(),
-                            )
-                        })?;
-                        let card = card_of(
-                            with_photo(contact_of(person, &change.guid), change.photo.as_ref())?,
-                            person,
-                        );
-                        c::create_card_named(
-                            &http,
-                            &root,
-                            params.clone(),
-                            &ledger,
-                            &change.guid,
-                            &card,
-                        )
-                        .await
-                        .map(|()| ChangeOutcome::Saved)
-                    }
-                    ChangeKind::Update => {
-                        let person = change.person.as_ref().ok_or_else(|| {
-                            quince_icloud::Error::Protocol("an edit with nothing in it".into())
-                        })?;
-                        match &current {
-                            // Deleted in iCloud while edited here: kept as a new card.
-                            None => {
-                                let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
-                                let card = card_of(
-                                    with_photo(contact_of(person, &guid), change.photo.as_ref())?,
-                                    person,
-                                );
-                                c::create_card_named(
-                                    &http,
-                                    &root,
-                                    params.clone(),
-                                    &ledger,
-                                    &guid,
-                                    &card,
-                                )
-                                .await
-                                .map(|()| ChangeOutcome::Recreated { guid })
-                            }
-                            Some(card) => {
-                                let base = change.base.as_ref().and_then(|b| {
-                                    base_with_photo(
-                                        Some(contact_of(b, &change.guid)),
-                                        change.photo.as_ref(),
-                                        card,
-                                    )
-                                    .map(|contact| card_of(contact, b))
-                                });
-                                let mine = card_of(
-                                    with_photo(
-                                        contact_of(person, &change.guid),
-                                        change.photo.as_ref(),
-                                    )?,
-                                    person,
-                                );
-                                c::update_card(
-                                    &http,
-                                    &root,
-                                    params.clone(),
-                                    &ledger,
-                                    &mine,
-                                    Some(card),
-                                    base.as_ref(),
-                                )
-                                .await
-                                .map(|()| ChangeOutcome::Saved)
-                            }
-                        }
-                    }
-                }
-            });
-            // What this change wrote is old in the book read now: read again before the next.
-            ledger.spend();
-            out.push(match sent {
-                Ok(done) => done,
-                Err(e) => {
-                    log::error(&format!("{e:?}"));
-                    let later = matches!(
-                        e,
-                        quince_icloud::Error::Network(_)
-                            | quince_icloud::Error::Busy
-                            | quince_icloud::Error::Conflict
-                            | quince_icloud::Error::ReauthRequired
-                    );
-                    ChangeOutcome::Failed {
-                        reason: e.to_string(),
-                        later,
-                    }
-                }
-            });
-        }
-        Ok(out)
     }
 
     /// The calendars and the events between two days (`YYYY-MM-DD`, both included) in the
@@ -986,19 +729,12 @@ impl Account {
         to: String,
         tz: String,
     ) -> Result<CalendarWindow, EngineError> {
-        let c = self.client.lock().map_err(failed)?;
-        let root = c
-            .session()
-            .service_url("calendar")
+        let (http, root, params) = self
+            .service("calendar")
             .ok_or_else(|| failed("Apple hasn't offered a calendar service for this account."))?;
         let snap = runtime()
             .block_on(quince_icloud::sync::fetch_calendar(
-                c.http(),
-                &root,
-                c.service_params(),
-                &from,
-                &to,
-                &tz,
+                &http, &root, params, &from, &to, &tz,
             ))
             .map_err(failed)?;
         Ok(CalendarWindow {
@@ -1012,185 +748,130 @@ impl Account {
                     writable: k.writable,
                 })
                 .collect(),
-            events: snap
-                .events
-                .into_iter()
-                .map(|e| Ev {
-                    guid: e.guid,
-                    calendar_guid: e.calendar_guid,
-                    title: e.title,
-                    location: e.location,
-                    starts_at: e.starts_at,
-                    ends_at: e.ends_at,
-                    all_day: e.all_day,
-                    timezone: e.timezone,
-                    notes: e.notes,
-                    etag: e.etag,
-                })
-                .collect(),
+            events: snap.events.into_iter().map(calendar::ev_of).collect(),
         })
     }
 
-    /// The phone's changes to events sent to iCloud. Apple's copies read once for the span
-    /// (`from`..=`to` in `tz`, as [`Self::calendar_window`] reads it). A new event under the id
-    /// the phone chose, made at most once; an edit laid over Apple's copy as it is now with
-    /// `merge_edit` — a field changed only on another device keeps that change — and, for one
-    /// occurrence of a repeating event, saved for that occurrence alone, as "This Event" does on
-    /// an iPhone; a deletion likewise. An edit to an event deleted elsewhere is kept as a new
-    /// one. One outcome per change, in order.
-    pub fn save_events(
-        &self,
-        changes: Vec<EventChange>,
-        from: String,
-        to: String,
-        tz: String,
-    ) -> Result<Vec<ChangeOutcome>, EngineError> {
-        use quince_icloud::calendar::{self as k, CalendarClient, EventRepeat, Scope};
-        let client = self.client.lock().map_err(failed)?;
-        let root = client
-            .session()
-            .service_url("calendar")
-            .ok_or_else(|| failed("Apple hasn't offered a calendar service for this account."))?;
-        let (http, params) = (client.http().clone(), client.service_params());
-        drop(client);
-        let theirs: std::collections::HashMap<String, quince_core::calendar::Event> = runtime()
-            .block_on(quince_icloud::sync::fetch_calendar(
-                &http,
-                &root,
-                params.clone(),
-                &from,
-                &to,
-                &tz,
-            ))
-            .map_err(failed)?
-            .events
-            .into_iter()
-            .map(|e| (e.guid.clone(), e))
-            .collect();
-        let cal = CalendarClient::new(&http, &root, params);
-        let scope = |guid: &str| k::is_occurrence(guid).then_some(Scope::This);
-        let mut out = Vec::with_capacity(changes.len());
-        for change in changes {
-            let current = theirs.get(&change.guid);
-            let sent: quince_icloud::Result<ChangeOutcome> = runtime().block_on(async {
-                match change.kind {
-                    ChangeKind::Delete => match current {
-                        None => Ok(ChangeOutcome::Saved),
-                        Some(event) => cal
-                            .delete_event_scoped(event, None, scope(&event.guid))
-                            .await
-                            .map(|()| ChangeOutcome::Saved),
-                    },
-                    ChangeKind::Create => {
-                        if current.is_some() {
-                            return Ok(ChangeOutcome::Saved);
-                        }
-                        let ev = change.event.as_ref().ok_or_else(|| {
-                            quince_icloud::Error::Protocol("a new event with nothing in it".into())
-                        })?;
-                        let repeat = change.repeat.as_ref().map(|r| EventRepeat {
-                            freq: r.freq.clone(),
-                            interval: r.interval,
-                            count: r.count,
-                            week_days: r.week_days.clone(),
-                            position: r.position.clone(),
-                            month_days: r.month_days.clone(),
-                            months: r.months.clone(),
-                            until: r.until.clone(),
-                        });
-                        cal.put_event_full(
-                            &event_of(ev, &change.guid, None),
-                            None,
-                            None,
-                            repeat.as_ref().map(Some),
-                            None,
-                        )
-                        .await
-                        .map(|_| ChangeOutcome::Saved)
-                    }
-                    ChangeKind::Update => {
-                        let ev = change.event.as_ref().ok_or_else(|| {
-                            quince_icloud::Error::Protocol("an edit with nothing in it".into())
-                        })?;
-                        match current {
-                            // Deleted in iCloud while edited here: kept, as an event of its own.
-                            None => {
-                                let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
-                                cal.put_event(&event_of(ev, &guid, None), None)
-                                    .await
-                                    .map(|_| ChangeOutcome::Recreated { guid })
-                            }
-                            Some(now) => {
-                                let mut mine = event_of(ev, &change.guid, now.etag.clone());
-                                // The link is not on the phone: Apple's kept (the merge keeps it
-                                // as unchanged here; with no base it is carried over).
-                                mine.url.clone_from(&now.url);
-                                let mut merged = match &change.base {
-                                    Some(b) => {
-                                        let mut base = event_of(b, &change.guid, None);
-                                        base.url.clone_from(&now.url);
-                                        k::merge_edit(&base, &mine, now)
-                                    }
-                                    None => mine,
-                                };
-                                if merged.calendar_guid != now.calendar_guid
-                                    && !k::is_occurrence(&change.guid)
-                                {
-                                    // Moved to another calendar here: moved at Apple, as
-                                    // icloud.com moves one — never a second copy in the new one.
-                                    cal.put_event_moved(
-                                        &merged,
-                                        None,
-                                        None,
-                                        None,
-                                        None,
-                                        Some((now.calendar_guid.as_str(), None)),
-                                    )
-                                    .await
-                                    .map(|_| ChangeOutcome::Saved)
-                                } else {
-                                    // One occurrence keeps its series' calendar: Apple moves a
-                                    // series, never one of its occurrences alone.
-                                    merged.calendar_guid.clone_from(&now.calendar_guid);
-                                    cal.put_event_full(
-                                        &merged,
-                                        None,
-                                        None,
-                                        None,
-                                        scope(&change.guid),
-                                    )
-                                    .await
-                                    .map(|_| ChangeOutcome::Saved)
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-            out.push(match sent {
-                Ok(done) => done,
-                Err(e) => {
-                    log::error(&format!("{e:?}"));
-                    let later = matches!(
-                        e,
-                        quince_icloud::Error::Network(_)
-                            | quince_icloud::Error::Busy
-                            | quince_icloud::Error::Conflict
-                            | quince_icloud::Error::ReauthRequired
-                    );
-                    ChangeOutcome::Failed {
-                        reason: e.to_string(),
-                        later,
-                    }
-                }
-            });
+    /// Everything this account keeps on the phone deleted: its library (notes, reminders, photo
+    /// and Drive lists, changes not yet sent), as the desktop's Remove from this computer does.
+    /// Called before [`Account::sign_out`] when the person chooses Remove from Phone; the app
+    /// clears its caches beside it.
+    pub fn forget_account(&self) -> Result<(), EngineError> {
+        let session = {
+            let c = self.client();
+            quince_sync::queue::asked_as(&c.service_params())
+        };
+        self.forget_drive_parts();
+        // Closed first, so nothing writes into the folder as it goes. Whose it is comes from the
+        // session, or else from the library open (a session already half gone still names its
+        // library); with neither, nothing can be said to be removed, and the person is told.
+        let open = self
+            .library
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|(who, _)| who);
+        let account = session.or(open).ok_or_else(|| {
+            failed("Couldn't tell which account's copy to remove. Sign in again, then remove it.")
+        })?;
+        let dir = self.dir.join("libraries").join(account);
+        match std::fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(failed(e)),
+            _ => Ok(()),
         }
-        Ok(out)
     }
 
     /// Signs out here: the session forgotten on this phone, its secrets deleted.
     pub fn sign_out(&self) -> Result<(), EngineError> {
-        let mut c = self.client.lock().map_err(failed)?;
+        // Drive's parts read here are the session's: never served to whoever signs in next.
+        self.forget_drive_parts();
+        let mut c = self.client();
         c.sign_out().map_err(failed)
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    /// Apple's query (the account number, the session's ids) never reaches the phone's log;
+    /// the address and the rest of the line do.
+    #[test]
+    fn a_logged_address_loses_its_query() {
+        let line = r#"Network(reqwest::Error { url: "https://p42-ckdatabasews.icloud.com/database/1/x?dsid=12345&clientId=ab", source: dns })"#;
+        let out = super::log::redact(line);
+        assert!(!out.contains("12345") && !out.contains("clientId"), "{out}");
+        assert!(
+            out.contains("https://p42-ckdatabasews.icloud.com/database/1/x?…"),
+            "{out}"
+        );
+        assert!(out.ends_with("source: dns })"), "{out}");
+        assert_eq!(super::log::redact("no address here"), "no address here");
+    }
+}
+
+#[cfg(test)]
+mod contact_edit_tests {
+    use super::{keep_unmodelled, Method, Person};
+
+    fn person(methods: &[(&str, &str)]) -> Person {
+        Person {
+            guid: "G".into(),
+            etag: None,
+            first_name: Some("Ada".into()),
+            middle_name: None,
+            last_name: None,
+            company: None,
+            is_company: false,
+            birthday: None,
+            notes: None,
+            methods: methods
+                .iter()
+                .map(|(kind, value)| Method {
+                    kind: (*kind).into(),
+                    label: None,
+                    value: (*value).into(),
+                })
+                .collect(),
+            prefix: None,
+            suffix: None,
+            nickname: None,
+            phonetic_first_name: None,
+            phonetic_last_name: None,
+            job_title: None,
+            department: None,
+            groups: vec![],
+            photo: None,
+            addresses: None,
+        }
+    }
+
+    /// The phone edits phones, emails, links and addresses; a card's related names, dates,
+    /// profiles and messaging handles go to Apple as the base had them, never as removed.
+    #[test]
+    fn an_edit_keeps_what_the_phone_never_shows() {
+        let base = person(&[
+            ("phone", "1"),
+            ("related", "Mum"),
+            ("date", "2020-01-01"),
+            ("im", "ada"),
+        ]);
+        let edit = person(&[("phone", "2"), ("email", "a@example.com")]);
+        let sent = keep_unmodelled(&edit, Some(&base));
+        let kinds: Vec<(&str, &str)> = sent
+            .methods
+            .iter()
+            .map(|m| (m.kind.as_str(), m.value.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("phone", "2"),
+                ("email", "a@example.com"),
+                ("related", "Mum"),
+                ("date", "2020-01-01"),
+                ("im", "ada")
+            ]
+        );
+        // Without a base, the edit is sent as it is.
+        assert_eq!(keep_unmodelled(&edit, None).methods.len(), 2);
     }
 }
