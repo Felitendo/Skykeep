@@ -329,7 +329,13 @@ jobs:
             || { rm -f "$key"; echo "::error::apksigner could not sign with the key"; exit 1; }
           rm -f "$key"
           "$tools/apksigner" verify --print-certs "$out" > "$RUNNER_TEMP/certs.txt" || { echo "::error::the signed APK does not verify"; exit 1; }
-          grep -E "Signer #1 certificate (DN|SHA-256)" "$RUNNER_TEMP/certs.txt" || { cat "$RUNNER_TEMP/certs.txt"; echo "::error::no signer in the signed APK"; exit 1; }
+          # Signed by Skykeep's own key and no other: its certificate's SHA-256, as the README
+          # publishes it. apksigner names the signer "Signer #1" or, from build-tools 37,
+          # "V3.0 Signer"; the digest line is the same in both.
+          want=610a64506d95da6cce75ff0e40b85902fa41e40d001bba87bf4070fecbf23afb
+          grep -E "certificate (DN|SHA-256 digest):" "$RUNNER_TEMP/certs.txt"
+          got=$(sed -n 's/.*certificate SHA-256 digest: \([0-9a-f]*\).*/\1/p' "$RUNNER_TEMP/certs.txt" | sort -u)
+          [ "$got" = "$want" ] || { cat "$RUNNER_TEMP/certs.txt"; echo "::error::signed by '$got', not Skykeep's key"; exit 1; }
           (cd android && sha256sum "$(basename "$out")" > SHA256SUMS-android.txt && cat SHA256SUMS-android.txt)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
