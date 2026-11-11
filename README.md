@@ -4,7 +4,7 @@
 
 <h1 align="center">Skykeep</h1>
 
-<p align="center"><strong>Your iPhone's iCloud, on Windows, Linux and Android.</strong><br>Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as native apps. Send files to your iPhone, back up every photo, and work offline.</p>
+<p align="center"><strong>iCloud, set free.</strong><br>Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as native apps on Windows, Linux and Android. Free and open source, in sync with your iPhone, iPad and Mac.</p>
 
 <p align="center">
   <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest"><strong>Download</strong></a> ·
@@ -25,13 +25,15 @@
 
 <p align="center"><a href="https://apps.microsoft.com/detail/9P6B042JNK54"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" height="48"></a>&nbsp;&nbsp;<a href="https://snapcraft.io/skykeep"><img src="https://snapcraft.io/static/images/badges/en/snap-store-black.svg" alt="Get it from the Snap Store" height="48"></a></p>
 
-Skykeep keeps your iCloud on your own computer and syncs it quietly in the background. Every app opens instantly, works with no connection at all, and stays in step with your iPhone, iPad and Mac as you use them. Underneath is a small Rust engine that idles at under 0.1% of a CPU core.
+<p align="center"><b>Android:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-android.apk">download the APK</a> · <b>Linux:</b> <a href="#install">all packages</a></p>
+
+Skykeep keeps your iCloud on your computer and phone, in sync with your iPhone, iPad and Mac. Every app opens instantly and works offline. Underneath is a small Rust engine that idles at under 0.1% of a CPU core.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/hero-dark.webp"><img src="docs/media/hero-light.webp" width="880" alt="Skykeep's window with its six app tiles; Notes, Calendar and Photos each open from their tile in a window of their own"></picture></p>
 
 ## Your iCloud, as apps
 
-Open Skykeep and your six apps are right there, each showing what it holds, with your account, backup and settings below them. Each app also has its own icon in your launcher and Start menu, and opens in a window of its own. Click a picture to see it full size.
+Six apps, each with its own icon in your launcher and Start menu and a window of its own. Click a picture to see it full size.
 
 <table>
   <tr>
@@ -50,46 +52,43 @@ Open Skykeep and your six apps are right there, each showing what it holds, with
 
 ## Beyond the apps
 
-**Send to iPhone.** Right-click any file on your computer and choose Send to iPhone. Photos and videos appear in your iPhone's Photos, documents in Files, whether the phone is on your desk or on the other side of the world. Nothing to install on the iPhone, nothing to pair.
+**Send to iPhone.** Right-click any file and choose Send to iPhone: photos land in Photos, documents in Files, wherever the phone is. Nothing to install on the iPhone.
 
-**Back up iCloud.** Every photo and video you've ever taken, and everything in iCloud Drive, copied as the original to a folder or drive you choose, and kept up to date as you add more. Photos are filed by month; Drive keeps its own folders, and a file changed in iCloud keeps its earlier version in an Earlier versions folder. Unplug the drive and it waits; plug it back in and it carries on. A backup never deletes.
+**Back up iCloud.** Every original photo and video, and all of iCloud Drive, copied to a folder or drive you choose and kept current. Changed files keep their earlier version, and a backup never deletes.
 
-**iCloud in your file manager.** iCloud Drive and Photos are real folders in your file manager, and photos show their thumbnails before anything downloads.
+**iCloud in your file manager.** iCloud Drive and Photos are real folders in File Explorer and on Linux, with thumbnails before anything downloads.
 
 ## Engineering
 
-Skykeep is a native engine written in Rust with a light Tauri window on top: one codebase for Linux and Windows, on x86 and ARM.
+A native Rust engine with a light Tauri window on top, one codebase for Linux and Windows on x86 and ARM, and the same engine inside the Android app.
 
-- Every screen reads a local SQLite library, never the network. Apps open instantly and keep working offline.
-- Changes from your iPhone arrive over Apple's own push channel, as they happen.
-- Edits go into an outbox: shown the moment you make them, sent in order, held while you're offline, and safe to send twice.
+- Every screen reads a local SQLite library, never the network, so apps open instantly and work offline.
+- Changes from your iPhone arrive over Apple's own push channel as they happen.
+- Edits show at once and go through an outbox: sent in order, held while offline, safe to send twice.
 - Notes merge through Apple's own CRDT, so typing on two devices at once keeps both edits.
-- Apple's sign-in, SRP with two-factor, is rebuilt in Rust. Your password is never sent.
-- The network lock lives in the engine's DNS resolver: it cannot look up a host that isn't Apple's.
-- The photo grid stays smooth through 50,000 photos, keeping only what's near the screen in memory.
-- iCloud Drive and Photos are real folders in File Explorer, through Cloud Files, the system OneDrive is built on, with Free up space and Always keep on this device. On Linux they're folders in your file manager, through FUSE.
-- Each release passes over 1,300 Rust tests and is installed and launched on Ubuntu, Debian, Mint, Fedora, openSUSE, Arch and Windows before it's published.
+- Apple's SRP sign-in with two-factor is rebuilt in Rust. Your password is never sent.
+- The engine's DNS resolver cannot look up a host that isn't Apple's.
+- Each release passes over 1,300 Rust tests and is installed and launched on Ubuntu, Debian, Mint, Fedora, openSUSE, Arch and Windows before it ships.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the full tour.
 
 ## Private by design
 
-- No Skykeep servers, accounts, analytics or crash reports. Your iCloud goes between your computer and Apple only.
-- Add a Nextcloud or CalDAV account and its calendars sit beside iCloud’s. That connection is locked to your own server and goes nowhere else; on Nextcloud you sign in on its own page, so Skykeep never sees your password.
-- Your password and session live in the system keyring, the saved connection is encrypted with AES-256-GCM, and your library sits in a folder only you can read.
-- The app window can't reach the internet at all; its content policy allows only Skykeep's own engine.
-- Every line is open source, and every release is built in public with checksums and signature-checked updates.
+- No Skykeep servers, accounts, analytics or crash reports. Your iCloud goes only between your device and Apple.
+- Your session lives in the system keyring (the Android Keystore on a phone), and your library in a folder only you can read.
+- Nextcloud and CalDAV calendars can sit beside iCloud's, on a connection locked to your own server.
+- Open source, built in public, with checksums and signature-checked updates.
 
 [SECURITY.md](SECURITY.md) shows the code behind each point.
 
 ## On Android
 
-Skykeep for Android brings Reminders, Notes, Photos and iCloud Drive to your phone, and puts your iCloud contacts and calendars into Android's own Contacts and Calendar apps, synced both ways. iCloud Drive also shows up in Android's Files app. It runs on the same Rust engine as the desktop app, works offline, and talks only to Apple.
+Reminders, Notes, Photos and iCloud Drive as apps, and your iCloud contacts and calendars inside Android's own Contacts and Calendar, synced both ways. iCloud Drive also appears in the Files app. Same engine as the desktop, offline-first, talking only to Apple.
 
 <p align="center"><a href="docs/media/android/home-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/home-dark.webp"><img src="docs/media/android/home-light.webp" width="240" alt="Home: the account and each service syncing"></picture></a> <a href="docs/media/android/reminders-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/reminders-dark.webp"><img src="docs/media/android/reminders-light.webp" width="240" alt="A Reminders list with sub-tasks"></picture></a> <a href="docs/media/android/note-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/note-dark.webp"><img src="docs/media/android/note-light.webp" width="240" alt="A note with a checklist"></picture></a></p>
 <p align="center"><a href="docs/media/android/photos-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/photos-dark.webp"><img src="docs/media/android/photos-light.webp" width="240" alt="The photo library by month"></picture></a> <a href="docs/media/android/viewer-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/viewer-dark.webp"><img src="docs/media/android/viewer-light.webp" width="240" alt="A photo open"></picture></a> <a href="docs/media/android/drive-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/drive-dark.webp"><img src="docs/media/android/drive-light.webp" width="240" alt="An iCloud Drive folder"></picture></a></p>
 
-Get the [APK](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-android.apk) from the latest release (Android 10 and newer, 64-bit ARM). The pictures show an invented demo account.
+[Download the APK](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-android.apk) · Android 10 or newer, 64-bit ARM
 
 ## Install
 
@@ -100,7 +99,7 @@ Get the [APK](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/down
 | **Linux files** | [`.deb`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb) ([ARM](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-arm64.deb)), [`.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) ([ARM](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-aarch64.rpm)), or the [AppImage](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.AppImage) for any other Linux |
 | **Android** | The [APK](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-android.apk) from GitHub Releases |
 
-Every file, with checksums, is on the [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest). The Windows installer, the AppImage and every store keep Skykeep up to date; for a `.deb` or `.rpm`, install the new one over the old.
+Every file and its checksum is on the [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest). The stores, the Windows installer and the AppImage update themselves; for a `.deb` or `.rpm`, install the new one over the old.
 
 <details>
 <summary>Commands for each Linux file, and fixes for Fedora, openSUSE and the AppImage</summary>
@@ -118,21 +117,17 @@ The Snap's second command lets it keep you signed in through your keyring. On Ub
 
 ## Official downloads
 
-Skykeep is published only through the links above: GitHub Releases, the Microsoft Store, the Snap Store, Chocolatey, the [Scoop bucket](https://github.com/YashwanthKamireddi/scoop-bucket) and the COPR `yashonfed/skykeep`. The AUR packages `skykeep` and `skykeep-bin` are kept by a community packager and built from these releases. Flathub and winget join this list once they are live. On Android, the APK is published only on GitHub Releases. Check the copy you install against its signing certificate's SHA-256 fingerprint:
+Skykeep comes only from the links above. The AUR packages are community-maintained builds of these releases. The Android APK is signed with this certificate (SHA-256):
 
 ```
 61:0A:64:50:6D:95:DA:6C:CE:75:FF:0E:40:B8:59:02:FA:41:E4:0D:00:1B:BA:87:BF:40:70:FE:CB:F2:3A:FB
 ```
 
-A copy from anywhere else is not from this project. Never type your Apple Account password into one you can't trace back here.
-
 ## Sign in
 
-1. Open Skykeep and sign in with your Apple Account.
-2. Approve the sign-in on your iPhone, iPad or Mac, as you would for icloud.com.
-3. Your library arrives, and each app fills in as it lands. From then on everything opens from your computer.
+Sign in with your Apple Account and approve it on your iPhone, iPad or Mac, as for icloud.com. Each app fills in as your library arrives.
 
-Using Advanced Data Protection? Turn on **Access iCloud Data on the Web** first (iPhone: Settings, your name, iCloud). Calendar and Contacts then open right away, and Notes, Reminders, Photos and iCloud Drive sync once you approve Skykeep on your iPhone.
+Using Advanced Data Protection? Turn on **Access iCloud Data on the Web** first (iPhone: Settings, your name, iCloud).
 
 ## Questions
 
@@ -146,6 +141,12 @@ Install Skykeep (see [Install](#install)) and sign in with your Apple Account. A
 <summary>Can I use Apple Notes and Reminders on Windows?</summary>
 
 Yes. Apple's own iCloud for Windows has no Notes or Reminders app; Skykeep has both, with checklists, tables, smart lists and alerts, alongside Calendar, Contacts, iCloud Drive and Photos. Get it from the Microsoft Store, Chocolatey, Scoop or the installer on the [releases page](https://github.com/YashwanthKamireddi/Skykeep/releases/latest).
+</details>
+
+<details>
+<summary>How do I get iCloud Notes and Reminders on Android?</summary>
+
+Install the [APK](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-android.apk) and sign in with your Apple Account. Notes, Reminders, Photos and iCloud Drive open as apps; your iCloud contacts and calendars appear in Android's own Contacts and Calendar.
 </details>
 
 <details>
@@ -163,15 +164,13 @@ iCloud for Windows brings Photos and iCloud Drive to File Explorer, and Calendar
 <details>
 <summary>Why does it need my Apple Account password?</summary>
 
-Notes, Reminders, Drive and Photos open only to a full sign-in with two-factor, the same one icloud.com uses. Skykeep proves your password to Apple with SRP rather than sending it, and keeps it in your system keyring so it can sign back in by itself. Like any keyring entry, programs running as you can read it, and signing out erases it.
+Notes, Reminders, Drive and Photos open only to a full sign-in with two-factor, as on icloud.com. Skykeep proves your password with SRP instead of sending it, and keeps it in your system keyring; signing out erases it.
 </details>
 
 <details>
 <summary>Is it safe to use with my Apple Account?</summary>
 
-Skykeep signs in the same way icloud.com does, with your password and two-factor code, and your iCloud goes only between your computer and Apple. Besides Apple, it connects only to the calendars you subscribe to, the Nextcloud or CalDAV accounts you add, and, in a copy from the Windows installer (Chocolatey's too), the `.msi` or the AppImage, GitHub's release servers to check for new versions of Skykeep. Settings, under What Skykeep Talks To, lists every address your copy can reach.
-
-It is not an Apple-approved app: Apple offers no official way for other apps to reach Notes, Reminders, Drive or Photos, so Skykeep uses the same web services icloud.com uses, as long-standing open-source tools like icloudpd do. Apple can change those services at any time, and may now and then ask you to sign in again or approve on your iPhone. Apple's iCloud terms are between you and Apple. Skykeep has no servers of its own and its code is public, so you can check exactly what it sends and where.
+Skykeep signs in the way icloud.com does, with your password and two-factor code, and talks only to Apple (plus any calendars or servers you add yourself, and GitHub's release servers in builds that update themselves). Apple has no official API for Notes, Reminders, Drive or Photos, so Skykeep uses the same web services icloud.com uses, as icloudpd has for years. Apple can change them at any time and may occasionally ask you to sign in again.
 </details>
 
 <details>
@@ -184,8 +183,8 @@ Quit Skykeep and start it with `SKYKEEP_LOG=1 skykeep` (Windows PowerShell: `$en
 
 Bug reports, packaging for your distro, design ideas and code are all welcome. [CONTRIBUTING.md](.github/CONTRIBUTING.md) has the setup and a map of the code, and [Discussions](https://github.com/YashwanthKamireddi/Skykeep/discussions) is the place for questions and ideas. Security problems go to a [private report](https://github.com/YashwanthKamireddi/Skykeep/security/advisories/new).
 
-## Name and logo
+## License
 
-The GPL-3.0 covers Skykeep's code, not its name or logo. As section 7(e) of the licence allows, it grants no rights to use them: a changed version you share with others needs a name and icon of its own, so nobody mistakes it for this project. Saying that your version is based on Skykeep is fine.
+Skykeep is free and open source under the [GPL-3.0](LICENSE).
 
-Copyright (C) 2026 Yashwanth Kamireddi. [GPL-3.0](LICENSE): if you share a copy or a changed version, keep this notice and the same licence. It comes with no warranty. Not affiliated with or endorsed by Apple Inc. Apple, iCloud and iPhone are trademarks of Apple Inc., registered in the U.S. and other countries and regions.
+Copyright (C) 2026 Yashwanth Kamireddi. Not affiliated with Apple Inc. Apple, iCloud and iPhone are trademarks of Apple Inc.
