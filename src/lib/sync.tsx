@@ -11,6 +11,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { api, messageOf, SYNCED, type ItemChanges, type Refresh } from "./ipc";
 import { useScreenActive } from "./screen";
+import { t } from "./i18n";
 
 /**
  * One refresh for the whole account, shared by every screen.
@@ -315,15 +316,28 @@ export function joinItems(a: ItemChanges | null, b: ItemChanges): ItemChanges {
 
 /** "just now", "4 min ago", "yesterday" — how old the library is, in words. */
 export function freshness(asOf: number | null): string {
-  if (asOf === null) return "Not synced yet";
+  if (asOf === null) return t("sync.notSyncedYet");
   const seconds = Math.max(0, Math.floor(Date.now() / 1000) - asOf);
-  if (seconds < 60) return "Updated just now";
+  if (seconds < 60) return t("sync.updatedJustNow");
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `Updated ${minutes} min ago`;
+  if (minutes < 60) return t("sync.updatedMinAgo", { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Updated ${hours} hr ago`;
+  if (hours < 24) return t("sync.updatedHrAgo", { count: hours });
   const days = Math.floor(hours / 24);
-  return days === 1 ? "Updated yesterday" : `Updated ${days} days ago`;
+  return days === 1 ? t("sync.updatedYesterday") : t("sync.updatedDaysAgo", { count: days });
+}
+
+/** "checked just now", "checked 4 min ago" — when an update check was last run. */
+export function checkedFreshness(asOf: number | null): string {
+  if (asOf === null) return t("sync.notCheckedYet");
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - asOf);
+  if (seconds < 60) return t("sync.checkedJustNow");
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return t("sync.checkedMinAgo", { count: minutes });
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return t("sync.checkedHrAgo", { count: hours });
+  const days = Math.floor(hours / 24);
+  return days === 1 ? t("sync.checkedYesterday") : t("sync.checkedDaysAgo", { count: days });
 }
 
 /**

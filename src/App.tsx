@@ -8,6 +8,7 @@ import { dismissToast, toast } from "./components/Toast";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { api, messageOf, NEEDS_CODE, NEEDS_SIGNIN } from "./lib/ipc";
+import { useI18n } from "./lib/i18n";
 
 type Phase = "checking" | "signin" | "code" | "library";
 
@@ -118,24 +119,25 @@ export default function App() {
   // Said where everything passing is said, over the foot of the content: drawn above the
   // library, it pushed the whole window down and cut off the sidebar's foot. It stays until
   // put away; Sign In is on it.
+  const { t } = useI18n();
   useEffect(() => {
     if (!lapsed || phase !== "library") return undefined;
     const id = toast({
-      message: `${why ? sentence(why) : "Apple signed you out."} Your copy on this computer is still here.`,
+      message: `${why ? sentence(why) : t("account.appleSignedOut")} ${t("account.localCopyKept")}`,
       tone: "error",
       duration: null,
-      action: { label: "Sign In", run: () => setPhase("signin") },
+      action: { label: t("signin.signIn"), run: () => setPhase("signin") },
     });
     return () => dismissToast(id);
-  }, [lapsed, phase, why]);
+  }, [lapsed, phase, why, t]);
 
   useEffect(() => {
     if (!codeLapse || phase !== "library") return undefined;
     const id = toast({
-      message: "Sign in again to keep syncing. Your copy on this computer is still here.",
+      message: t("account.signInAgain"),
       duration: null,
       action: {
-        label: "Sign In",
+        label: t("signin.signIn"),
         run: () => {
           setCodeRequest("now");
           setPhase("code");
@@ -143,7 +145,7 @@ export default function App() {
       },
     });
     return () => dismissToast(id);
-  }, [codeLapse, phase]);
+  }, [codeLapse, phase, t]);
 
   // Signed out, the window starts over: nothing of the account is left in its memory either —
   // no picture, no list, no cached answer — for whoever signs in next.
@@ -168,7 +170,7 @@ export default function App() {
   return (
     <div className="shell">
       <div className="app-ground" aria-hidden="true" />
-      {phase === "checking" && <StatusLine tone="pending">Checking your session…</StatusLine>}
+      {phase === "checking" && <StatusLine tone="pending">{t("common.checkingSession")}</StatusLine>}
       {phase === "signin" && (
         <SignIn
           onCancel={lapsed ? () => setPhase("library") : undefined}

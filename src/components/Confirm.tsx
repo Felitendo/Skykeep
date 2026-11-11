@@ -12,6 +12,7 @@ import { useCallback, useRef, useState } from "react";
 import { EyeOff, Trash2 } from "lucide-react";
 import { Portal } from "./Portal";
 import { useModalFocus } from "../lib/focus";
+import { useI18n } from "../lib/i18n";
 
 export type Choice<T> = {
   label: string;
@@ -45,13 +46,14 @@ export function ConfirmSheet<T>({
   onCancel: () => void;
   children?: React.ReactNode;
 }) {
+  const { t } = useI18n();
   const sheetRef = useRef<HTMLDivElement | null>(null);
   useModalFocus(sheetRef);
   const stacked = choices.length > 1;
   const focusCancel = !choices.some((c) => c.focus);
   const cancel = (
     <button key="cancel" className="quiet" autoFocus={focusCancel} onClick={onCancel}>
-      Cancel
+      {t("common.cancel")}
     </button>
   );
   const answers = choices.map((c) => (

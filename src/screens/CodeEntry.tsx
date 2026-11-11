@@ -4,6 +4,7 @@ import { CodeInput } from "../components/CodeInput";
 import { StatusLine } from "../components/StatusLine";
 import { sentence } from "./SignIn";
 import { api, messageOf, type TwoFactorOptions } from "../lib/ipc";
+import { useI18n } from "../lib/i18n";
 
 export function CodeEntry({
   onVerified,
@@ -19,6 +20,7 @@ export function CodeEntry({
    */
   request?: "now" | "ask";
 }) {
+  const { t } = useI18n();
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -102,14 +104,11 @@ export function CodeEntry({
     return (
       <div className="sheet enter-sheet">
         <Mark className="mark" />
-        <h1>This account uses a security key</h1>
-        <p className="lede">
-          Your Apple Account signs in with a security key. Skykeep can't sign in with security keys yet, so it
-          can't finish signing in to this account.
-        </p>
+        <h1>{t("codeEntry.securityKeyTitle")}</h1>
+        <p className="lede">{t("codeEntry.securityKeyLede")}</p>
         <div className="sheet-foot">
           <button className="link" type="button" onClick={onCancel}>
-            Use a different Apple Account
+            {t("codeEntry.useDifferentAccount")}
           </button>
         </div>
       </div>
@@ -119,28 +118,30 @@ export function CodeEntry({
   return (
     <div className="sheet enter-sheet" aria-busy={verifying}>
       <Mark className="mark" />
-      <h1>Enter the code</h1>
+      <h1>{t("codeEntry.enterCode")}</h1>
       <p className="lede">
         {!asked && !texted
-          ? "Apple wants a code before it trusts this computer again."
+          ? t("codeEntry.ledeLapse")
           : texted
           ? calls(texted)
-            ? `Apple is calling ${texted.maskedNumber} with a code.`
-            : `Apple texted a code to ${texted.maskedNumber}.`
+            ? t("codeEntry.ledeCalling", { number: texted.maskedNumber })
+            : t("codeEntry.ledeTexted", { number: texted.maskedNumber })
           : options === null
-            ? "Apple sent a code to your devices."
+            ? t("codeEntry.ledeDevices")
             : nowhereToSend
-              ? "Apple has nowhere to send a code for this account."
+              ? t("codeEntry.ledeNowhere")
               : nothingSent
                 ? onlyCalls
-                  ? "No device is reachable, but Apple can call you with a code."
-                  : "No device is reachable, but a code can be texted to you."
-                : `Apple sent a code to ${devices === 1 ? "one of your devices" : `${devices} of your devices`}.`}
+                  ? t("codeEntry.ledeOnlyCalls")
+                  : t("codeEntry.ledeCanText")
+                : t("codeEntry.ledeDevicesCount", {
+                    devices: devices === 1 ? t("codeEntry.oneDevice") : t("codeEntry.manyDevices", { devices }),
+                  })}
       </p>
 
       {!asked && !texted && (
         <button className="primary" type="button" disabled={busy} onClick={() => void askForCode()}>
-          Send Code
+          {t("codeEntry.sendCode")}
         </button>
       )}
 
@@ -159,7 +160,7 @@ export function CodeEntry({
           sent text all take the same place and nothing below moves. */}
       <div className="sheet-status">
         {verifying ? (
-          <StatusLine tone="pending">Checking</StatusLine>
+          <StatusLine tone="pending">{t("codeEntry.checking")}</StatusLine>
         ) : error ? (
           <StatusLine tone="error">{error}</StatusLine>
         ) : notice ? (
@@ -180,7 +181,7 @@ export function CodeEntry({
             );
           }}
         >
-          Didn't get a code?
+          {t("codeEntry.didntGetCode")}
         </button>
       )}
 
@@ -188,19 +189,14 @@ export function CodeEntry({
         <div className="help">
           {options?.tooManyCodesSent && (
             <p className="help-warn">
-              Apple is limiting new codes. Wait a few minutes before asking again.
+              {t("codeEntry.tooManyCodes")}
             </p>
           )}
 
           {nowhereToSend ? (
-            <p>
-              This account has no device or number to send to. Use a device you're still
-              signed in on, or add a number at <strong>account.apple.com</strong>.
-            </p>
+            <p>{t("codeEntry.nowhereHelp")}</p>
           ) : nothingSent ? null : (
-            <p>
-              The code appears once you tap <strong>Allow</strong> on your iPhone.
-            </p>
+            <p>{t("codeEntry.allowHelp")}</p>
           )}
 
           {!nowhereToSend && (
@@ -216,10 +212,10 @@ export function CodeEntry({
                     run(async () => {
                       await api.resendCode();
                       setSmsPhoneId(null);
-                    }, "Sent again. Check your devices.")
+                    }, t("codeEntry.sentAgainNotice"))
                   }
                 >
-                  Send to my devices again
+                  {t("codeEntry.sendToDevicesAgain")}
                 </button>
               )}
               {options?.phones.map((phone) => (
@@ -237,23 +233,24 @@ export function CodeEntry({
                     }, "")
                   }
                 >
-                  {calls(phone) ? "Call" : "Text"} {phone.maskedNumber}
+                  {calls(phone)
+                    ? t("codeEntry.callNumber", { number: phone.maskedNumber })
+                    : t("codeEntry.textNumber", { number: phone.maskedNumber })}
                 </button>
               ))}
             </div>
           )}
 
           <p className="help-tip">
-            No prompt? On iPhone, turn on <strong>Airplane Mode</strong>, then open Settings →
-            your name → Sign-In &amp; Security. iOS offers a code there only while offline.
+            {t("codeEntry.offlineTip")}
           </p>
         </div>
       )}
 
       <div className="sheet-foot">
-        <p className="assurance">You'll stay signed in on this computer.</p>
+        <p className="assurance">{t("codeEntry.staySignedInAssurance")}</p>
         <button className="link" type="button" onClick={onCancel} disabled={verifying}>
-          Use a different Apple Account
+          {t("codeEntry.useDifferentAccount")}
         </button>
       </div>
     </div>

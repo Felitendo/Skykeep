@@ -12,6 +12,7 @@ import { AccountCard } from "../components/Account";
 import { AppFootContext } from "../components/AppFoot";
 import { useSidePane } from "../components/SidePane";
 import { reveal, takeWaiting, type Reveal } from "../lib/reveal";
+import { useI18n } from "../lib/i18n";
 
 /*
  * Each app is its own chunk, so the window opens on the code for the app it shows, not all
@@ -156,6 +157,7 @@ function AppKeys({ screen, onSettings }: { screen: string | null; onSettings: ()
  */
 const FIRST_HINT_KEY = "quince.firstSyncHint";
 function FirstSyncHint() {
+  const { t } = useI18n();
   const { report } = useSync();
   const startedEmpty = useRef<boolean | null>(null);
   useEffect(() => {
@@ -170,8 +172,8 @@ function FirstSyncHint() {
     } catch {
       return;
     }
-    toast({ message: "Your iCloud is here. Edit a reminder or note on your iPhone and watch it change here in seconds.", duration: 9000 });
-  }, [report]);
+    toast({ message: t("library.firstSyncHint"), duration: 9000 });
+  }, [report, t]);
   return null;
 }
 
@@ -244,6 +246,7 @@ function Drawn({ then }: { then: () => void }) {
 }
 
 export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => Promise<void>; onShown?: () => void }) {
+  const { t } = useI18n();
   const [services, setServices] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -339,7 +342,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
     if (!selected) return;
     // Skykeep's own window is Skykeep (the account, sync, Backup and settings), as its icon
     // and the tray name it; an app's window is the app.
-    const title = selected === "settings" ? "Skykeep" : SCREENS.find((s) => s.key === selected)?.name;
+    const title = selected === "settings" ? "Skykeep" : t(`sidebar.${selected === "drivews" ? "drive" : selected}`);
     if (!title) return;
     document.title = title;
     // Asked of the window plugin by itself: `@tauri-apps/api/window` for this one call was a
@@ -469,21 +472,20 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
   const icloudNotice =
     atIcloud && webAccess !== false ? (
   <div className="web-access-off icloud-com-waiting" role="alert">
-    <h1>{atIcloud === "terms" ? "Agree to the new iCloud terms" : "Finish setting up iCloud"}</h1>
+    <h1>{atIcloud === "terms" ? t("library.agreeTermsTitle") : t("library.finishSetupTitle")}</h1>
     <p>
       {atIcloud === "terms"
-        ? "Apple has updated the iCloud Terms and Conditions. Once you agree to them, your iCloud opens here."
-        : "Apple needs one more step on your Apple Account before your iCloud opens here."}
+        ? t("library.agreeTermsDesc")
+        : t("library.finishSetupDesc")}
     </p>
     <p>
-      Sign in at <b>icloud.com</b> in your browser and follow what it asks
-      {atIcloud === "terms" ? ", then agree to the terms" : ""}. Then click Try Again.
+      {t("library.signinBrowserAction", { host: "icloud.com", agreeSuffix: atIcloud === "terms" ? t("library.agreeSuffix") : "" })}
     </p>
     <p className="device-approval-status" role="status" aria-live="polite">
-      <span>{checkError ?? (checking ? "Checking with Apple…" : "")}</span>
+      <span>{checkError ?? (checking ? t("library.checkingWithApple") : "")}</span>
     </p>
     <button className="primary" onClick={checkAgain} disabled={checking}>
-      Try Again
+      {t("library.tryAgain")}
     </button>
   </div>
     ) : null;
@@ -499,7 +501,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
       onOpen={() => choose("settings")}
       app={(() => {
         const app = SCREENS.find((s) => s.key === SOLO);
-        return app && webAccess !== false ? { service: serviceOf(app.key), name: app.name } : null;
+        return app && webAccess !== false ? { service: serviceOf(app.key), name: t(`sidebar.${app.key === "drivews" ? "drive" : app.key}`) } : null;
       })()}
     />
   ) : null;
@@ -529,22 +531,18 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
             // Advanced Data Protection with web access off: every read would fail, and each
             // screen would say so its own way. One plain answer, with Apple's own switch.
             <div className="web-access-off" role="alert">
-              <h1>Your iCloud data is kept off the web</h1>
+              <h1>{t("library.webAccessOffTitle")}</h1>
               <p>
-                Your Apple Account uses Advanced Data Protection with “Access iCloud Data on the Web”
-                turned off, so Apple doesn’t let any app outside your devices — Skykeep included —
-                read your iCloud.
+                {t("library.webAccessOffDesc1")}
               </p>
               <p>
-                To use Skykeep, turn it on: on your iPhone, open <b>Settings</b>, tap your name, then
-                <b> iCloud</b>, and turn on <b>Access iCloud Data on the Web</b>. Then sign in to Skykeep
-                again.
+                {t("library.webAccessOffDesc2")}
               </p>
             </div>
           ) : (
             <>
               {selected === "settings" && (
-                <ScreenBoundary key="settings" name="Settings">
+                <ScreenBoundary key="settings" name={t("sidebar.settings")}>
                   <Suspense fallback={null}>
                     <SettingsView onSignOut={onSignOut} />
                     <Drawn then={drawn} />
@@ -563,7 +561,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
                 return (
                   <div key={key} className="screen-slot" hidden={!on} {...(on ? {} : { inert: "" })}>
                     <ScreenActive.Provider value={on}>
-                      <ScreenBoundary name={SCREENS.find((s) => s.key === key)?.name ?? "This screen"}>
+                      <ScreenBoundary name={t(`sidebar.${key === "drivews" ? "drive" : key}`)}>
                         <Suspense fallback={null}>
                           {screenFor(key)}
                           {on && <Drawn then={drawn} />}
@@ -577,8 +575,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
           )}
           {ready && services.length === 0 && (
             <EmptyState>
-              Apple hasn’t offered Reminders, Notes, iCloud Drive, Calendar or Contacts to
-              this account yet.
+              {t("library.emptyServices")}
             </EmptyState>
           )}
         </main>

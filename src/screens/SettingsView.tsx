@@ -18,7 +18,6 @@ import {
   type AccountInfo,
   type DriveFolder,
   type ExportProgress,
-  type ExportService,
   type LocalStorage,
   type LoginItem,
   messageOf,
@@ -27,27 +26,27 @@ import {
   type PhotoCache,
   settingsApi,
 } from "../lib/ipc";
-import { freshness, useSync } from "../lib/sync";
+import { checkedFreshness, useSync } from "../lib/sync";
 import { useUpdateStatus } from "../lib/updates";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
 import { Launcher } from "../components/Launcher";
-import { AccountAvatar, NOT_KEPT, useNotKept } from "../components/Account";
+import { AccountAvatar, useNotKept } from "../components/Account";
 import { Picker } from "../components/Picker";
 import { localeFirstDay, setWeekStart, weekStartChoice, type WeekStartChoice } from "./calendar/model";
 import { icloudSize } from "../lib/icloudSize";
+import { useI18n, type LanguageChoice, systemLanguage, languageName } from "../lib/i18n";
 
 // Its licence texts are some 400 kB: loaded when the sheet is first opened, not with Settings.
 const LicencesSheet = lazy(() => import("../components/LicencesSheet").then((m) => ({ default: m.LicencesSheet })));
 
 /** The Drive folder's line when it is up: up to date, uploading, or why something is waiting. */
-function folderState(f: DriveFolder): string {
+function folderState(f: DriveFolder, t: (k: string, p?: Record<string, string | number>) => string): string {
   const w = f.waiting;
-  const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
-  if (!w || w.files === 0) return `Up to date · ${f.path}`;
-  if (w.failure) return `${files(w.files)} waiting — ${w.failure}`;
-  if (w.sending > 0) return `Uploading ${files(w.files)}…`;
-  return `${files(w.files)} waiting to upload`;
+  if (!w || w.files === 0) return t("settings.driveUpToDate", { path: f.path });
+  if (w.failure) return t("settings.driveFilesWaiting", { count: w.files, failure: w.failure });
+  if (w.sending > 0) return t("settings.driveFilesUploading", { count: w.files });
+  return t("settings.driveFilesWaitingToUpload", { count: w.files });
 }
 
 function size(bytes: number): string {
@@ -66,15 +65,19 @@ function size(bytes: number): string {
 type Unsent = { changes: number; files: number; photos: number };
 
 /** What has not reached iCloud yet, as a sentence's subject: "2 changes and 1 file". */
-function unsentPhrase(u: Unsent): string | null {
-  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+function unsentPhrase(u: Unsent, t: (k: string, p?: Record<string, string | number>) => string): string | null {
   const parts = [
-    u.changes > 0 && n(u.changes, "change", "changes"),
-    u.files > 0 && n(u.files, "file", "files"),
-    u.photos > 0 && n(u.photos, "photo", "photos"),
+    u.changes > 0 && t(u.changes === 1 ? "settings.unsentChangeOne" : "settings.unsentChangeMany", { count: u.changes }),
+    u.files > 0 && t(u.files === 1 ? "settings.unsentFileOne" : "settings.unsentFileMany", { count: u.files }),
+    u.photos > 0 && t(u.photos === 1 ? "settings.unsentPhotoOne" : "settings.unsentPhotoMany", { count: u.photos }),
   ].filter((p): p is string => Boolean(p));
   if (parts.length === 0) return null;
-  return parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return parts.length === 1
+    ? parts[0]
+    : t("settings.unsentJoin", {
+        first: parts.slice(0, -1).join(t("settings.unsentComma")),
+        last: parts[parts.length - 1],
+      });
 }
 
 /**
@@ -91,24 +94,25 @@ function SignOutSheet({
   onCancel: () => void;
   onChoose: (keep: boolean) => void;
 }) {
-  const waiting = unsentPhrase(unsent);
+  const { t } = useI18n();
+  const waiting = unsentPhrase(unsent, t);
   const total = unsent.changes + unsent.files + unsent.photos;
   return (
     <ConfirmSheet<boolean>
-      title="Keep a copy of your iCloud data on this computer?"
-      body="A copy keeps your notes, photos, files and everything else here, ready when you sign back in. Nothing is deleted from iCloud either way."
+      title={t("settings.signOutTitle")}
+      body={t("settings.signOutBody")}
       choices={[
-        { label: "Keep a Copy", value: true, primary: true, focus: true },
-        { label: "Remove from This Computer", value: false, danger: true },
+        { label: t("settings.keepCopy"), value: true, primary: true, focus: true },
+        { label: t("settings.removeFromComputer"), value: false, danger: true },
       ]}
       onAnswer={onChoose}
       onCancel={onCancel}
     >
       {waiting && (
         <p className="signout-unsent">
-          {waiting} {total === 1 ? "hasn't" : "haven't"} reached iCloud yet. Keep a copy and{" "}
-          {total === 1 ? "it goes" : "they go"} up when you sign back in; remove it and{" "}
-          {total === 1 ? "it's" : "they're"} lost.
+          {total === 1
+            ? t("settings.unsentWarning", { waiting })
+            : t("settings.unsentWarningPlural", { waiting })}
         </p>
       )}
     </ConfirmSheet>
@@ -136,6 +140,7 @@ function FolderRow({
   onOpen: () => Promise<unknown>;
   onSet: (on: boolean) => void;
 }) {
+  const { t } = useI18n();
   // Why the folder could not be opened, said on its own row until it is tried again.
   const [openFailed, setOpenFailed] = useState<string | null>(null);
   const problem = openFailed ?? folder?.problem;
@@ -157,7 +162,7 @@ function FolderRow({
             onOpen().catch((e) => setOpenFailed(messageOf(e)));
           }}
         >
-          Open
+          {t("common.open")}
         </button>
       )}
       <button
@@ -197,14 +202,6 @@ const subscribeExport = (l: () => void) => {
   return () => exportListeners.delete(l);
 };
 
-const SERVICE_LABEL: Record<ExportService, string> = {
-  notes: "Notes",
-  reminders: "Reminders",
-  contacts: "Contacts",
-  calendar: "Calendar",
-  drive: "Drive",
-  photos: "Photos",
-};
 
 /** How far the whole export is, 0 to 1: services done, and the share of the one under way. */
 function exportShare(p: ExportProgress | null): number | null {
@@ -213,8 +210,8 @@ function exportShare(p: ExportProgress | null): number | null {
   return (p.step - 1 + within) / p.steps;
 }
 
-async function runExport(onError: (m: string) => void) {
-  const dest = (await pickOpen({ directory: true, multiple: false, title: "Choose where to export" }))?.[0];
+async function runExport(onError: (m: string) => void, t: (k: string, p?: Record<string, string | number>) => string) {
+  const dest = (await pickOpen({ directory: true, multiple: false, title: t("settings.chooseExportLocation") }))?.[0];
   if (!dest) return;
   setExportState({ phase: "running", progress: null, cancelling: false });
   const stop = listen<ExportProgress>(EXPORT_PROGRESS, (e) => {
@@ -224,14 +221,14 @@ async function runExport(onError: (m: string) => void) {
     const summary = await exportApi.start(dest, false);
     setExportState({ phase: "done", path: summary.path, photosMissing: summary.photosMissing });
     toast({
-      message: `Exported to ${folderName(summary.path)}`,
+      message: t("settings.exportedTo", { folder: folderName(summary.path) }),
       tone: "done",
-      action: { label: "Show in Folder", run: () => void exportApi.reveal().catch((e) => onError(messageOf(e))) },
+      action: { label: t("common.showInFolder"), run: () => void exportApi.reveal().catch((e) => onError(messageOf(e))) },
     });
   } catch (e) {
     const message = messageOf(e);
     setExportState({ phase: "idle" });
-    if (message === EXPORT_CANCELLED) toast("Export cancelled. Nothing was left behind.");
+    if (message === EXPORT_CANCELLED) toast(t("settings.exportCancelled"));
     else onError(message);
   } finally {
     void stop.then((unlisten) => unlisten()).catch(() => {});
@@ -248,6 +245,7 @@ const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?
  * included only once unlocked, with the sheet Photos unlocks it with.
  */
 function BackupRow({ onError }: { onError: (m: string) => void }) {
+  const { t } = useI18n();
   const [state, setState] = useState<BackupStatus | null>(null);
   const [unlocking, setUnlocking] = useState(false);
   useEffect(() => {
@@ -262,7 +260,7 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
   const set = (folder: string | null, hidden: boolean, drive = state?.drive ?? true) =>
     backupApi.set(folder, hidden, drive).then(setState, (e) => onError(messageOf(e)));
   const choose = async () => {
-    const picked = await pickOpen({ directory: true, title: "Choose where to back up iCloud" }).catch((e) => {
+    const picked = await pickOpen({ directory: true, title: t("settings.chooseBackupLocation") }).catch((e) => {
       onError(messageOf(e));
       return null;
     });
@@ -278,64 +276,81 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
   const photosLine = !state
     ? ""
     : photosCopying
-      ? `${state.copied.toLocaleString()} of ${state.total.toLocaleString()} · ${size(state.photosBytes)} of ${size(state.photosBytesTotal)}`
-      : `${state.total.toLocaleString()} ${state.total === 1 ? "photo" : "photos"} · ${size(state.photosBytesTotal)}`;
+      ? t("settings.photosCountOfTotal", {
+          copied: state.copied.toLocaleString(),
+          total: state.total.toLocaleString(),
+          copiedSize: size(state.photosBytes),
+          totalSize: size(state.photosBytesTotal),
+        })
+      : t("settings.photosCountAndSize", {
+          count: state.total.toLocaleString(),
+          photos: state.total === 1 ? "photo" : "photos",
+          size: size(state.photosBytesTotal),
+        });
   const driveLine = !state
     ? ""
     : !state.drive
-      ? "Not in the backup"
+      ? t("settings.notInBackup")
       : state.driveRunning
         ? state.driveFilesTotal > 0
-          ? `${state.driveFiles.toLocaleString()} of ${state.driveFilesTotal.toLocaleString()} files · ${size(state.driveBytes)} of ${size(state.driveBytesTotal)}`
-          : "Reading iCloud Drive"
+          ? t("settings.driveFilesOfTotal", {
+              copied: state.driveFiles.toLocaleString(),
+              total: state.driveFilesTotal.toLocaleString(),
+              copiedSize: size(state.driveBytes),
+              totalSize: size(state.driveBytesTotal),
+            })
+          : t("settings.readingDrive")
         : state.driveFiles > 0
-          ? `${state.driveFiles.toLocaleString()} files · ${size(state.driveBytes)}`
-          : "Every file, with earlier versions of changed files kept";
+          ? t("settings.driveFilesCountAndSize", {
+              count: state.driveFiles.toLocaleString(),
+              size: size(state.driveBytes),
+            })
+          : t("settings.driveHint");
   return (
-    <div className="settings-row is-stacked backup" aria-label="Backup" role="group">
+    <div className="settings-row is-stacked backup" aria-label={t("settings.backup")} role="group">
       <div className="settings-row-line" style={{ alignItems: "center" }}>
         <span className="settings-label settings-stack">
-          Back Up iCloud
+          {t("settings.backup")}
           <span className={`settings-hint${state?.problem ? " is-trouble" : ""}`} aria-live="polite" title={state?.folder ?? undefined}>
             {!state ? "" : state.problem ? state.problem : on ? (
               <>
-                In {folderName(state.folder!)} ·{" "}
+                {t("settings.inFolder", { folder: folderName(state.folder!) })}
                 <button className="link" onClick={() => void backupApi.reveal().catch((e) => onError(messageOf(e)))}>
-                  Show in Folder
+                  {t("common.showInFolder")}
                 </button>
               </>
             ) : (
-              "Originals, kept up to date in a folder or drive you choose"
+              t("settings.backupHint")
             )}
           </span>
         </span>
         <button className="quiet" onClick={() => void choose()} disabled={!state}>
-          {on ? "Change Folder" : "Choose Folder"}
+          {on ? t("settings.changeFolder") : t("settings.chooseFolder")}
         </button>
         {on && (
-          <button className="switch" role="switch" aria-checked aria-label="Back Up iCloud" onClick={() => void set(null, state?.hidden ?? false)}>
+          <button className="switch" role="switch" aria-checked aria-label={t("settings.backup")} onClick={() => void set(null, state?.hidden ?? false)}>
             <span className="switch-knob" />
           </button>
         )}
       </div>
-      <div className="backup-source" aria-label="Photos in the backup" role="group">
+      <div className="backup-source" aria-label={t("sidebar.photos")} role="group">
         <AppIcon app="photos" />
         <span className="settings-label settings-stack">
-          Photos
+          {t("sidebar.photos")}
           <span className="settings-hint" aria-live="polite">{photosLine}</span>
         </span>
       </div>
-      {on && photosCopying && state && state.total > 0 && <Progress value={state.copied / state.total} label="Photos backup progress" />}
+      {on && photosCopying && state && state.total > 0 && <Progress value={state.copied / state.total} label={t("settings.photosBackupProgress")} />}
       <div className="settings-row-line backup-option" style={{ alignItems: "center" }}>
-        <span className="settings-hint">Include the Hidden album</span>
-        <button className="switch" role="switch" aria-checked={state?.hidden ?? false} aria-label="Include the Hidden album" disabled={!state} onClick={hidden}>
+        <span className="settings-hint">{t("settings.includeHidden")}</span>
+        <button className="switch" role="switch" aria-checked={state?.hidden ?? false} aria-label={t("settings.includeHidden")} disabled={!state} onClick={hidden}>
           <span className="switch-knob" />
         </button>
       </div>
-      <div className="backup-source" aria-label="iCloud Drive in the backup" role="group">
+      <div className="backup-source" aria-label={t("settings.icloudDrive")} role="group">
         <AppIcon app="drivews" />
         <span className="settings-label settings-stack">
-          iCloud Drive
+          {t("settings.icloudDrive")}
           <span className={`settings-hint${state?.driveNote ? " is-trouble" : ""}`} aria-live="polite">
             {state?.driveNote ?? driveLine}
           </span>
@@ -344,7 +359,7 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
           className="switch"
           role="switch"
           aria-checked={state?.drive ?? true}
-          aria-label="Include iCloud Drive"
+          aria-label={t("settings.icloudDrive")}
           disabled={!state}
           onClick={() => state && void set(state.folder, state.hidden, !state.drive)}
         >
@@ -352,7 +367,7 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
         </button>
       </div>
       {on && state?.driveRunning && state.driveFilesTotal > 0 && (
-        <Progress value={state.driveFiles / state.driveFilesTotal} label="iCloud Drive backup progress" />
+        <Progress value={state.driveFiles / state.driveFilesTotal} label={t("settings.driveBackupProgress")} />
       )}
       {unlocking && (
         <UnlockSheet
@@ -368,30 +383,31 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
 }
 
 function ExportRow({ onError }: { onError: (m: string) => void }) {
+  const { t } = useI18n();
   const state = useSyncExternalStore(subscribeExport, () => exportState);
   const running = state.phase === "running";
   const p = running ? state.progress : null;
   const hint = running
     ? state.cancelling
-      ? "Cancelling…"
+      ? t("common.cancelling")
       : p
-        ? `${SERVICE_LABEL[p.service]} · ${p.total > 0 ? `${Math.min(p.done, p.total).toLocaleString()} of ${p.total.toLocaleString()}` : "nothing to export"}`
-        : "Getting ready…"
+        ? `${t(`sidebar.${p.service}`)} · ${p.total > 0 ? t("settings.exportProgressCount", { done: Math.min(p.done, p.total).toLocaleString(), total: p.total.toLocaleString() }) : t("settings.nothingToExport")}`
+        : t("common.gettingReady")
     : state.phase === "done"
-      ? `Exported to ${folderName(state.path)}`
-      : "A one-time copy of notes, reminders, contacts, calendars and Drive, in formats any app opens";
+      ? t("settings.exportedTo", { folder: folderName(state.path) })
+      : t("settings.exportCopyHint");
   return (
-    <div className="settings-row is-stacked" aria-label="Export a Copy" role="group">
+    <div className="settings-row is-stacked" aria-label={t("settings.exportCopy")} role="group">
       <div className="settings-row-line" style={{ alignItems: "center" }}>
         <span className="settings-label settings-stack">
-          Export a Copy
+          {t("settings.exportCopy")}
           <span className="settings-hint" aria-live="polite" title={state.phase === "done" ? state.path : undefined}>
             {hint}
           </span>
         </span>
         {state.phase === "done" && !running && (
           <button className="quiet" onClick={() => void exportApi.reveal().catch((e) => onError(messageOf(e)))}>
-            Show in Folder
+            {t("common.showInFolder")}
           </button>
         )}
         {running ? (
@@ -403,15 +419,15 @@ function ExportRow({ onError }: { onError: (m: string) => void }) {
               void exportApi.cancel().catch(() => {});
             }}
           >
-            Cancel
+            {t("common.cancel")}
           </button>
         ) : (
-          <button className="quiet" onClick={() => void runExport(onError)}>
-            Export
+          <button className="quiet" onClick={() => void runExport(onError, t)}>
+            {t("settings.export")}
           </button>
         )}
       </div>
-      {running && <Progress value={exportShare(p)} label="Export progress" />}
+      {running && <Progress value={exportShare(p)} label={t("settings.exportProgress")} />}
     </div>
   );
 }
@@ -422,6 +438,7 @@ const capWords = (bytes: number) => (bytes < 1024 ** 3 ? `${Math.round(bytes / 1
 /** How much room photos opened here may keep on this computer: one choice, the backend's
  *  steps, sent as it is picked. */
 function PhotoCacheCap({ onError }: { onError: (m: string) => void }) {
+  const { t } = useI18n();
   const [cache, setCache] = useState<PhotoCache | null>(null);
   useEffect(() => {
     photoCacheApi.status().then(setCache, () => {});
@@ -432,15 +449,15 @@ function PhotoCacheCap({ onError }: { onError: (m: string) => void }) {
   return (
     <div className="settings-row">
       <span className="settings-label settings-stack">
-        Keep photos up to
+        {t("settings.keepPhotosUpTo")}
         <span className="settings-hint">
           {cache.limit < cache.cap
-            ? `Using up to ${size(cache.limit)} for now, to leave room on this disk.`
-            : `${size(cache.used)} of recently viewed photos, ready offline`}
+            ? t("settings.diskRoomHint", { size: size(cache.limit) })
+            : t("settings.photosOfflineHint", { size: size(cache.used) })}
         </span>
       </span>
       <Picker
-        label="Keep photos up to"
+        label={t("settings.keepPhotosUpTo")}
         value={String(cache.cap)}
         options={cache.steps.map((b) => ({ value: String(b), label: capWords(b) }))}
         onChange={(v) =>
@@ -452,6 +469,7 @@ function PhotoCacheCap({ onError }: { onError: (m: string) => void }) {
 }
 
 export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Promise<void> }) {
+  const { t } = useI18n();
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [storage, setStorage] = useState<{ usedBytes: number; totalBytes: number } | null>(null);
   const [local, setLocal] = useState<LocalStorage | null>(null);
@@ -564,26 +582,26 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           narrow one. */}
       <div className="dash-row dash-three">
         <section className="dash-card" aria-labelledby="card-account">
-          <h2 id="card-account" className="dash-title">Account</h2>
+          <h2 id="card-account" className="dash-title">{t("settings.account")}</h2>
           <div className="dash-account">
             <AccountAvatar account={account} large />
             <div className="settings-account-text">
-              <strong>{account?.name ?? "Your Apple Account"}</strong>
+              <strong>{account?.name ?? t("settings.yourAppleAccount")}</strong>
               <span>{account?.email ?? ""}</span>
-              {notKept && <span className="settings-account-note">{NOT_KEPT}</span>}
+              {notKept && <span className="settings-account-note">{t("account.notKeptNotice")}</span>}
             </div>
           </div>
           <div className="settings-row is-stacked">
             <div className="settings-row-line">
-              <span>{storage ? `${icloudSize(storage.usedBytes)} of ${icloudSize(storage.totalBytes)} used` : "Reading storage…"}</span>
+              <span>{storage ? t("settings.storageUsed", { used: icloudSize(storage.usedBytes), total: icloudSize(storage.totalBytes) }) : t("settings.readingStorage")}</span>
               {storage && (
-                <span className="settings-value">{icloudSize(Math.max(0, storage.totalBytes - storage.usedBytes))} available</span>
+                <span className="settings-value">{t("settings.storageAvailable", { available: icloudSize(Math.max(0, storage.totalBytes - storage.usedBytes)) })}</span>
               )}
             </div>
             <div
               className="storage-bar"
               role="meter"
-              aria-label="iCloud storage used"
+              aria-label={t("settings.storageAria")}
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={Math.round(used * 100)}
@@ -598,27 +616,27 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
                 api.unsent().then(setSigningOut, () => setSigningOut({ changes: 0, files: 0, photos: 0 }))
               }
             >
-              Sign Out
+              {t("settings.signOut")}
             </button>
           </div>
         </section>
         <section className="dash-card" aria-labelledby="card-backup">
-          <h2 id="card-backup" className="dash-title">Backup</h2>
+          <h2 id="card-backup" className="dash-title">{t("settings.backupTitle")}</h2>
           <BackupRow onError={setError} />
           <ExportRow onError={setError} />
         </section>
         <section className="dash-card" aria-labelledby="card-computer">
-          <h2 id="card-computer" className="dash-title">This Computer</h2>
+          <h2 id="card-computer" className="dash-title">{t("settings.thisComputer")}</h2>
           {(showDrive || showPhotos) && (
             <>
               {showDrive && (
                 <FolderRow
                   app="drivews"
-                  label="Drive folder"
-                  off={onWindows ? "Your iCloud Drive in File Explorer and every other app" : "Your iCloud Drive in Files and every other app"}
+                  label={t("settings.driveFolder")}
+                  off={onWindows ? t("settings.driveFolderExplorerHint") : t("settings.driveFolderFilesHint")}
                   folder={folder}
                   busy={folderBusy}
-                  line={folderState}
+                  line={(f) => folderState(f, t)}
                   onOpen={api.driveFolderOpen}
                   onSet={(on) => folder && setFolderOn(folder, on, setFolder, setFolderBusy, api.driveFolderSet)}
                 />
@@ -626,8 +644,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
               {showPhotos && (
                 <FolderRow
                   app="photos"
-                  label="Photos folder"
-                  off="Your photos by date and album, for every other app"
+                  label={t("settings.photosFolder")}
+                  off={t("settings.photosFolderHint")}
                   folder={photosFolder}
                   busy={photosBusy}
                   line={(f) => f.path}
@@ -641,64 +659,65 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           )}
           <div className="settings-row">
             <span className="settings-label settings-stack">
-              Cached pictures
+              {t("settings.cachedPictures")}
               <span className="settings-hint" aria-live="polite">
-                {freed != null ? `${size(freed)} cleared. They download again when needed.` : "They download again when needed."}
+                {freed != null ? t("settings.clearedHint", { size: size(freed) }) : t("settings.cachedPicturesHint")}
               </span>
             </span>
             {local && local.clearable >= MB && <span className="settings-value">{size(local.clearable)}</span>}
             <button className="quiet" onClick={clearPictures} disabled={!local || clearing || local.clearable < MB}>
-              {clearing ? "Clearing…" : "Clear"}
+              {clearing ? t("common.clearing") : t("common.clear")}
             </button>
           </div>
           <PhotoCacheCap onError={setError} />
           <div className="dash-actions">
-            <span className="settings-hint">{local ? `${size(local.total)} kept on this computer` : "\u00a0"}</span>
+            <span className="settings-hint">{local ? t("settings.keptOnComputer", { size: size(local.total) }) : "\u00a0"}</span>
           </div>
         </section>
       </div>
       <div className="dash-row dash-two">
         <section className="dash-card" aria-labelledby="card-general">
-          <h2 id="card-general" className="dash-title">General</h2>
+          <h2 id="card-general" className="dash-title">{t("settings.general")}</h2>
           <div className="settings-row">
-            <span className="settings-label">Appearance</span>
-            <div className="segmented" role="group" aria-label="Appearance">
-              {(["auto", "light", "dark"] as const).map((t) => (
+            <span className="settings-label">{t("settings.appearance")}</span>
+            <div className="segmented" role="group" aria-label={t("settings.appearance")}>
+              {(["auto", "light", "dark"] as const).map((tOpt) => (
                 <button
-                  key={t}
+                  key={tOpt}
                   className="segment"
-                  aria-pressed={theme === t}
+                  aria-pressed={theme === tOpt}
                   onClick={() => {
-                    chooseTheme(t);
-                    setTheme(t);
+                    chooseTheme(tOpt);
+                    setTheme(tOpt);
                   }}
                 >
-                  {t === "auto" ? "Automatic" : t === "light" ? "Light" : "Dark"}
+                  {tOpt === "auto" ? t("settings.auto") : tOpt === "light" ? t("settings.light") : t("settings.dark")}
                 </button>
               ))}
             </div>
           </div>
+          <LanguageRow />
           <WeekStartRow />
           <MoveCheckedRow />
           {login?.available === false ? (
             <div className="settings-row">
               <span className="settings-label settings-stack">
-                Open at Login
+                {t("settings.openAtLogin")}
                 <span className="settings-hint">
-                  Add Skykeep to your desktop’s startup apps, so alerts ring and changes sync from the moment you log in
+                  {t("settings.openAtLoginUnavailable")}
                 </span>
               </span>
             </div>
           ) : (
             <div className="settings-row">
               <span className="settings-label settings-stack">
-                Open at Login
+                {t("settings.openAtLogin")}
                 <span className="settings-hint">
                   {login?.elsewhere
                     ? login.elsewhere
                     : login?.on && !login.honoured
-                      ? "This desktop doesn't open apps at login by itself. Add this to its startup:"
-                      : "Starts in the background, so alerts ring and changes sync"}
+                      ? t("settings.openAtLoginUnsupported")
+                      : t("settings.openAtLoginDesc")}
                 </span>
                 {login?.on && !login.honoured && <code className="settings-command">{login.command}</code>}
               </span>
@@ -706,7 +725,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
                 className="switch"
                 role="switch"
                 aria-checked={login?.on ?? false}
-                aria-label="Open at Login"
+                aria-label={t("settings.openAtLogin")}
                 disabled={!login || loginBusy || Boolean(login.elsewhere)}
                 onClick={() => {
                   if (!login) return;
@@ -730,18 +749,18 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           {login?.available !== false && login?.on && (
             <div className="settings-row">
               <span className="settings-label settings-stack">
-                Start in Tray
+                {t("settings.startInTray")}
                 <span className="settings-hint">
                   {login.startInTray !== false
-                    ? "At login, the window stays closed until you open it from the tray"
-                    : "At login, the window opens"}
+                    ? t("settings.startInTrayDesc")
+                    : t("settings.startInTrayOpen")}
                 </span>
               </span>
               <button
                 className="switch"
                 role="switch"
                 aria-checked={login.startInTray !== false}
-                aria-label="Start in Tray"
+                aria-label={t("settings.startInTray")}
                 disabled={loginBusy}
                 onClick={() => {
                   const was = login;
@@ -763,11 +782,11 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           )}
         </section>
         <section className="dash-card" aria-labelledby="card-notifications">
-          <h2 id="card-notifications" className="dash-title">Notifications</h2>
+          <h2 id="card-notifications" className="dash-title">{t("settings.notifications")}</h2>
           {(
             [
-              ["reminderAlerts", "Reminder alerts", "reminders"],
-              ["eventAlerts", "Calendar alerts", "calendar"],
+              ["reminderAlerts", t("settings.reminderAlerts"), "reminders"],
+              ["eventAlerts", t("settings.calendarAlerts"), "calendar"],
             ] as const
           ).map(([key, label, icon]) => (
             <div className="settings-row" key={key}>
@@ -789,7 +808,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           {alertsShown === false && (
             <div className="settings-row">
               <span className="settings-label settings-hint is-trouble">
-                Alerts can't appear: this desktop has no notification service running.
+                {t("settings.noNotificationService")}
               </span>
             </div>
           )}
@@ -806,7 +825,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         <span>Copyright (C) 2026 Yashwanth Kamireddi. Free software under the GPL-3.0, with no warranty. Not affiliated with Apple.</span>
             <button
               className="quiet"
-              aria-label="Save Diagnostic Report"
+              aria-label={t("settings.saveDiagnosticReport")}
               onClick={() =>
                 api.diagnosticsSave().then(
                   (path) => void toastSaved(path),
@@ -814,10 +833,10 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
                 )
               }
             >
-              Save Diagnostic Report
+              {t("settings.saveDiagnosticReport")}
             </button>
             <button className="quiet" onClick={() => setLicences(true)}>
-              Open-Source Licences
+              {t("settings.openSourceLicences")}
             </button>
       </footer>
         {licences && (
@@ -839,17 +858,42 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
   );
 }
 
+/** Interface language: the system's preferred language, or one chosen here. */
+function LanguageRow() {
+  const { choice, setLanguage, t } = useI18n();
+  const sysLang = systemLanguage();
+  const sysName = languageName(sysLang);
+  return (
+    <div className="settings-row">
+      <span className="settings-label">{t("settings.language")}</span>
+      <Picker
+        label={t("settings.language")}
+        value={choice}
+        onChange={(v) => {
+          setLanguage(v as LanguageChoice);
+        }}
+        options={[
+          { value: "auto", label: `${t("settings.auto")} (${sysName})` },
+          { value: "en", label: "English" },
+          { value: "zh-CN", label: "简体中文" },
+        ]}
+      />
+    </div>
+  );
+}
+
 /** Calendar's first day of the week: the locale's, or one chosen here, as Calendar on a Mac. */
 function WeekStartRow() {
+  const { t } = useI18n();
   const [choice, setChoice] = useState<WeekStartChoice>(weekStartChoice);
   const day = (n: number) => new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(new Date(2026, 0, 4 + n));
   // The locale's own day, named in Automatic, so it is clear what Automatic gives.
   const locale = localeFirstDay();
   return (
     <div className="settings-row">
-      <span className="settings-label">First Day of Week</span>
+      <span className="settings-label">{t("settings.firstDayOfWeek")}</span>
       <Picker
-        label="First Day of Week"
+        label={t("settings.firstDayOfWeek")}
         value={choice}
         onChange={(v) => {
           const next = v as WeekStartChoice;
@@ -857,7 +901,7 @@ function WeekStartRow() {
           setWeekStart(next);
         }}
         options={[
-          { value: "auto", label: `Automatic (${day(locale)})` },
+          { value: "auto", label: `${t("settings.auto")} (${day(locale)})` },
           { value: "0", label: day(0) },
           { value: "1", label: day(1) },
           { value: "6", label: day(6) },
@@ -899,40 +943,40 @@ function Hosts({ hosts }: { hosts: string[] }) {
  * client of its own that can reach nothing else.
  */
 function ReachGroup() {
+  const { t } = useI18n();
   const reach = useReach();
   if (!reach) return null;
   const apple = reach.apple.filter((d) => !d.endsWith(".cn"));
   return (
     <>
-      <h2 className="settings-heading">What Skykeep Talks To</h2>
-      <section className="settings-group settings-reach" aria-label="What Skykeep Talks To">
+      <h2 className="settings-heading">{t("settings.whatSkykeepTalksTo")}</h2>
+      <section className="settings-group settings-reach" aria-label={t("settings.whatSkykeepTalksTo")}>
         <div className="settings-row is-stacked">
-          <span className="settings-label">Apple</span>
+          <span className="settings-label">{t("settings.apple")}</span>
           <span className="settings-hint settings-hint-wrap">
-            <Hosts hosts={apple} /> and every address under them, for your iCloud. These connections can reach nothing else.
+            <Hosts hosts={apple} /> {t("settings.appleReachDesc")}
           </span>
         </div>
         <div className="settings-row is-stacked">
-          <span className="settings-label">Calendar Accounts</span>
+          <span className="settings-label">{t("settings.calendarAccounts")}</span>
           <span className="settings-hint settings-hint-wrap">
-            {reach.accounts.length === 0 ? "None. A Nextcloud or CalDAV account you add adds its own server here." : <Hosts hosts={reach.accounts} />}
+            {reach.accounts.length === 0 ? t("settings.noCalendarAccounts") : <Hosts hosts={reach.accounts} />}
           </span>
         </div>
         <div className="settings-row is-stacked">
-          <span className="settings-label">Calendar Subscriptions</span>
+          <span className="settings-label">{t("settings.calendarSubscriptions")}</span>
           <span className="settings-hint settings-hint-wrap">
-            {reach.subscribed.length === 0 ? "None. A calendar you subscribe to adds its own address here." : <Hosts hosts={reach.subscribed} />}
+            {reach.subscribed.length === 0 ? t("settings.noCalendarSubscriptions") : <Hosts hosts={reach.subscribed} />}
           </span>
         </div>
         <div className="settings-row is-stacked">
-          <span className="settings-label">Updates</span>
+          <span className="settings-label">{t("settings.updates")}</span>
           <span className="settings-hint settings-hint-wrap">
             {reach.updates.length === 0 ? (
-              "None. This copy of Skykeep is updated by the way you installed it."
+              t("settings.noUpdatesReach")
             ) : (
               <>
-                <Hosts hosts={reach.updates} />, GitHub’s release servers, to check for new versions of Skykeep and download
-                them. Nothing about you is sent.
+                <Hosts hosts={reach.updates} />, {t("settings.githubUpdatesReachDesc")}
               </>
             )}
           </span>
@@ -944,21 +988,21 @@ function ReachGroup() {
 
 /** The line at the foot of Settings: what Skykeep connects to, true for this copy. */
 function NetworkNote() {
+  const { t } = useI18n();
   const reach = useReach();
   if (!reach) return null;
   return (
     <p className="settings-note">
       {reach.updates.length > 0
-        ? "Skykeep connects to Apple for your iCloud, to calendars you subscribe to and calendar accounts you add, and to GitHub for its own updates. No Skykeep account, no analytics."
-        : "Skykeep connects to Apple for your iCloud, and to calendars you subscribe to and calendar accounts you add. No Skykeep account, no analytics."}
+        ? t("settings.networkNoteWithUpdates")
+        : t("settings.networkNoteNoUpdates")}
     </p>
   );
 }
 
 /** When this copy last checked, said as a person would. */
 function checkedLine(at: number | null): string {
-  if (at === null) return "Not checked yet";
-  return freshness(at).replace(/^Updated/, "Checked");
+  return checkedFreshness(at);
 }
 
 /**
@@ -967,16 +1011,17 @@ function checkedLine(at: number | null): string {
  * notice; here it can be installed too.
  */
 function UpdatesGroup() {
+  const { t } = useI18n();
   const [status, setStatus] = useUpdateStatus();
   const [checking, setChecking] = useState(false);
   if (!status) return null;
   const here = status.install === "here";
   const elsewhere: Record<string, string> = {
-    packageManager: "Updates come through your package manager.",
-    flatpak: "Updates come through Flatpak.",
-    store: "Updates come through the Microsoft Store.",
-    development: "This is a development build, so it doesn’t update itself.",
-    manual: "This copy wasn’t installed by Skykeep’s installer, so it doesn’t update itself.",
+    packageManager: t("settings.packageManagerUpdate"),
+    flatpak: t("settings.flatpakUpdate"),
+    store: t("settings.storeUpdate"),
+    development: t("settings.devBuildNoUpdate"),
+    manual: t("settings.manualUpdate"),
   };
   const busy = checking || status.phase === "checking";
   const offered = (status.phase === "available" || status.phase === "ready") && status.version;
@@ -984,38 +1029,38 @@ function UpdatesGroup() {
   let trouble = false;
   switch (status.phase) {
     case "checking":
-      line = "Checking for updates…";
+      line = t("settings.checkingForUpdates");
       break;
     case "available":
     case "ready":
-      line = `Skykeep ${status.version} is available`;
+      line = t("settings.updateAvailable", { version: status.version ?? "" });
       break;
     case "downloading":
-      line = `Downloading Skykeep ${status.version}`;
+      line = t("settings.downloadingUpdate", { version: status.version ?? "" });
       break;
     case "waiting":
       line =
         status.waitingFor === "typing"
-          ? `Skykeep ${status.version} will install when you finish typing`
-          : `Skykeep ${status.version} will install once your changes reach iCloud`;
+          ? t("settings.installWhenFinishTyping", { version: status.version ?? "" })
+          : t("settings.installWhenSynced", { version: status.version ?? "" });
       break;
     case "installing":
-      line = `Installing Skykeep ${status.version}`;
+      line = t("settings.installingUpdate", { version: status.version ?? "" });
       break;
     case "failed":
-      line = status.problem ?? "Couldn’t check for updates. Try again later.";
+      line = status.problem ?? t("settings.updateFailed");
       trouble = true;
       break;
     case "current":
-      line = `Skykeep ${status.current} is up to date · ${checkedLine(status.checkedAt)}`;
+      line = t("settings.upToDate", { version: status.current, checked: checkedLine(status.checkedAt) });
       break;
     default:
-      line = `Skykeep ${status.current} · ${checkedLine(status.checkedAt)}`;
+      line = t("settings.versionChecked", { version: status.current, checked: checkedLine(status.checkedAt) });
   }
   return (
     <>
-      <h2 className="settings-heading">Software Update</h2>
-      <section className="settings-group" aria-label="Software Update">
+      <h2 className="settings-heading">{t("settings.softwareUpdate")}</h2>
+      <section className="settings-group" aria-label={t("settings.softwareUpdate")}>
         {!here ? (
           <div className="settings-row">
             <span className="settings-label settings-hint">{elsewhere[status.install]}</span>
@@ -1024,14 +1069,14 @@ function UpdatesGroup() {
           <>
             <div className="settings-row">
               <span className="settings-label settings-stack">
-                Check for Updates Automatically
-                <span className="settings-hint">Once a day, from Skykeep’s releases on GitHub</span>
+                {t("settings.checkUpdatesAuto")}
+                <span className="settings-hint">{t("settings.checkUpdatesAutoHint")}</span>
               </span>
               <button
                 className="switch"
                 role="switch"
                 aria-checked={status.auto}
-                aria-label="Check for Updates Automatically"
+                aria-label={t("settings.checkUpdatesAuto")}
                 onClick={() => {
                   const was = status;
                   setStatus({ ...status, auto: !status.auto });
@@ -1047,7 +1092,7 @@ function UpdatesGroup() {
               </span>
               {offered ? (
                 <button className="quiet" onClick={() => void api.updateApply().catch(() => {})}>
-                  Update and Restart
+                  {t("settings.updateAndRestart")}
                 </button>
               ) : (
                 <button
@@ -1062,7 +1107,7 @@ function UpdatesGroup() {
                       .finally(() => setChecking(false));
                   }}
                 >
-                  Check for Updates
+                  {t("settings.checkForUpdates")}
                 </button>
               )}
             </div>
@@ -1075,6 +1120,7 @@ function UpdatesGroup() {
 
 /** Notes' Sort Checked Items, Automatically: on this computer, as each iPhone keeps its own. */
 function MoveCheckedRow() {
+  const { t } = useI18n();
   const [on, setOn] = useState(() => {
     try {
       return localStorage.getItem(MOVE_CHECKED_KEY) === "1";
@@ -1085,14 +1131,14 @@ function MoveCheckedRow() {
   return (
     <div className="settings-row">
       <span className="settings-label settings-stack">
-        Sort Checked Items Automatically
-        <span className="settings-hint">Ticked checklist items move below the rest</span>
+        {t("settings.moveChecked")}
+        <span className="settings-hint">{t("settings.moveCheckedHint")}</span>
       </span>
       <button
         className="switch"
         role="switch"
         aria-checked={on}
-        aria-label="Sort Checked Items Automatically"
+        aria-label={t("settings.moveChecked")}
         onClick={() => {
           const next = !on;
           setOn(next);

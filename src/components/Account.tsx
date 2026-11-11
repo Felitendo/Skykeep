@@ -24,6 +24,7 @@ export function useNotKept(): boolean {
   return notKept;
 }
 import { freshness, useServiceState, useSync } from "../lib/sync";
+import { useI18n } from "../lib/i18n";
 
 /** "Asha Rao" → "AR"; an address → its first letter. */
 export function initialsOf(name: string): string {
@@ -58,6 +59,7 @@ export type FooterApp = { service: string; name: string };
  * whole account.
  */
 export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen: () => void; app?: FooterApp | null }) {
+  const { t } = useI18n();
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const { report, syncing, error, refreshService, refresh: refreshAll } = useSync();
   const notKept = useNotKept();
@@ -79,29 +81,29 @@ export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen
     failed = own.failure !== null && !own.working;
     working = own.working;
     status = working
-      ? "Updating…"
+      ? t("common.updating")
       : failed
         ? own.failure!
         : own.unavailable
-          ? "Not available"
+          ? t("sync.notAvailable")
           : freshness(own.lastSyncedAt);
     full = working
-      ? `Updating ${app.name}…`
+      ? t("sync.appUpdating", { name: app.name })
       : failed
-        ? `${app.name} didn’t update: ${own.failure}`
+        ? t("sync.appFailed", { name: app.name, reason: own.failure ?? "" })
         : own.unavailable
-          ? `${app.name} isn’t available`
+          ? t("sync.appUnavailable", { name: app.name })
           : `${app.name} ${status.replace(/^\w/, (c) => c.toLowerCase())}`;
   } else {
     failed = !!(error || report?.services.some((s) => s.outcome === "failed"));
     working = syncing;
-    status = syncing ? "Syncing…" : failed ? "Some things didn't update" : freshness(report?.asOf ?? null);
+    status = syncing ? t("sync.syncing") : failed ? t("sync.someThingsFailed") : freshness(report?.asOf ?? null);
   }
   // Nothing synced yet, or the service is not there: the dot does not say all is well.
   const idle = app ? own.unavailable || own.lastSyncedAt === null : !report?.asOf;
   // The first name, as the menu bar greets someone: a full name did not fit the sidebar and
   // ended in "…". Settings shows it whole.
-  const name = account?.name?.split(/\s+/)[0] ?? account?.email ?? "Settings";
+  const name = account?.name?.split(/\s+/)[0] ?? account?.email ?? t("account.settings");
   // Two quiet lines, each one thing, as Mail's sidebar ends: how fresh this app is — the line
   // itself the control that updates it, its dot turning while it does — and below it who is
   // signed in, the way into Settings.
@@ -133,13 +135,13 @@ export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen
   return (
     <div className={`account-card is-${state}`}>
       <span className="visually-hidden" role="status">{said}</span>
-      <button className="sidebar-account" aria-current={current} onClick={onOpen} title={notKept ? NOT_KEPT : `${full ?? status} · Skykeep`}>
+      <button className="sidebar-account" aria-current={current} onClick={onOpen} title={notKept ? t("account.notKeptNotice") : `${full ?? status} · Skykeep`}>
         <span className="account-ring" aria-hidden="true">
           <AccountAvatar account={account} />
         </span>
         <span className="account-lines">
           <span className="sidebar-account-name">{name}</span>
-          <span className="account-status">{notKept ? "Sign-in not saved" : status}</span>
+          <span className="account-status">{notKept ? t("account.notSaved") : status}</span>
         </span>
       </button>
       <button
@@ -147,8 +149,8 @@ export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen
         onClick={refresh}
         disabled={working}
         aria-busy={working}
-        title={working ? full ?? status : "Update Now"}
-        aria-label={working ? full ?? status : `Update now. ${full ?? status}`}
+        title={working ? full ?? status : t("common.updateNow")}
+        aria-label={working ? full ?? status : `${t("common.updateNow")}. ${full ?? status}`}
       >
         <RotateCw size={14} strokeWidth={2.2} aria-hidden="true" />
       </button>

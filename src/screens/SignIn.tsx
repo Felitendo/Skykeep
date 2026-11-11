@@ -4,6 +4,7 @@ import { Spinner } from "../components/Spinner";
 import { StatusLine } from "../components/StatusLine";
 import { api, messageOf, type SignInResult } from "../lib/ipc";
 import { onWindows } from "../lib/platform";
+import { useI18n } from "../lib/i18n";
 
 // Where the copy is kept, as this system names it.
 /** A path that may wrap only after a separator or a dot, as macOS wraps one, never mid-name. */
@@ -39,6 +40,7 @@ export function SignIn({
   /** Why the saved session could not be taken up, said in the error's place until a try. */
   notice?: string | null;
 }) {
+  const { t } = useI18n();
   const [appleId, setAppleId] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -49,8 +51,8 @@ export function SignIn({
   const [wait, setWait] = useState(0);
   useEffect(() => {
     if (wait <= 0) return;
-    const t = setTimeout(() => setWait((w) => w - 1), 1000);
-    return () => clearTimeout(t);
+    const tTimer = setTimeout(() => setWait((w) => w - 1), 1000);
+    return () => clearTimeout(tTimer);
   }, [wait]);
 
   const ready = appleId.trim().length > 0 && password.length > 0 && !busy && wait <= 0;
@@ -78,7 +80,7 @@ export function SignIn({
         // Apple's refusal names no field, so neither can this; it can say what to do.
         setError(
           /Apple (ID|Account) or password/.test(message)
-            ? "Apple Account or password is incorrect. Check both and try again."
+            ? t("signin.accountOrPasswordIncorrect")
             : sentence(message),
         );
       }
@@ -98,8 +100,8 @@ export function SignIn({
   return (
     <form className="sheet enter-sheet" onSubmit={submit} aria-busy={busy} noValidate>
       <Mark className="mark" />
-      <h1>Connect your iCloud</h1>
-      <p className="lede">Your iCloud, kept on this computer.</p>
+      <h1>{t("signin.title")}</h1>
+      <p className="lede">{t("signin.lede")}</p>
 
       <div className={`field-group${error ? " is-invalid" : ""}`}>
         <input
@@ -117,8 +119,8 @@ export function SignIn({
           autoComplete="username"
           autoCapitalize="off"
           spellCheck={false}
-          placeholder="Apple Account email"
-          aria-label="Apple Account"
+          placeholder={t("signin.appleAccount")}
+          aria-label={t("signin.appleAccount")}
           aria-invalid={!!error}
           autoFocus
           disabled={busy}
@@ -129,8 +131,8 @@ export function SignIn({
           onChange={edit(setPassword)}
           type="password"
           autoComplete="current-password"
-          placeholder="Password"
-          aria-label="Password"
+          placeholder={t("signin.password")}
+          aria-label={t("signin.password")}
           aria-invalid={!!error}
           aria-describedby={error ? "signin-error" : undefined}
           disabled={busy}
@@ -139,11 +141,11 @@ export function SignIn({
 
       <button className="primary" type="submit" disabled={!ready} aria-disabled={!ready}>
         {busy && <Spinner small />}
-        <span>{busy ? "Signing in" : wait > 0 ? `Try again in ${wait}s` : "Sign in"}</span>
+        <span>{busy ? t("signin.signingIn") : wait > 0 ? t("signin.tryAgainIn", { wait }) : t("signin.signIn")}</span>
       </button>
       {onCancel && (
         <button type="button" className="quiet" onClick={onCancel}>
-          Not Now
+          {t("signin.notNow")}
         </button>
       )}
 
@@ -153,11 +155,11 @@ export function SignIn({
         {error ? (
           <StatusLine tone="error" id="signin-error">{error}</StatusLine>
         ) : (
-          <p className="assurance">Your password never leaves this computer.</p>
+          <p className="assurance">{t("signin.passwordAssurance")}</p>
         )}
         {/* Said where the password is typed, not only in the fold below: whose software
             this is. */}
-        <p className="independence">Skykeep is independent and not made by Apple.</p>
+        <p className="independence">{t("signin.independence")}</p>
       </div>
 
       {/*
@@ -168,35 +170,27 @@ export function SignIn({
         * the rest a click away for anyone who wants it.
         */}
       <details className="disclosure">
-        <summary>How Skykeep keeps you private</summary>
+        <summary>{t("signin.privacySummary")}</summary>
         <div className="disclosure-body">
           <p>
-            <strong>Private by design.</strong> Your password never leaves this computer.
-            Skykeep proves you know it without sending it, and keeps your session in your
-            system keyring. No Skykeep account and no analytics: your iCloud travels only between this computer and Apple.
+            <strong>{t("signin.privacyDetail1Title")}</strong> {t("signin.privacyDetail1Text")}
           </p>
           <p>
-            <strong>Your full Apple Account password.</strong> An app-specific password opens
-            only mail, contacts and calendars to other apps. Notes, Reminders, Drive and Photos
-            open to a full sign-in with your two-factor code, the same one icloud.com uses.
+            <strong>{t("signin.privacyDetail2Title")}</strong> {t("signin.privacyDetail2Text")}
           </p>
           <p>
-            <strong>Personal Apple Accounts.</strong> Managed Apple Accounts from a school or
-            workplace aren&rsquo;t supported yet.
+            <strong>{t("signin.privacyDetail3Title")}</strong> {t("signin.privacyDetail3Text")}
           </p>
           <p>
-            <strong>Your iCloud, right here.</strong> Your calendar, reminders, notes, contacts
-            and Drive live on this computer in <code>{breakable(STORE)}</code>, so everything opens
-            instantly and works offline.
+            <strong>{t("signin.privacyDetail4Title")}</strong> {t("signin.privacyDetail4TextBefore")}
+            <code>{breakable(STORE)}</code>
+            {t("signin.privacyDetail4TextAfter")}
           </p>
           <p>
-            <strong>Sealed by Apple.</strong> Health, Messages, Keychain and your other
-            end-to-end encrypted data stay protected on your Apple devices, just as Apple
-            designed.
+            <strong>{t("signin.privacyDetail5Title")}</strong> {t("signin.privacyDetail5Text")}
           </p>
           <p>
-            <strong>Independent.</strong> Made by an independent developer, not affiliated with
-            Apple. It uses the web services icloud.com uses, which Apple can change at any time.
+            <strong>{t("signin.privacyDetail6Title")}</strong> {t("signin.privacyDetail6Text")}
           </p>
         </div>
       </details>

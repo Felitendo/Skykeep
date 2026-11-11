@@ -12,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SYNCED, type ServiceReport } from "../lib/ipc";
 import { freshness } from "../lib/sync";
+import { useI18n, t } from "../lib/i18n";
 import notesIcon from "../assets/apps/notes.svg";
 import remindersIcon from "../assets/apps/reminders.svg";
 import calendarIcon from "../assets/apps/calendar.svg";
@@ -39,7 +40,6 @@ const APPS = [
   { service: "photos", key: "photos", name: "Photos", icon: photosIcon },
 ] as const;
 
-const count = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 const time = (seconds: number) =>
   new Date(seconds * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
@@ -48,21 +48,27 @@ function holds(key: string, s: Summary | null, driveFree: string | null): string
   if (!s) return " ";
   switch (key) {
     case "notes":
-      return count(s.notes, "note", "notes");
+      return s.notes === 1 ? t("launcher.notesCountOne") : t("launcher.notesCount", { count: s.notes.toLocaleString() });
     case "reminders":
-      return s.remindersToday ? count(s.remindersToday, "due today", "due today") : "Nothing due today";
+      return s.remindersToday
+        ? s.remindersToday === 1
+          ? t("launcher.remindersDueOne")
+          : t("launcher.remindersDue", { count: s.remindersToday.toLocaleString() })
+        : t("launcher.nothingDueToday");
     case "calendar":
       return s.nextEvent
         ? `${time(s.nextEvent.startsAt)} · ${s.nextEvent.title}`
         : s.eventsToday
-          ? count(s.eventsToday, "event today", "events today")
-          : "Nothing today";
+          ? s.eventsToday === 1
+            ? t("launcher.eventsTodayOne")
+            : t("launcher.eventsToday", { count: s.eventsToday.toLocaleString() })
+          : t("launcher.nothingToday");
     case "contacts":
-      return count(s.contacts, "contact", "contacts");
+      return s.contacts === 1 ? t("launcher.contactsCountOne") : t("launcher.contactsCount", { count: s.contacts.toLocaleString() });
     case "drivews":
-      return driveFree ? `${driveFree} available` : " ";
+      return driveFree ? t("launcher.driveAvailable", { size: driveFree }) : " ";
     case "photos":
-      return count(s.photos, "photo", "photos");
+      return s.photos === 1 ? t("launcher.photosCountOne") : t("launcher.photosCount", { count: s.photos.toLocaleString() });
     default:
       return " ";
   }
@@ -86,12 +92,12 @@ function fresh(
   syncing: boolean,
 ): { text: string; full: string; state: "clean" | "working" | "trouble" | "idle" } {
   const said = (text: string, state: "clean" | "working" | "trouble" | "idle") => ({ text, full: text, state });
-  if (!r) return said(syncing ? "Updating…" : "Not synced yet", syncing ? "working" : "idle");
+  if (!r) return said(syncing ? t("common.updating") : t("sync.notSyncedYet"), syncing ? "working" : "idle");
   if (r.outcome === "failed") return { text: shortly(r.detail), full: r.detail ?? "Didn’t update", state: "trouble" };
   if (r.outcome === "paused") return said(`${freshness(r.lastSyncedAt ?? null)}. Syncs when you approve`, "idle");
   if (r.outcome === "preparing") return said("Apple is still preparing it", "idle");
-  if (syncing && !r.lastSyncedAt) return said("Downloading…", "working");
-  if (!r.lastSyncedAt) return said("Not synced yet", "idle");
+  if (syncing && !r.lastSyncedAt) return said(t("common.loading"), "working");
+  if (!r.lastSyncedAt) return said(t("sync.notSyncedYet"), "idle");
   return said(freshness(r.lastSyncedAt), syncing ? "working" : "clean");
 }
 
@@ -106,6 +112,7 @@ export function Launcher({
   onSync: () => void;
   driveFree: string | null;
 }) {
+  const { t } = useI18n();
   const [summary, setSummary] = useState<Summary | null>(null);
   const read = useCallback(() => {
     void invoke<Summary>("launcher_summary").then(setSummary, () => {});
@@ -141,19 +148,20 @@ export function Launcher({
   };
 
   return (
-    <section className="launcher" aria-label="Your apps">
+    <section className="launcher" aria-label={t("launcher.appsAria")}>
       <div className="launcher-head">
-        <span className="launcher-hint">Changes from your other devices arrive within seconds.</span>
+        <span className="launcher-hint">{t("launcher.hint")}</span>
         <button className="quiet" onClick={onSync} disabled={syncing}>
-          {syncing ? "Syncing…" : "Sync Now"}
+          {syncing ? t("sync.syncing") : t("launcher.syncNow")}
         </button>
       </div>
-      <div className="launcher-grid" role="group" aria-label="Apps">
+      <div className="launcher-grid" role="group" aria-label={t("launcher.appsAria")}>
         {offered.map((a, i) => {
           const f = fresh(
             services.find((s) => s.service === a.service),
             syncing,
           );
+          const appName = t("sidebar." + a.service);
           return (
             <button
               key={a.key}
@@ -177,11 +185,11 @@ export function Launcher({
                   move(offered.length - 1);
                 }
               }}
-              aria-label={`${a.name}. ${holds(a.key, summary, driveFree)}. ${f.full}`}
+              aria-label={`${appName}. ${holds(a.key, summary, driveFree)}. ${f.full}`}
               title={f.full !== f.text ? f.full : undefined}
             >
               <img className="launch-icon" src={a.icon} alt="" draggable={false} />
-              <span className="launch-name">{a.name}</span>
+              <span className="launch-name">{appName}</span>
               <span className="launch-holds">{holds(a.key, summary, driveFree)}</span>
               <span className="launch-fresh">
                 <span className="launch-dot" aria-hidden="true" />
