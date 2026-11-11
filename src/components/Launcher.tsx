@@ -12,7 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SYNCED, type ServiceReport } from "../lib/ipc";
 import { freshness } from "../lib/sync";
-import { useI18n, t } from "../lib/i18n";
+import { appName, useI18n, t } from "../lib/i18n";
 import notesIcon from "../assets/apps/notes.svg";
 import remindersIcon from "../assets/apps/reminders.svg";
 import calendarIcon from "../assets/apps/calendar.svg";
@@ -155,13 +155,13 @@ export function Launcher({
           {syncing ? t("sync.syncing") : t("launcher.syncNow")}
         </button>
       </div>
-      <div className="launcher-grid" role="group" aria-label={t("launcher.appsAria")}>
+      <div className="launcher-grid" role="group" aria-label={t("launcher.appsGridAria")}>
         {offered.map((a, i) => {
           const f = fresh(
             services.find((s) => s.service === a.service),
             syncing,
           );
-          const appName = t("sidebar." + a.service);
+          const name = appName(a.service) ?? a.name;
           return (
             <button
               key={a.key}
@@ -185,11 +185,11 @@ export function Launcher({
                   move(offered.length - 1);
                 }
               }}
-              aria-label={`${appName}. ${holds(a.key, summary, driveFree)}. ${f.full}`}
+              aria-label={`${name}. ${holds(a.key, summary, driveFree)}. ${f.full}`}
               title={f.full !== f.text ? f.full : undefined}
             >
               <img className="launch-icon" src={a.icon} alt="" draggable={false} />
-              <span className="launch-name">{appName}</span>
+              <span className="launch-name">{name}</span>
               <span className="launch-holds">{holds(a.key, summary, driveFree)}</span>
               <span className="launch-fresh">
                 <span className="launch-dot" aria-hidden="true" />

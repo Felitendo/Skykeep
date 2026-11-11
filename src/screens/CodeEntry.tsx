@@ -4,7 +4,7 @@ import { CodeInput } from "../components/CodeInput";
 import { StatusLine } from "../components/StatusLine";
 import { sentence } from "./SignIn";
 import { api, messageOf, type TwoFactorOptions } from "../lib/ipc";
-import { useI18n } from "../lib/i18n";
+import { rich, useI18n } from "../lib/i18n";
 
 export function CodeEntry({
   onVerified,
@@ -134,9 +134,7 @@ export function CodeEntry({
                 ? onlyCalls
                   ? t("codeEntry.ledeOnlyCalls")
                   : t("codeEntry.ledeCanText")
-                : t("codeEntry.ledeDevicesCount", {
-                    devices: devices === 1 ? t("codeEntry.oneDevice") : t("codeEntry.manyDevices", { devices }),
-                  })}
+                : devices === 1 ? t("codeEntry.ledeOneDevice") : t("codeEntry.ledeManyDevices", { devices })}
       </p>
 
       {!asked && !texted && (
@@ -194,9 +192,9 @@ export function CodeEntry({
           )}
 
           {nowhereToSend ? (
-            <p>{t("codeEntry.nowhereHelp")}</p>
+            <p>{rich(t("codeEntry.nowhereHelp"))}</p>
           ) : nothingSent ? null : (
-            <p>{t("codeEntry.allowHelp")}</p>
+            <p>{rich(t("codeEntry.allowHelp"))}</p>
           )}
 
           {!nowhereToSend && (
@@ -242,7 +240,7 @@ export function CodeEntry({
           )}
 
           <p className="help-tip">
-            {t("codeEntry.offlineTip")}
+            {rich(t("codeEntry.offlineTip"))}
           </p>
         </div>
       )}

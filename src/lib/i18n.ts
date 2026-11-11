@@ -1,22 +1,38 @@
-import { useSyncExternalStore } from "react";
+import { Fragment, createElement, useSyncExternalStore, type ReactNode } from "react";
 import en from "../locales/en.json" with { type: "json" };
 import zhCN from "../locales/zh-CN.json" with { type: "json" };
 
-export type LanguageChoice = "auto" | "en" | "zh-CN";
-export type ResolvedLanguage = "en" | "zh-CN";
+/**
+ * Every language the interface speaks, by BCP 47 tag, with its own name for the picker. Adding
+ * one is a file in src/locales/ and a line here; the picker, the system match and the tests
+ * (.uiverify/i18n.test.mjs) follow from this list. English is the source every other file is
+ * checked against, and the fallback for any string a translation doesn't have yet.
+ */
+const LOCALES = {
+  en: { name: "English", strings: en },
+  "zh-CN": { name: "简体中文", strings: zhCN },
+} as const satisfies Record<string, { name: string; strings: object }>;
+
+export type ResolvedLanguage = keyof typeof LOCALES;
+export type LanguageChoice = "auto" | ResolvedLanguage;
+
+/** Every string's key, from the English file: a key that isn't there fails the type check. */
+type Leaves<T, P extends string = ""> = {
+  [K in keyof T & string]: T[K] extends string ? `${P}${K}` : Leaves<T[K], `${P}${K}.`>;
+}[keyof T & string];
+export type Key = Leaves<typeof en>;
+export type Params = Record<string, string | number>;
+export type Translate = (key: Key, params?: Params) => string;
 
 const KEY = "quince.language";
 
-const dictionaries: Record<ResolvedLanguage, Record<string, unknown>> = {
-  en,
-  "zh-CN": zhCN,
-};
+/** The languages in the picker's order. */
+export const LANGUAGES = Object.keys(LOCALES) as ResolvedLanguage[];
+
+const isLanguage = (s: string | null): s is ResolvedLanguage => s !== null && s in LOCALES;
 
 const listeners = new Set<() => void>();
-
-function notify() {
-  listeners.forEach((l) => l());
-}
+const notify = () => listeners.forEach((l) => l());
 
 /** Subscribe to language changes (compatible with useSyncExternalStore). */
 export function subscribeLanguage(listener: () => void) {
@@ -26,66 +42,61 @@ export function subscribeLanguage(listener: () => void) {
   };
 }
 
-/** Detect the system's preferred language. */
+/**
+ * The language of the system's first preference that the interface speaks: the whole tag first
+ * ("zh-CN"), then its language alone ("zh-Hans-SG" → "zh-CN"), else English.
+ */
 export function systemLanguage(): ResolvedLanguage {
-  try {
-    const nav = (typeof navigator !== "undefined" && (navigator.languages?.[0] || navigator.language)) || "en";
-    return nav.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
-  } catch {
-    return "en";
+  const wanted = typeof navigator === "undefined" ? [] : navigator.languages?.length ? navigator.languages : [navigator.language];
+  for (const tag of wanted) {
+    if (!tag) continue;
+    const exact = LANGUAGES.find((l) => l.toLowerCase() === tag.toLowerCase());
+    if (exact) return exact;
+    const base = tag.split("-")[0].toLowerCase();
+    const near = LANGUAGES.find((l) => l.split("-")[0].toLowerCase() === base);
+    if (near) return near;
   }
+  return "en";
 }
 
 let memoryLanguage: LanguageChoice | null = null;
 
-/** The language choice saved in local storage. Defaults to "auto". */
+/** The language chosen in Settings, or "auto" to follow the system. */
 export function storedLanguage(): LanguageChoice {
   if (memoryLanguage !== null) return memoryLanguage;
   try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      const val = window.localStorage.getItem(KEY);
-      return val === "en" || val === "zh-CN" ? val : "auto";
-    }
+    const saved = window.localStorage.getItem(KEY);
+    return isLanguage(saved) ? saved : "auto";
   } catch {
-    // Fall back to auto.
+    return "auto";
   }
-  return "auto";
 }
 
-/** The currently active language ("en" or "zh-CN"). */
+/** The language the interface is in now. */
 export function activeLanguage(): ResolvedLanguage {
   const choice = storedLanguage();
   return choice === "auto" ? systemLanguage() : choice;
 }
 
-/** Set the HTML document's lang attribute. */
+/** The document's lang attribute, for screen readers, fonts and hyphenation. */
 export function applyLanguage(lang: ResolvedLanguage) {
-  if (typeof document !== "undefined") {
-    document.documentElement.lang = lang;
-  }
+  if (typeof document !== "undefined") document.documentElement.lang = lang;
 }
 
-/** Save the user's language choice and notify listeners. */
+/** Save the choice and redraw every window's strings. */
 export function setLanguage(choice: LanguageChoice) {
   memoryLanguage = choice;
   try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      if (choice === "auto") {
-        window.localStorage.removeItem(KEY);
-      } else {
-        window.localStorage.setItem(KEY, choice);
-      }
-    }
+    if (choice === "auto") window.localStorage.removeItem(KEY);
+    else window.localStorage.setItem(KEY, choice);
   } catch {
-    // Ignore storage errors.
+    // Kept for this window only.
   }
   applyLanguage(activeLanguage());
   notify();
 }
 
-/**
- * Follow language changes from other windows, mirroring followTheme().
- */
+/** Follow a choice made in another window, as followTheme() does. */
 export function followLanguage() {
   if (typeof window === "undefined") return;
   window.addEventListener("storage", (e) => {
@@ -97,58 +108,56 @@ export function followLanguage() {
   });
 }
 
-/** Human-readable native name for a resolved language. */
+/** A language's own name ("简体中文"), as the picker shows it. */
 export function languageName(lang: ResolvedLanguage): string {
-  switch (lang) {
-    case "zh-CN":
-      return "简体中文";
-    case "en":
-    default:
-      return "English";
-  }
+  return LOCALES[lang].name;
 }
 
-function getNested(obj: unknown, path: string): string | undefined {
-  if (!obj || typeof obj !== "object") return undefined;
-  const direct = (obj as Record<string, unknown>)[path];
-  if (typeof direct === "string") return direct;
-  const parts = path.split(".");
-  let curr: unknown = obj;
-  for (const p of parts) {
-    if (curr === null || curr === undefined || typeof curr !== "object") return undefined;
-    curr = (curr as Record<string, unknown>)[p];
+function lookup(strings: object, key: string): string | undefined {
+  let at: unknown = strings;
+  for (const part of key.split(".")) {
+    if (at === null || typeof at !== "object") return undefined;
+    at = (at as Record<string, unknown>)[part];
   }
-  return typeof curr === "string" ? curr : undefined;
+  return typeof at === "string" ? at : undefined;
 }
 
 /**
- * Translate a key into the active language, falling back to English.
- * Supports `{param}` interpolation. An optional `langOverride` can specify
- * the target language directly.
+ * A string in the active language, else English, with `{name}` filled from `params`. `lang`
+ * asks for one language whatever is active.
  */
-export function t(key: string, params?: Record<string, string | number>, langOverride?: ResolvedLanguage): string {
-  const lang = langOverride ?? activeLanguage();
-  let text = getNested(dictionaries[lang], key);
-  if (text === undefined && lang !== "en") {
-    text = getNested(dictionaries.en, key);
-  }
-  if (text === undefined) {
-    text = key;
-  }
-  if (!params) return text;
-  return text.replace(/\{(\w+)\}/g, (_, k) => (k in params ? String(params[k]) : `{${k}}`));
+export function t(key: Key, params?: Params, lang: ResolvedLanguage = activeLanguage()): string {
+  const text = lookup(LOCALES[lang].strings, key) ?? lookup(en, key) ?? key;
+  return params ? text.replace(/\{(\w+)\}/g, (all, k: string) => (k in params ? String(params[k]) : all)) : text;
 }
 
 /**
- * React hook for language state and translation.
- * Re-renders automatically when the language is changed.
+ * An app's name as the sidebar says it, by its screen key or its service ("drivews" and
+ * "drive" are both Drive), or null for something that isn't an app.
  */
+export function appName(key: string): string | null {
+  const k = `sidebar.${key === "drivews" ? "drive" : key}`;
+  return lookup(en, k) === undefined ? null : t(k as Key);
+}
+
+/**
+ * A translated string whose `<b>…</b>` and `<strong>…</strong>` parts are drawn as those
+ * elements (names of buttons, settings and sites), so a translation keeps them where its own
+ * word order puts them. Nothing else in a string is markup.
+ */
+export function rich(text: string): ReactNode {
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const m of text.matchAll(/<(b|strong)>(.*?)<\/\1>/g)) {
+    parts.push(text.slice(at, m.index), createElement(m[1], { key: parts.length }, m[2]));
+    at = m.index + m[0].length;
+  }
+  parts.push(text.slice(at));
+  return createElement(Fragment, null, ...parts);
+}
+
+/** The language and `t`, redrawing the component when the language changes. */
 export function useI18n() {
-  const active = useSyncExternalStore(subscribeLanguage, activeLanguage, activeLanguage);
-  return {
-    t,
-    lang: active,
-    choice: storedLanguage(),
-    setLanguage,
-  };
+  const lang = useSyncExternalStore(subscribeLanguage, activeLanguage, activeLanguage);
+  return { t, lang, choice: storedLanguage(), setLanguage };
 }

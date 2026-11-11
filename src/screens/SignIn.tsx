@@ -119,7 +119,7 @@ export function SignIn({
           autoComplete="username"
           autoCapitalize="off"
           spellCheck={false}
-          placeholder={t("signin.appleAccount")}
+          placeholder={t("signin.appleAccountPlaceholder")}
           aria-label={t("signin.appleAccount")}
           aria-invalid={!!error}
           autoFocus

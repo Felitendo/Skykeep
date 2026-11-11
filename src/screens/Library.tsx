@@ -12,7 +12,7 @@ import { AccountCard } from "../components/Account";
 import { AppFootContext } from "../components/AppFoot";
 import { useSidePane } from "../components/SidePane";
 import { reveal, takeWaiting, type Reveal } from "../lib/reveal";
-import { useI18n } from "../lib/i18n";
+import { appName, rich, useI18n } from "../lib/i18n";
 
 /*
  * Each app is its own chunk, so the window opens on the code for the app it shows, not all
@@ -342,7 +342,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
     if (!selected) return;
     // Skykeep's own window is Skykeep (the account, sync, Backup and settings), as its icon
     // and the tray name it; an app's window is the app.
-    const title = selected === "settings" ? "Skykeep" : t(`sidebar.${selected === "drivews" ? "drive" : selected}`);
+    const title = selected === "settings" ? "Skykeep" : appName(selected);
     if (!title) return;
     document.title = title;
     // Asked of the window plugin by itself: `@tauri-apps/api/window` for this one call was a
@@ -479,7 +479,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
         : t("library.finishSetupDesc")}
     </p>
     <p>
-      {t("library.signinBrowserAction", { host: "icloud.com", agreeSuffix: atIcloud === "terms" ? t("library.agreeSuffix") : "" })}
+      {rich(t(atIcloud === "terms" ? "library.signinBrowserActionTerms" : "library.signinBrowserAction"))}
     </p>
     <p className="device-approval-status" role="status" aria-live="polite">
       <span>{checkError ?? (checking ? t("library.checkingWithApple") : "")}</span>
@@ -501,7 +501,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
       onOpen={() => choose("settings")}
       app={(() => {
         const app = SCREENS.find((s) => s.key === SOLO);
-        return app && webAccess !== false ? { service: serviceOf(app.key), name: t(`sidebar.${app.key === "drivews" ? "drive" : app.key}`) } : null;
+        return app && webAccess !== false ? { service: serviceOf(app.key), name: appName(app.key) ?? app.name } : null;
       })()}
     />
   ) : null;
@@ -536,7 +536,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
                 {t("library.webAccessOffDesc1")}
               </p>
               <p>
-                {t("library.webAccessOffDesc2")}
+                {rich(t("library.webAccessOffDesc2"))}
               </p>
             </div>
           ) : (
@@ -561,7 +561,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
                 return (
                   <div key={key} className="screen-slot" hidden={!on} {...(on ? {} : { inert: "" })}>
                     <ScreenActive.Provider value={on}>
-                      <ScreenBoundary name={t(`sidebar.${key === "drivews" ? "drive" : key}`)}>
+                      <ScreenBoundary name={appName(key) ?? key}>
                         <Suspense fallback={null}>
                           {screenFor(key)}
                           {on && <Drawn then={drawn} />}

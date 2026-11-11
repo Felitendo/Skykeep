@@ -77,7 +77,6 @@
     "changeFolder": "Change Folder",
     "chooseFolder": "Choose Folder",
     "chooseBackupLocation": "Choose where to back up iCloud",
-    "photosCountAndSize": "{count} {photos} · {size}",
     "photosCountOfTotal": "{copied} of {total} · {copiedSize} of {totalSize}",
     "photosBackupProgress": "Photos backup progress",
     "driveFilesCountAndSize": "{count} files · {size}",
@@ -126,7 +125,7 @@
     "firstDayOfWeek": "First Day of Week",
     "automaticDay": "Automatic ({day})",
     "moveChecked": "Sort Checked Items Automatically",
-    "moveCheckedHint": "In Notes and Reminders, ticked checklist items move below the rest",
+    "moveCheckedHint": "Ticked checklist items move below the rest",
     "openAtLogin": "Open at Login",
     "openAtLoginDesc": "Starts in the background, so alerts ring and changes sync",
     "openAtLoginUnsupported": "This desktop doesn't open apps at login by itself. Add this to its startup:",
@@ -184,12 +183,18 @@
     "unsentComma": ", ",
     "unsentJoin": "{first} and {last}",
     "unsentWarning": "{waiting} hasn't reached iCloud yet. Keep a copy and it goes up when you sign back in; remove it and it's lost.",
-    "unsentWarningPlural": "{waiting} haven't reached iCloud yet. Keep a copy and they go up when you sign back in; remove it and they're lost."
+    "unsentWarningPlural": "{waiting} haven't reached iCloud yet. Keep a copy and they go up when you sign back in; remove it and they're lost.",
+    "photosCountAndSizeOne": "{count} photo · {size}",
+    "photosCountAndSizeMany": "{count} photos · {size}",
+    "photosInBackup": "Photos in the backup",
+    "driveInBackup": "iCloud Drive in the backup",
+    "includeDrive": "Include iCloud Drive"
   },
   "signin": {
     "title": "Connect your iCloud",
     "lede": "Your iCloud, kept on this computer.",
-    "appleAccount": "Apple Account email",
+    "appleAccount": "Apple Account",
+    "appleAccountPlaceholder": "Apple Account email",
     "password": "Password",
     "signIn": "Sign in",
     "signingIn": "Signing in",
@@ -226,21 +231,20 @@
     "ledeNowhere": "Apple has nowhere to send a code for this account.",
     "ledeOnlyCalls": "No device is reachable, but Apple can call you with a code.",
     "ledeCanText": "No device is reachable, but a code can be texted to you.",
-    "ledeDevicesCount": "Apple sent a code to {devices}.",
-    "oneDevice": "one of your devices",
-    "manyDevices": "{devices} of your devices",
     "sendCode": "Send Code",
     "checking": "Checking",
     "didntGetCode": "Didn't get a code?",
     "tooManyCodes": "Apple is limiting new codes. Wait a few minutes before asking again.",
-    "nowhereHelp": "This account has no device or number to send to. Use a device you're still signed in on, or add a number at account.apple.com.",
-    "allowHelp": "The code appears once you tap Allow on your iPhone.",
+    "nowhereHelp": "This account has no device or number to send to. Use a device you're still signed in on, or add a number at <strong>account.apple.com</strong>.",
+    "allowHelp": "The code appears once you tap <strong>Allow</strong> on your iPhone.",
     "sendToDevicesAgain": "Send to my devices again",
     "sentAgainNotice": "Sent again. Check your devices.",
     "callNumber": "Call {number}",
     "textNumber": "Text {number}",
-    "offlineTip": "No prompt? On iPhone, turn on Airplane Mode, then open Settings → your name → Sign-In & Security. iOS offers a code there only while offline.",
-    "staySignedInAssurance": "You'll stay signed in on this computer."
+    "offlineTip": "No prompt? On iPhone, turn on <strong>Airplane Mode</strong>, then open Settings → your name → Sign-In & Security. iOS offers a code there only while offline.",
+    "staySignedInAssurance": "You'll stay signed in on this computer.",
+    "ledeOneDevice": "Apple sent a code to one of your devices.",
+    "ledeManyDevices": "Apple sent a code to {devices} of your devices."
   },
   "launcher": {
     "hint": "Changes from your other devices arrive within seconds.",
@@ -258,7 +262,8 @@
     "contactsCountOne": "1 contact",
     "photosCount": "{count} photos",
     "photosCountOne": "1 photo",
-    "driveAvailable": "{size} available"
+    "driveAvailable": "{size} available",
+    "appsGridAria": "Apps"
   },
   "library": {
     "firstSyncHint": "Your iCloud is here. Edit a reminder or note on your iPhone and watch it change here in seconds.",
@@ -266,13 +271,13 @@
     "agreeTermsDesc": "Apple has updated the iCloud Terms and Conditions. Once you agree to them, your iCloud opens here.",
     "finishSetupTitle": "Finish setting up iCloud",
     "finishSetupDesc": "Apple needs one more step on your Apple Account before your iCloud opens here.",
-    "signinBrowserAction": "Sign in at {host} in your browser and follow what it asks{agreeSuffix}. Then click Try Again.",
-    "agreeSuffix": ", then agree to the terms",
+    "signinBrowserAction": "Sign in at <b>icloud.com</b> in your browser and follow what it asks. Then click Try Again.",
     "checkingWithApple": "Checking with Apple…",
     "tryAgain": "Try Again",
     "webAccessOffTitle": "Your iCloud data is kept off the web",
     "webAccessOffDesc1": "Your Apple Account uses Advanced Data Protection with “Access iCloud Data on the Web” turned off, so Apple doesn’t let any app outside your devices — Skykeep included — read your iCloud.",
-    "webAccessOffDesc2": "To use Skykeep, turn it on: on your iPhone, open Settings, tap your name, then iCloud, and turn on Access iCloud Data on the Web. Then sign in to Skykeep again.",
-    "emptyServices": "Apple hasn’t offered Reminders, Notes, iCloud Drive, Calendar or Contacts to this account yet."
+    "webAccessOffDesc2": "To use Skykeep, turn it on: on your iPhone, open <b>Settings</b>, tap your name, then <b>iCloud</b>, and turn on <b>Access iCloud Data on the Web</b>. Then sign in to Skykeep again.",
+    "emptyServices": "Apple hasn’t offered Reminders, Notes, iCloud Drive, Calendar or Contacts to this account yet.",
+    "signinBrowserActionTerms": "Sign in at <b>icloud.com</b> in your browser, follow what it asks, then agree to the terms. Then click Try Again."
   }
 }

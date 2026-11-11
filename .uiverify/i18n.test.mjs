@@ -1,7 +1,15 @@
 // i18n lookup and fallback rules, checked directly.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { t, setLanguage, activeLanguage, languageName } from "../src/lib/i18n.ts";
+import { readFileSync, readdirSync } from "node:fs";
+import { t, setLanguage, activeLanguage, languageName, appName, LANGUAGES } from "../src/lib/i18n.ts";
+
+const locales = new URL("../src/locales/", import.meta.url);
+const read = (file) => JSON.parse(readFileSync(new URL(file, locales), "utf8"));
+const leaves = (o, p = "") =>
+  Object.entries(o).flatMap(([k, v]) => (typeof v === "string" ? [[p + k, v]] : leaves(v, `${p}${k}.`)));
+const placeholders = (s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
+const tags = (s) => [...s.matchAll(/<\/?(\w+)>/g)].map((m) => m[0]).join("");
 
 test("a key translates to English when English is active", () => {
   setLanguage("en");
@@ -19,9 +27,8 @@ test("a key translates to Simplified Chinese when zh-CN is active", () => {
   assert.equal(t("settings.appearance"), "外观");
 });
 
-test("missing string in zh-CN falls back to English", () => {
+test("a language asked for by name answers in it, whatever is active", () => {
   setLanguage("zh-CN");
-  // If a key only exists in en, it falls back to English.
   assert.equal(t("common.cancel", undefined, "en"), "Cancel");
 });
 
@@ -43,3 +50,34 @@ test("language name helper returns readable name", () => {
   assert.equal(languageName("en"), "English");
   assert.equal(languageName("zh-CN"), "简体中文");
 });
+
+test("an app's name comes from its screen key or its service, and nothing else is an app", () => {
+  setLanguage("en");
+  assert.equal(appName("drivews"), "Drive");
+  assert.equal(appName("drive"), "Drive");
+  setLanguage("zh-CN");
+  assert.equal(appName("notes"), "备忘录");
+  assert.equal(appName("settings-extra"), null);
+});
+
+test("every file in src/locales is a language the picker offers, and every language has its file", () => {
+  const files = readdirSync(locales).filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5)).sort();
+  assert.deepEqual(files, [...LANGUAGES].sort());
+});
+
+// A translation is checked against English: the same keys (none missing, none left over from a
+// removed string), the same {placeholders} (a translation may leave out a plural's count word,
+// never add one), and the same bold parts, so no string loses its emphasis or shows a raw tag.
+for (const lang of LANGUAGES.filter((l) => l !== "en")) {
+  test(`${lang} has every English string, with the same placeholders and bold parts`, () => {
+    const en = new Map(leaves(read("en.json")));
+    const other = new Map(leaves(read(`${lang}.json`)));
+    assert.deepEqual([...other.keys()].filter((k) => !en.has(k)), [], "keys English doesn't have");
+    assert.deepEqual([...en.keys()].filter((k) => !other.has(k)), [], "English keys not translated");
+    for (const [k, v] of other) {
+      const extra = placeholders(v).filter((p) => !placeholders(en.get(k)).includes(p));
+      assert.deepEqual(extra, [], `${k}: placeholders English doesn't fill`);
+      assert.equal(tags(v), tags(en.get(k)), `${k}: bold parts differ from English`);
+    }
+  });
+}

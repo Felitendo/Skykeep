@@ -35,13 +35,13 @@ import { AccountAvatar, useNotKept } from "../components/Account";
 import { Picker } from "../components/Picker";
 import { localeFirstDay, setWeekStart, weekStartChoice, type WeekStartChoice } from "./calendar/model";
 import { icloudSize } from "../lib/icloudSize";
-import { useI18n, type LanguageChoice, systemLanguage, languageName } from "../lib/i18n";
+import { appName, useI18n, LANGUAGES, type LanguageChoice, type Translate, systemLanguage, languageName } from "../lib/i18n";
 
 // Its licence texts are some 400 kB: loaded when the sheet is first opened, not with Settings.
 const LicencesSheet = lazy(() => import("../components/LicencesSheet").then((m) => ({ default: m.LicencesSheet })));
 
 /** The Drive folder's line when it is up: up to date, uploading, or why something is waiting. */
-function folderState(f: DriveFolder, t: (k: string, p?: Record<string, string | number>) => string): string {
+function folderState(f: DriveFolder, t: Translate): string {
   const w = f.waiting;
   if (!w || w.files === 0) return t("settings.driveUpToDate", { path: f.path });
   if (w.failure) return t("settings.driveFilesWaiting", { count: w.files, failure: w.failure });
@@ -65,7 +65,7 @@ function size(bytes: number): string {
 type Unsent = { changes: number; files: number; photos: number };
 
 /** What has not reached iCloud yet, as a sentence's subject: "2 changes and 1 file". */
-function unsentPhrase(u: Unsent, t: (k: string, p?: Record<string, string | number>) => string): string | null {
+function unsentPhrase(u: Unsent, t: Translate): string | null {
   const parts = [
     u.changes > 0 && t(u.changes === 1 ? "settings.unsentChangeOne" : "settings.unsentChangeMany", { count: u.changes }),
     u.files > 0 && t(u.files === 1 ? "settings.unsentFileOne" : "settings.unsentFileMany", { count: u.files }),
@@ -210,7 +210,7 @@ function exportShare(p: ExportProgress | null): number | null {
   return (p.step - 1 + within) / p.steps;
 }
 
-async function runExport(onError: (m: string) => void, t: (k: string, p?: Record<string, string | number>) => string) {
+async function runExport(onError: (m: string) => void, t: Translate) {
   const dest = (await pickOpen({ directory: true, multiple: false, title: t("settings.chooseExportLocation") }))?.[0];
   if (!dest) return;
   setExportState({ phase: "running", progress: null, cancelling: false });
@@ -282,9 +282,8 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
           copiedSize: size(state.photosBytes),
           totalSize: size(state.photosBytesTotal),
         })
-      : t("settings.photosCountAndSize", {
+      : t(state.total === 1 ? "settings.photosCountAndSizeOne" : "settings.photosCountAndSizeMany", {
           count: state.total.toLocaleString(),
-          photos: state.total === 1 ? "photo" : "photos",
           size: size(state.photosBytesTotal),
         });
   const driveLine = !state
@@ -307,7 +306,7 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
             })
           : t("settings.driveHint");
   return (
-    <div className="settings-row is-stacked backup" aria-label={t("settings.backup")} role="group">
+    <div className="settings-row is-stacked backup" aria-label={t("settings.backupTitle")} role="group">
       <div className="settings-row-line" style={{ alignItems: "center" }}>
         <span className="settings-label settings-stack">
           {t("settings.backup")}
@@ -333,7 +332,7 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
           </button>
         )}
       </div>
-      <div className="backup-source" aria-label={t("sidebar.photos")} role="group">
+      <div className="backup-source" aria-label={t("settings.photosInBackup")} role="group">
         <AppIcon app="photos" />
         <span className="settings-label settings-stack">
           {t("sidebar.photos")}
@@ -347,7 +346,7 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
           <span className="switch-knob" />
         </button>
       </div>
-      <div className="backup-source" aria-label={t("settings.icloudDrive")} role="group">
+      <div className="backup-source" aria-label={t("settings.driveInBackup")} role="group">
         <AppIcon app="drivews" />
         <span className="settings-label settings-stack">
           {t("settings.icloudDrive")}
@@ -359,7 +358,7 @@ function BackupRow({ onError }: { onError: (m: string) => void }) {
           className="switch"
           role="switch"
           aria-checked={state?.drive ?? true}
-          aria-label={t("settings.icloudDrive")}
+          aria-label={t("settings.includeDrive")}
           disabled={!state}
           onClick={() => state && void set(state.folder, state.hidden, !state.drive)}
         >
@@ -391,7 +390,7 @@ function ExportRow({ onError }: { onError: (m: string) => void }) {
     ? state.cancelling
       ? t("common.cancelling")
       : p
-        ? `${t(`sidebar.${p.service}`)} · ${p.total > 0 ? t("settings.exportProgressCount", { done: Math.min(p.done, p.total).toLocaleString(), total: p.total.toLocaleString() }) : t("settings.nothingToExport")}`
+        ? `${appName(p.service) ?? p.service} · ${p.total > 0 ? t("settings.exportProgressCount", { done: Math.min(p.done, p.total).toLocaleString(), total: p.total.toLocaleString() }) : t("settings.nothingToExport")}`
         : t("common.gettingReady")
     : state.phase === "done"
       ? t("settings.exportedTo", { folder: folderName(state.path) })
@@ -874,8 +873,7 @@ function LanguageRow() {
         }}
         options={[
           { value: "auto", label: `${t("settings.auto")} (${sysName})` },
-          { value: "en", label: "English" },
-          { value: "zh-CN", label: "简体中文" },
+          ...LANGUAGES.map((l) => ({ value: l, label: languageName(l) })),
         ]}
       />
     </div>
