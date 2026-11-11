@@ -1,7 +1,7 @@
 # Skykeep for Windows, proven on Windows before anyone downloads it:
-#   1. build — on one machine, in order: the Tauri versions checked (seconds), the whole test
-#              suite in release mode with the real Credential Manager, then the .msi and the
-#              per-user .exe installer from the same compiled crates. One compile, not two;
+#   1. tests — the whole test suite in release mode with the real Credential Manager, and
+#              iCloud Drive in File Explorer, on its own machine;
+#      build — at the same time, on another: the .msi and the per-user .exe installer;
 #   2. smoke — the .exe installed silently, Skykeep launched, its window seen on screen, and a
 #              screenshot kept, so an installer that cannot even start is never handed over;
 #              then each app's Start-menu entry and window checked for its own app ID, the jump
@@ -54,52 +54,18 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  build:
+  # The whole test suite on Windows, beside the build rather than before it: the two compile
+  # the same crates on two machines at once (13.6 and 6.8 minutes one after the other, 11 Nov).
+  # The run, and so a release, succeeds only if both do.
+  tests:
+    if: ${{ inputs.test_first }}
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      # `tauri build` refuses a Tauri npm package and Rust crate on different minor versions —
-      # checked first, so a mismatch costs seconds, not a whole compile.
-      - name: Tauri versions match
-        shell: bash
-        run: |
-          node -e '
-            const lock = require("./package-lock.json").packages;
-            const npm = lock["node_modules/@tauri-apps/api"].version;
-            const rust = require("fs").readFileSync("Cargo.lock", "utf8").match(/name = "tauri"\r?\nversion = "([^"]+)"/)[1];
-            const mm = (v) => v.split(".").slice(0, 2).join(".");
-            console.log(`@tauri-apps/api ${npm}, tauri crate ${rust}`);
-            if (mm(npm) !== mm(rust)) { console.error("Tauri npm package and crate differ: align them"); process.exit(1); }'
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: windows-release
-      # HEIC decoding: libheif with its default codecs (libde265 decodes), linked in statically,
-      # with the C and C++ runtimes too (the x64-windows-static triplet, /MT, matching Rust's
-      # crt-static below): skykeep.exe then needs no Visual C++ Redistributable, which a fresh
-      # Windows doesn't have — without it the program can't start at all (STATUS_DLL_NOT_FOUND).
-      # What vcpkg links in (libheif, libde265, x265) is listed with its licences in
-      # packaging/licences/extra.json; a new cache key can bring new versions, so check it there.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: C:\vcpkg\installed
-          key: vcpkg-libheif-default-x64-windows-static-v1
-      - name: HEIC decoder
-        shell: pwsh
-        run: |
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif:x64-windows-static"
-          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-          "VCPKGRS_TRIPLET=x64-windows-static" >> $env:GITHUB_ENV
-      # The window's files must exist for the app crate to compile.
-      - run: npm run build
+      - uses: ./.github/actions/windows-setup
       # iCloud Drive in File Explorer on this Windows: a cloud folder registered, listed and
       # read by another process, its output shown (whether the shell took the registration).
       # With the thumbnail provider (crates/quince-thumbs) built first: the test registers it for
@@ -112,18 +78,25 @@ jobs:
           cargo build --release -p quince-thumbs --locked
           cargo test --release -p quince-vfs --test cloud_windows --locked -- --nocapture --test-threads=1
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        if: ${{ inputs.test_first }}
         with:
           tool: cargo-nextest
       - name: Tests, on Windows
-        if: ${{ inputs.test_first }}
-        # In release mode, so the installer build below reuses what this compiled; tests only (the
-        # probe examples are live tools for Linux, not tests). nextest, with
-        # the ci-windows profile (.config/nextest.toml): every core, hung tests stopped, the slow
-        # named; the scale tests run on Linux and the Explorer test in its own step above.
+        # In release mode, with the build's flags, so both jobs share one cache; tests only (the
+        # probe examples are live tools for Linux, not tests). nextest, with the ci-windows
+        # profile (.config/nextest.toml): every core, hung tests stopped, the slow named; the
+        # scale tests run on Linux and the Explorer test in its own step above.
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep -C target-feature=+crt-static
         run: cargo nextest run --release --workspace --lib --bins --tests --locked --profile ci-windows
+
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: ./.github/actions/windows-setup
       # The installers' own tools (WiX for the .msi, NSIS for the .exe), which tauri downloads
       # from GitHub on first use: kept between runs, so a release never fails on a download
       # GitHub answered with a 504 (8 Nov).
