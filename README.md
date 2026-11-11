@@ -4,7 +4,7 @@
 
 <h1 align="center">Skykeep</h1>
 
-<p align="center"><strong>Your iPhone's iCloud, on Windows and Linux.</strong><br>Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as native apps. Send files to your iPhone, back up every photo, and work offline.</p>
+<p align="center"><strong>Your iPhone's iCloud, on Windows, Linux and Android.</strong><br>Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as native apps. Send files to your iPhone, back up every photo, and work offline.</p>
 
 <p align="center">
   <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest"><strong>Download</strong></a> ·
@@ -16,7 +16,7 @@
 
 <p align="center">
   <a href="ARCHITECTURE.md"><img src="https://img.shields.io/badge/Built_with-Rust-2f6fd6" alt="Built with Rust"></a>
-  <a href="#install"><img src="https://img.shields.io/badge/Linux_%C2%B7_Windows-native-2f6fd6" alt="Linux and Windows, native"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/Linux_%C2%B7_Windows_%C2%B7_Android-native-2f6fd6" alt="Linux, Windows and Android, native"></a>
   <a href="https://github.com/YashwanthKamireddi/Skykeep/releases"><img src="https://img.shields.io/github/downloads/YashwanthKamireddi/Skykeep/total?label=GitHub%20Downloads&color=2f6fd6" alt="GitHub downloads"></a>
   <a href="https://github.com/YashwanthKamireddi/Skykeep/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/YashwanthKamireddi/Skykeep/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest"><img src="https://img.shields.io/github/v/release/YashwanthKamireddi/Skykeep?label=release&color=2f6fd6" alt="Latest release"></a>
@@ -82,6 +82,15 @@ Skykeep is a native engine written in Rust with a light Tauri window on top: one
 
 [SECURITY.md](SECURITY.md) shows the code behind each point.
 
+## On Android
+
+Skykeep for Android brings Reminders, Notes, Photos and iCloud Drive to your phone, and puts your iCloud contacts and calendars into Android's own Contacts and Calendar apps, synced both ways. iCloud Drive also shows up in Android's Files app. It runs on the same Rust engine as the desktop app, works offline, and talks only to Apple.
+
+<p align="center"><a href="docs/media/android/home-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/home-dark.webp"><img src="docs/media/android/home-light.webp" width="240" alt="Home: the account and each service syncing"></picture></a> <a href="docs/media/android/reminders-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/reminders-dark.webp"><img src="docs/media/android/reminders-light.webp" width="240" alt="A Reminders list with sub-tasks"></picture></a> <a href="docs/media/android/note-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/note-dark.webp"><img src="docs/media/android/note-light.webp" width="240" alt="A note with a checklist"></picture></a></p>
+<p align="center"><a href="docs/media/android/photos-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/photos-dark.webp"><img src="docs/media/android/photos-light.webp" width="240" alt="The photo library by month"></picture></a> <a href="docs/media/android/viewer-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/viewer-dark.webp"><img src="docs/media/android/viewer-light.webp" width="240" alt="A photo open"></picture></a> <a href="docs/media/android/drive-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/android/drive-dark.webp"><img src="docs/media/android/drive-light.webp" width="240" alt="An iCloud Drive folder"></picture></a></p>
+
+Get the [APK](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-android.apk) from the latest release (Android 10 and newer, 64-bit ARM). The pictures show an invented demo account.
+
 ## Install
 
 | Platform | Installation |
@@ -89,6 +98,7 @@ Skykeep is a native engine written in Rust with a light Tauri window on top: one
 | **Windows** | [Microsoft Store](https://apps.microsoft.com/detail/9P6B042JNK54), or the [installer](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe). Also `choco install skykeep` and [Scoop](https://github.com/YashwanthKamireddi/scoop-bucket) |
 | **Linux stores** | [Snap Store](https://snapcraft.io/skykeep)<br>Fedora and Fedora Asahi: `sudo dnf copr enable yashonfed/skykeep && sudo dnf install skykeep`<br>Arch: `yay -S skykeep` |
 | **Linux files** | [`.deb`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb) ([ARM](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-arm64.deb)), [`.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) ([ARM](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-aarch64.rpm)), or the [AppImage](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.AppImage) for any other Linux |
+| **Android** | The [APK](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-android.apk) from GitHub Releases |
 
 Every file, with checksums, is on the [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest). The Windows installer, the AppImage and every store keep Skykeep up to date; for a `.deb` or `.rpm`, install the new one over the old.
 
@@ -108,7 +118,11 @@ The Snap's second command lets it keep you signed in through your keyring. On Ub
 
 ## Official downloads
 
-Skykeep is published only through the links above: GitHub Releases, the Microsoft Store, the Snap Store, Chocolatey, the [Scoop bucket](https://github.com/YashwanthKamireddi/scoop-bucket) and the COPR `yashonfed/skykeep`. The AUR packages `skykeep` and `skykeep-bin` are kept by a community packager and built from these releases. Flathub and winget join this list once they are live. On Android, the APK will be on GitHub Releases. Its signing-certificate SHA-256 fingerprint: to be published with the first Android release, so you can check the copy you install.
+Skykeep is published only through the links above: GitHub Releases, the Microsoft Store, the Snap Store, Chocolatey, the [Scoop bucket](https://github.com/YashwanthKamireddi/scoop-bucket) and the COPR `yashonfed/skykeep`. The AUR packages `skykeep` and `skykeep-bin` are kept by a community packager and built from these releases. Flathub and winget join this list once they are live. On Android, the APK is published only on GitHub Releases. Check the copy you install against its signing certificate's SHA-256 fingerprint:
+
+```
+61:0A:64:50:6D:95:DA:6C:CE:75:FF:0E:40:B8:59:02:FA:41:E4:0D:00:1B:BA:87:BF:40:70:FE:CB:F2:3A:FB
+```
 
 A copy from anywhere else is not from this project. Never type your Apple Account password into one you can't trace back here.
 
