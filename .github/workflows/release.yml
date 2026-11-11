@@ -310,16 +310,26 @@ jobs:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
           KS_PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
+          # Each step says what failed: zipalign -c and a grep that finds nothing exit quietly,
+          # and 0.1.22's rehearsal stopped here with no word of which.
+          set -o pipefail
           tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)
+          echo "build-tools: $(basename "$tools")"
           key="$RUNNER_TEMP/release.p12"
-          ( umask 077; printf '%s' "$KEYSTORE" | base64 -d > "$key" )
+          ( umask 077; printf '%s' "$KEYSTORE" | base64 -d > "$key" ) || { echo "::error::ANDROID_KEYSTORE is not base64"; exit 1; }
+          [ -s "$key" ] || { echo "::error::ANDROID_KEYSTORE is empty"; exit 1; }
           mkdir -p android
           out="android/Skykeep-${GITHUB_REF_NAME#v}-android.apk"
           # Aligned already by the build (16 KB pages for the engine's libraries); checked, not redone.
-          "$tools/zipalign" -c -P 16 4 unsigned/app-release-unsigned.apk
-          "$tools/apksigner" sign --ks "$key" --ks-pass env:KS_PW --ks-key-alias skykeep --out "$out" unsigned/app-release-unsigned.apk
+          if ! "$tools/zipalign" -c -v -P 16 4 unsigned/app-release-unsigned.apk > "$RUNNER_TEMP/align.txt"; then
+            grep -v "(OK" "$RUNNER_TEMP/align.txt" | tail -n 20
+            echo "::error::the APK is not aligned"; exit 1
+          fi
+          "$tools/apksigner" sign --ks "$key" --ks-pass env:KS_PW --ks-key-alias skykeep --out "$out" unsigned/app-release-unsigned.apk \
+            || { rm -f "$key"; echo "::error::apksigner could not sign with the key"; exit 1; }
           rm -f "$key"
-          "$tools/apksigner" verify --print-certs "$out" | grep -E "Signer #1 certificate (DN|SHA-256)"
+          "$tools/apksigner" verify --print-certs "$out" > "$RUNNER_TEMP/certs.txt" || { echo "::error::the signed APK does not verify"; exit 1; }
+          grep -E "Signer #1 certificate (DN|SHA-256)" "$RUNNER_TEMP/certs.txt" || { cat "$RUNNER_TEMP/certs.txt"; echo "::error::no signer in the signed APK"; exit 1; }
           (cd android && sha256sum "$(basename "$out")" > SHA256SUMS-android.txt && cat SHA256SUMS-android.txt)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
